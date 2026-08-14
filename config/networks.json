@@ -2,6 +2,8 @@
   "ethereum": {
     "chainId": 1,
     "rpcEnv": "ETHEREUM_RPC_URL",
+    "treasuryAddressEnv": "ETHEREUM_TREASURY_ADDRESS",
+    "gasPrivateKeyEnv": "ETHEREUM_GAS_PRIVATE_KEY",
     "confirmations": 12,
     "nativeAsset": "ETH",
     "explorerUrl": "https://etherscan.io",
@@ -13,6 +15,8 @@
   "ethereum-sepolia": {
     "chainId": 11155111,
     "rpcEnv": "ETHEREUM_SEPOLIA_RPC_URL",
+    "treasuryAddressEnv": "ETHEREUM_SEPOLIA_TREASURY_ADDRESS",
+    "gasPrivateKeyEnv": "ETHEREUM_SEPOLIA_GAS_PRIVATE_KEY",
     "confirmations": 3,
     "nativeAsset": "ETH",
     "explorerUrl": "https://sepolia.etherscan.io",
@@ -23,6 +27,8 @@
   "base": {
     "chainId": 8453,
     "rpcEnv": "BASE_RPC_URL",
+    "treasuryAddressEnv": "BASE_TREASURY_ADDRESS",
+    "gasPrivateKeyEnv": "BASE_GAS_PRIVATE_KEY",
     "confirmations": 12,
     "nativeAsset": "ETH",
     "explorerUrl": "https://basescan.org",
@@ -33,6 +39,8 @@
   "base-sepolia": {
     "chainId": 84532,
     "rpcEnv": "BASE_SEPOLIA_RPC_URL",
+    "treasuryAddressEnv": "BASE_SEPOLIA_TREASURY_ADDRESS",
+    "gasPrivateKeyEnv": "BASE_SEPOLIA_GAS_PRIVATE_KEY",
     "confirmations": 3,
     "nativeAsset": "ETH",
     "explorerUrl": "https://sepolia.basescan.org",
@@ -43,6 +51,8 @@
   "bnb": {
     "chainId": 56,
     "rpcEnv": "BNB_RPC_URL",
+    "treasuryAddressEnv": "BNB_TREASURY_ADDRESS",
+    "gasPrivateKeyEnv": "BNB_GAS_PRIVATE_KEY",
     "confirmations": 15,
     "nativeAsset": "BNB",
     "explorerUrl": "https://bscscan.com",
@@ -53,6 +63,8 @@
   "bnb-testnet": {
     "chainId": 97,
     "rpcEnv": "BNB_TESTNET_RPC_URL",
+    "treasuryAddressEnv": "BNB_TESTNET_TREASURY_ADDRESS",
+    "gasPrivateKeyEnv": "BNB_TESTNET_GAS_PRIVATE_KEY",
     "confirmations": 3,
     "nativeAsset": "tBNB",
     "explorerUrl": "https://testnet.bscscan.com",

@@ -1,4 +1,5 @@
 .env
+.sweeper.env
 pb_data/
 evm-payment-gateway
 *.sqlite*

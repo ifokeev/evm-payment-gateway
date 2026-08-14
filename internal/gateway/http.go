@@ -22,6 +22,23 @@ func (s *Service) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 	group.POST("/intents", s.createIntentRoute)
 	group.GET("/intents/{id}", s.getIntentRoute)
 	group.GET("/intents/{id}/transactions", s.getTransactionsRoute)
+	group.GET("/intents/{id}/sweep", s.getSweepRoute)
+
+	sweeps := r.Group("/api/payments/v1/internal/sweeps")
+	sweeps.BindFunc(s.requireSweeperKey)
+	sweeps.POST("/claim", s.claimSweepRoute)
+	sweeps.POST("/{id}/transactions", s.registerSweepTransactionRoute)
+	sweeps.POST("/transactions/{id}/result", s.sweepTransactionResultRoute)
+	sweeps.POST("/{id}/release", s.releaseSweepRoute)
+}
+
+func (s *Service) requireSweeperKey(event *core.RequestEvent) error {
+	header := event.Request.Header.Get("Authorization")
+	provided := strings.TrimPrefix(header, "Bearer ")
+	if !strings.HasPrefix(header, "Bearer ") || len(provided) != len(s.config.SweeperAPIKey) || subtle.ConstantTimeCompare([]byte(provided), []byte(s.config.SweeperAPIKey)) != 1 {
+		return apis.NewUnauthorizedError("invalid sweeper API key", nil)
+	}
+	return event.Next()
 }
 
 func (s *Service) requireAPIKey(event *core.RequestEvent) error {
@@ -107,6 +124,18 @@ func (s *Service) getTransactionsRoute(event *core.RequestEvent) error {
 		return err
 	}
 	return event.JSON(http.StatusOK, map[string]any{"items": transactions})
+}
+
+func (s *Service) getSweepRoute(event *core.RequestEvent) error {
+	record, err := s.app.FindRecordById("payment_intents", event.Request.PathValue("id"))
+	if err != nil {
+		return apis.NewNotFoundError("payment intent not found", nil)
+	}
+	response, err := s.publicSweepResponse(record)
+	if err != nil {
+		return err
+	}
+	return event.JSON(http.StatusOK, response)
 }
 
 func contextWithTimeout(parent context.Context) (context.Context, context.CancelFunc) {

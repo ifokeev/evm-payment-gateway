@@ -7,6 +7,7 @@ require (
 	github.com/pocketbase/dbx v1.12.0
 	github.com/pocketbase/pocketbase v0.39.11
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	github.com/spf13/cobra v1.10.2
 	github.com/tyler-smith/go-bip32 v1.0.0
 )
 
@@ -47,7 +48,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect

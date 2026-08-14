@@ -340,6 +340,12 @@ func (s *Service) rewind(chain string, fromBlock int64) (map[string]bool, error)
 	}
 	err = s.app.RunInTransaction(func(txApp core.App) error {
 		params := dbx.Params{"chain": chain, "block": fromBlock}
+		if _, err := txApp.DB().NewQuery("UPDATE sweep_jobs SET status = 'queued', next_attempt_at = {:now}, completed_at = 0 WHERE status = 'complete' AND id IN (SELECT sweep_job FROM sweep_transactions WHERE chain = {:chain} AND block_number >= {:block} AND status = 'confirmed')").Bind(dbx.Params{"chain": chain, "block": fromBlock, "now": time.Now().Unix()}).Execute(); err != nil {
+			return err
+		}
+		if _, err := txApp.DB().NewQuery("UPDATE sweep_transactions SET status = 'submitted', block_number = 0 WHERE chain = {:chain} AND block_number >= {:block} AND status = 'confirmed'").Bind(params).Execute(); err != nil {
+			return err
+		}
 		if _, err := txApp.DB().NewQuery("UPDATE payment_transactions SET canonical = FALSE WHERE chain = {:chain} AND block_number >= {:block} AND canonical = TRUE").Bind(params).Execute(); err != nil {
 			return err
 		}
@@ -374,17 +380,21 @@ func (s *Service) recalculateChain(chain string, latest uint64, reorged map[stri
 		if err != nil {
 			return err
 		}
-		received, confirmed := new(big.Int), new(big.Int)
+		received, confirmed, allConfirmed := new(big.Int), new(big.Int), new(big.Int)
 		hashes := make([]string, 0, len(transactions))
 		expires := int64(intent.GetFloat("expires_at")) + int64(s.config.PaymentGrace)
 		for _, transaction := range transactions {
+			amount := bigFromString(transaction.GetString("amount_units"))
+			block := uint64(transaction.GetFloat("block_number"))
+			isConfirmed := latest >= block && latest-block+1 >= uint64(intent.GetInt("confirmations"))
+			if isConfirmed {
+				allConfirmed.Add(allConfirmed, amount)
+			}
 			if int64(transaction.GetFloat("block_timestamp")) > expires {
 				continue
 			}
-			amount := bigFromString(transaction.GetString("amount_units"))
 			received.Add(received, amount)
-			block := uint64(transaction.GetFloat("block_number"))
-			if latest >= block && latest-block+1 >= uint64(intent.GetInt("confirmations")) {
+			if isConfirmed {
 				confirmed.Add(confirmed, amount)
 			}
 			hashes = append(hashes, transaction.GetString("tx_hash"))
@@ -405,28 +415,56 @@ func (s *Service) recalculateChain(chain string, latest uint64, reorged map[stri
 				hashes = append(hashes, transaction.GetString("tx_hash"))
 			}
 		}
-		if err := s.updatePayment(intent.Id, received.String(), confirmed.String(), status, hashes); err != nil {
+		sweepEligible := eligibleForSweep(intent.GetString("token_address") != "", status, allConfirmed, expected, time.Now().Unix() > expires, s.config.SweeperMinTokenBPS)
+		if err := s.updatePayment(intent.Id, received.String(), confirmed.String(), status, hashes, allConfirmed.String(), sweepEligible); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Service) updatePayment(id, received, confirmed, status string, hashes []string) error {
+func eligibleForSweep(isToken bool, status string, confirmed, expected *big.Int, expiredWithGrace bool, minTokenBPS int) bool {
+	if confirmed.Sign() <= 0 {
+		return false
+	}
+	if status == "paid" {
+		return true
+	}
+	if !expiredWithGrace {
+		return false
+	}
+	if !isToken {
+		return true
+	}
+	threshold := new(big.Int).Mul(expected, big.NewInt(int64(minTokenBPS)))
+	threshold.Add(threshold, big.NewInt(9999))
+	threshold.Div(threshold, big.NewInt(10000))
+	return confirmed.Cmp(threshold) >= 0
+}
+
+func (s *Service) updatePayment(id, received, confirmed, status string, hashes []string, sweepUnits string, sweepEligible bool) error {
 	return s.app.RunInTransaction(func(txApp core.App) error {
 		intent, err := txApp.FindRecordById("payment_intents", id)
 		if err != nil {
 			return err
 		}
 		oldStatus := intent.GetString("status")
-		if oldStatus == status && intent.GetString("received_units") == received && intent.GetString("confirmed_units") == confirmed {
-			return nil
+		changed := oldStatus != status || intent.GetString("received_units") != received || intent.GetString("confirmed_units") != confirmed
+		if changed {
+			intent.Set("received_units", received)
+			intent.Set("confirmed_units", confirmed)
+			intent.Set("status", status)
 		}
-		intent.Set("received_units", received)
-		intent.Set("confirmed_units", confirmed)
-		intent.Set("status", status)
-		if err := txApp.Save(intent); err != nil {
+		if changed {
+			if err := txApp.Save(intent); err != nil {
+				return err
+			}
+		}
+		if err := syncSweepJob(txApp, intent, sweepUnits, sweepEligible); err != nil {
 			return err
+		}
+		if !changed {
+			return nil
 		}
 		eventType := ""
 		if status == "paid" && oldStatus != "paid" {

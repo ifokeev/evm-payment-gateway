@@ -1,4 +1,5 @@
 .env
+.sweeper.env
 .git
 pb_data
 *.sqlite*

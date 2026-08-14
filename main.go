@@ -14,6 +14,7 @@ import (
 func main() {
 	app := pocketbase.New()
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{})
+	gateway.RegisterSweeperCommand(app.RootCmd)
 
 	var service *gateway.Service
 	app.OnServe().BindFunc(func(event *core.ServeEvent) error {

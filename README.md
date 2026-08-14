@@ -9,7 +9,8 @@
 EVM Payment Gateway creates payment intents, returns exact amounts with EIP-681
 deep links and QR codes, watches EVM chains, waits for confirmations, and sends
 signed, retryable webhooks. The application that sells a product remains the
-authority for granting access, credits, or subscriptions.
+authority for granting access, credits, or subscriptions. An isolated worker
+automatically consolidates confirmed deposits to configured treasury wallets.
 
 ## Features
 
@@ -20,16 +21,20 @@ authority for granting access, credits, or subscriptions.
 - Confirmation tracking, canonical-chain checks, and reorg events
 - Persistent transaction and webhook delivery history in PocketBase
 - Idempotent intent creation and webhook event IDs
-- One Go binary with PocketBase's private admin dashboard
+- Automatic native and ERC-20 treasury sweeps with durable retries
+- One Go binary with separate `serve` and `sweeper` runtime roles
 
 ## Getting started
 
-Requirements: Docker, an EVM RPC URL, and a watch-only account xpub at
-`m/44'/60'/0'/0`.
+Requirements: Docker, an EVM RPC URL, and a dedicated BIP-32 account key pair at
+`m/44'/60'/0'/0`. The gateway receives the xpub; only the sweeper receives its
+matching xprv.
 
 ```bash
 cp .env.example .env
-# Set PAYMENT_API_KEY, PAYMENT_WEBHOOK_*, DEPOSIT_XPUB, and one RPC URL.
+cp .sweeper.env.example .sweeper.env
+# Configure secrets, one RPC URL, its treasury address, and its gas-wallet key.
+chmod 600 .env .sweeper.env
 docker compose up --build
 ```
 
@@ -41,7 +46,8 @@ docker compose exec gateway ./evm-payment-gateway superuser create admin@example
 
 The payment API listens on `http://localhost:8090`; the PocketBase dashboard is
 at `http://localhost:8090/_/`. Put both behind TLS and restrict dashboard access
-before a production deployment.
+before a production deployment. The reverse proxy must deny public access to
+`/api/payments/v1/internal/`; only the sweeper container should reach it.
 
 ## Create a payment intent
 
@@ -69,6 +75,7 @@ Poll an intent or its transactions:
 ```text
 GET /api/payments/v1/intents/{id}
 GET /api/payments/v1/intents/{id}/transactions
+GET /api/payments/v1/intents/{id}/sweep
 GET /api/payments/v1/health
 ```
 
@@ -110,6 +117,31 @@ For manual monthly crypto subscriptions, create a new `subscription_invoice`
 intent and external invoice ID each month. The gateway does not perform token
 approvals or automatic withdrawals.
 
+## Automatic sweeping
+
+Once a payment has the configured confirmations, the gateway creates a durable
+sweep job. The separate `sweeper` process does the following:
+
+1. Derives the intent's child key and verifies it matches the deposit address.
+2. For ERC-20 payments, estimates the transfer cost and sends only the missing
+   ETH or BNB from a capped gas wallet.
+3. Saves the signed raw transaction before broadcasting it.
+4. Waits for the funding transaction, sweeps the balance to the allowlisted
+   treasury, and waits for the chain's configured confirmations.
+5. Reconciles receipts and balances after every restart or retry.
+
+Native payments pay their own fee and need no gas-wallet funding. Base sweeps
+also include the chain's L1 security fee using the Base GasPriceOracle upper
+bound described in [Base's fee documentation](https://docs.base.org/base-chain/network-information/network-fees).
+A small native residue can remain after an ERC-20 sweep because unused
+gas is refunded and may itself cost more to transfer than it is worth.
+
+To prevent gas-wallet draining through token dust, paid intents sweep
+immediately while expired token underpayments sweep only when they meet
+`SWEEPER_MIN_TOKEN_PAYMENT_BPS` of the invoice. Native underpayments sweep after
+expiry when their balance exceeds the transfer fee. Run one sweeper replica;
+horizontal scaling requires coordinated gas-wallet nonce allocation.
+
 ## Configuration
 
 Networks and tokens live in [config/networks.json](config/networks.json). A
@@ -126,11 +158,25 @@ list; Ethereum USDT uses Tether's published ERC-20 contract.
 | `PAYMENT_API_KEY` | required | Server-to-server payment API key, minimum 24 characters. |
 | `PAYMENT_WEBHOOK_URL` | required | Single HTTPS event destination. |
 | `PAYMENT_WEBHOOK_SECRET` | required | HMAC secret, minimum 24 characters. |
+| `SWEEPER_API_KEY` | required | Separate authentication secret for the internal sweeper API. |
 | `DEPOSIT_XPUB` | required | Watch-only account xpub. |
+| `<NETWORK>_TREASURY_ADDRESS` | required per enabled network | Allowlisted sweep destination. |
 | `POLL_INTERVAL_SECONDS` | `5` | Chain polling interval. |
 | `DEFAULT_EXPIRY_SECONDS` | `1800` | Default intent lifetime. |
 | `PAYMENT_GRACE_SECONDS` | `60` | Block timestamp grace after expiry. |
 | `REORG_HISTORY_BLOCKS` | `256` | Recent canonical block hashes retained. |
+| `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | `5000` | Minimum expired token payment ratio eligible for automatic recovery. |
+| `SWEEPER_MAX_GAS_FUNDING_WEI` | `10000000000000000` | Maximum native top-up per sweep. |
+
+The sweeper-only file contains:
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `GATEWAY_URL` | required | Internal URL of the gateway service. |
+| `DEPOSIT_XPRV` | required | Private counterpart of `DEPOSIT_XPUB`. Never give this to the gateway container. |
+| `<NETWORK>_GAS_PRIVATE_KEY` | required per enabled token network | Low-balance wallet used only for ERC-20 gas top-ups. |
+| `SWEEPER_POLL_INTERVAL_SECONDS` | `5` | Sweep queue polling interval. |
+| `SWEEPER_GAS_BUFFER_BPS` | `12000` | Gas-limit buffer; `12000` means 120%. |
 
 ## Design boundaries
 
@@ -138,15 +184,12 @@ The caller supplies the exact asset amount. Fiat conversion and quote locking
 belong in the commerce application or its chosen price source; this gateway
 does not silently choose exchange rates.
 
-Unique derived addresses make partial and underpayments unambiguous without
-holding private keys online. Consolidation is intentionally outside this
-service. Native deposits can pay their own sweep gas. For ERC-20 deposits, an
-isolated sweeper sends a small amount of the chain's native asset to the funded
-address, then signs a token transfer to treasury with the matching child key.
-Trigger this only after a confirmed, economically useful deposit; cap the gas
-wallet and keep the signer separate from the gateway. Full automation requires
-an online signer—an offline wallet is for manual sweeps only. At high payment
-volume, an audited payment contract may cost less operationally, but it adds
+Unique derived addresses make partial and underpayments unambiguous. The public
+gateway remains watch-only; the online sweeper is deliberately isolated in a
+second container with the xprv and low-balance gas keys. Signed transactions are
+constrained to the configured deposit address, token, chain, and treasury by the
+gateway before they are accepted into durable history. At high payment volume,
+an audited payment contract may cost less operationally, but it adds
 contract-call/approval UX and smart-contract audit risk.
 
 Native transfers made as top-level wallet transactions are detected. Internal

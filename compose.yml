@@ -8,5 +8,18 @@ services:
       - gateway-data:/pb_data
     restart: unless-stopped
 
+  sweeper:
+    build: .
+    command: ["sweeper"]
+    env_file:
+      - .env
+      - .sweeper.env
+    depends_on:
+      - gateway
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   gateway-data:
