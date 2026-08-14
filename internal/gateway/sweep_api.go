@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
@@ -59,7 +60,7 @@ func (s *Service) claimSweepRoute(event *core.RequestEvent) error {
 	var request struct {
 		Chain string `json:"chain"`
 	}
-	if err := decodeLimitedJSON(event.Request, &request); err != nil {
+	if err := decodeLimitedJSON(event.Request, &request, 256<<10); err != nil {
 		return apis.NewBadRequestError("invalid JSON body", err)
 	}
 	if _, ok := s.chains[request.Chain]; !ok {
@@ -108,7 +109,7 @@ func (s *Service) registerSweepTransactionRoute(event *core.RequestEvent) error 
 		Kind           string `json:"kind"`
 		RawTransaction string `json:"rawTransaction"`
 	}
-	if err := decodeLimitedJSON(event.Request, &request); err != nil {
+	if err := decodeLimitedJSON(event.Request, &request, 256<<10); err != nil {
 		return apis.NewBadRequestError("invalid JSON body", err)
 	}
 	raw, err := hex.DecodeString(strings.TrimPrefix(request.RawTransaction, "0x"))
@@ -202,7 +203,7 @@ func (s *Service) sweepTransactionResultRoute(event *core.RequestEvent) error {
 		BlockNumber uint64 `json:"blockNumber,omitempty"`
 		Error       string `json:"error,omitempty"`
 	}
-	if err := decodeLimitedJSON(event.Request, &request); err != nil {
+	if err := decodeLimitedJSON(event.Request, &request, 256<<10); err != nil {
 		return apis.NewBadRequestError("invalid JSON body", err)
 	}
 	if request.Status != "submitted" && request.Status != "confirmed" && request.Status != "failed" {
@@ -231,7 +232,7 @@ func (s *Service) releaseSweepRoute(event *core.RequestEvent) error {
 		Error          string `json:"error,omitempty"`
 		DelaySeconds   int    `json:"delaySeconds,omitempty"`
 	}
-	if err := decodeLimitedJSON(event.Request, &request); err != nil {
+	if err := decodeLimitedJSON(event.Request, &request, 256<<10); err != nil {
 		return apis.NewBadRequestError("invalid JSON body", err)
 	}
 	if request.Status != "queued" && request.Status != "complete" && request.Status != "external" {
@@ -304,7 +305,7 @@ func validateSignedSweepTransaction(network Network, depositAddress, tokenAddres
 
 	switch kind {
 	case "gas":
-		if to != deposit || len(transaction.Data()) != 0 || transaction.Gas() != 21000 || transaction.Value().Sign() <= 0 || transaction.Value().Cmp(maxGasWei) > 0 {
+		if tokenAddress == "" || to != deposit || len(transaction.Data()) != 0 || transaction.Gas() != 21000 || transaction.Value().Sign() <= 0 || transaction.Value().Cmp(maxGasWei) > 0 {
 			return common.Address{}, common.Address{}, nil, errors.New("invalid gas funding transaction")
 		}
 		return from, to, transaction.Value(), nil
@@ -389,8 +390,15 @@ func (s *Service) publicSweepResponse(intent *core.Record) (map[string]any, erro
 	}, nil
 }
 
-func decodeLimitedJSON(request *http.Request, destination any) error {
-	decoder := json.NewDecoder(io.LimitReader(request.Body, 256<<10))
+func decodeLimitedJSON(request *http.Request, destination any, limit int64) error {
+	data, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > limit {
+		return errors.New("request body is too large")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return err

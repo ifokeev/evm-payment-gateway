@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"errors"
+	"math"
 	"math/big"
 	"strings"
 	"testing"
@@ -31,6 +33,7 @@ func TestMoneyAndPaymentState(t *testing.T) {
 		{50, 0, false, false, "underpaid"},
 		{100, 0, false, false, "confirming"},
 		{100, 100, false, false, "paid"},
+		{100, 0, false, true, "reorged"},
 		{0, 0, false, true, "reorged"},
 	}
 	for _, test := range cases {
@@ -38,6 +41,27 @@ func TestMoneyAndPaymentState(t *testing.T) {
 		if got != test.want {
 			t.Fatalf("deriveStatus() = %q, want %q", got, test.want)
 		}
+	}
+}
+
+func TestAmountBoundaries(t *testing.T) {
+	maxUint256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	if amount, units, err := parseAmount(maxUint256.String(), 0); err != nil || amount != maxUint256.String() || units.Cmp(maxUint256) != 0 {
+		t.Fatalf("maximum uint256 amount was rejected: %q %v %v", amount, units, err)
+	}
+	tooLarge := new(big.Int).Add(maxUint256, big.NewInt(1))
+	if _, _, err := parseAmount(tooLarge.String(), 0); err == nil {
+		t.Fatal("amount above uint256 was accepted")
+	}
+
+	invalid := []string{"", "0", "-1", ".1", "1.", "1e3", "+1", "1..0"}
+	for _, value := range invalid {
+		if _, _, err := parseAmount(value, 6); err == nil {
+			t.Fatalf("invalid amount %q was accepted", value)
+		}
+	}
+	if amount, units, err := parseAmount(" 000.000001 ", 6); err != nil || amount != "0.000001" || units.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("smallest token unit did not round trip: %q %v %v", amount, units, err)
 	}
 }
 
@@ -116,15 +140,24 @@ func TestSweepTransactionEncodingAndThreshold(t *testing.T) {
 	if _, _, _, err := validateSignedSweepTransaction(network, deposit.Hex(), token.Hex(), big.NewInt(1e16), "sweep", wrongTreasurySweep); err == nil {
 		t.Fatal("token sweep to a non-treasury address was accepted")
 	}
+	dirtyAddressData := encodeTokenTransfer(treasury, amount)
+	dirtyAddressData[4] = 1
+	dirtyAddressSweep, _, err := signLegacyTransaction(8453, 9, token, big.NewInt(0), 60000, big.NewInt(1_000_000), dirtyAddressData, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := validateSignedSweepTransaction(network, deposit.Hex(), token.Hex(), big.NewInt(1e16), "sweep", dirtyAddressSweep); err == nil {
+		t.Fatal("non-canonical ERC-20 address calldata was accepted")
+	}
 
-	contractSweep, _, err := signLegacyTransaction(8453, 9, treasury, amount, 75000, big.NewInt(1_000_000), nil, key)
+	contractSweep, _, err := signLegacyTransaction(8453, 10, treasury, amount, 75000, big.NewInt(1_000_000), nil, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := validateSignedSweepTransaction(network, deposit.Hex(), "", big.NewInt(1e16), "sweep", contractSweep); err != nil {
 		t.Fatalf("buffered native contract-wallet sweep was rejected: %v", err)
 	}
-	oversizedSweep, _, err := signLegacyTransaction(8453, 10, treasury, amount, maxNativeSweepGas+1, big.NewInt(1_000_000), nil, key)
+	oversizedSweep, _, err := signLegacyTransaction(8453, 11, treasury, amount, maxNativeSweepGas+1, big.NewInt(1_000_000), nil, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +199,59 @@ func TestSweepRetryAndFundingLimits(t *testing.T) {
 	if !requiresGasKey(Network{Tokens: map[string]TokenConfig{"USDC": {}}}) {
 		t.Fatal("token network did not require a gas key")
 	}
+	if _, err := gasFundingUsed([]sweepTransactionPayload{{Kind: "gas", Status: "prepared", AmountUnits: "0"}}); err == nil {
+		t.Fatal("zero gas funding history was accepted")
+	}
+	if _, err := gasFundingUsed([]sweepTransactionPayload{{Kind: "gas", Status: "submitted", AmountUnits: "not-a-number"}}); err == nil {
+		t.Fatal("malformed gas funding history was accepted")
+	}
+	if bufferedUint64(math.MaxUint64, 20000) != math.MaxUint64 {
+		t.Fatal("gas buffering overflowed instead of saturating")
+	}
+	if !knownTransactionError(errors.New("already known")) || !knownTransactionError(errors.New("known transaction: 0x1234")) {
+		t.Fatal("known transaction errors were not recognized")
+	}
+	if knownTransactionError(errors.New("unknown transaction type")) {
+		t.Fatal("unknown transaction error was mistaken for an idempotent broadcast")
+	}
+}
+
+func FuzzParseAmountRoundTrip(f *testing.F) {
+	for _, seed := range []string{"1", "0.000001", "0010.250000", "-1", "1e18", strings.Repeat("9", 78)} {
+		f.Add(seed, uint8(6))
+	}
+	f.Fuzz(func(t *testing.T, value string, decimals uint8) {
+		normalized, units, err := parseAmount(value, decimals)
+		if err != nil {
+			return
+		}
+		if units.Sign() <= 0 || units.BitLen() > 256 {
+			t.Fatalf("accepted units outside uint256: %s", units)
+		}
+		reparsed, reparsedUnits, err := parseAmount(normalized, decimals)
+		if err != nil || reparsed != normalized || reparsedUnits.Cmp(units) != 0 {
+			t.Fatalf("normalized amount did not round trip: %q -> %q/%s: %v", normalized, reparsed, reparsedUnits, err)
+		}
+	})
+}
+
+func FuzzDecodeTokenTransferCanonical(f *testing.F) {
+	treasury := common.HexToAddress("0x1234567890123456789012345678901234567890")
+	f.Add(encodeTokenTransfer(treasury, big.NewInt(123)))
+	f.Add([]byte{})
+	f.Add(bytesOf(68, 1))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		to, amount, ok := decodeTokenTransfer(data)
+		if !ok {
+			return
+		}
+		if len(data) != 68 {
+			t.Fatal("accepted malformed token calldata")
+		}
+		if string(encodeTokenTransfer(to, amount)) != string(data) {
+			t.Fatal("accepted non-canonical token calldata")
+		}
+	})
 }
 
 func bytesOf(size int, value byte) []byte {

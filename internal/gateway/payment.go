@@ -36,6 +36,9 @@ func parseAmount(value string, decimals uint8) (string, *big.Int, error) {
 	if units.Sign() <= 0 {
 		return "", nil, errors.New("amount must be greater than zero")
 	}
+	if units.BitLen() > 256 {
+		return "", nil, errors.New("amount exceeds uint256")
+	}
 	return formatUnits(units, decimals), units, nil
 }
 
@@ -87,11 +90,11 @@ func deriveStatus(received, confirmed, expected *big.Int, expired, reorged bool)
 	if confirmed.Cmp(expected) >= 0 {
 		return "paid"
 	}
-	if received.Cmp(expected) >= 0 {
-		return "confirming"
-	}
 	if reorged {
 		return "reorged"
+	}
+	if received.Cmp(expected) >= 0 {
+		return "confirming"
 	}
 	if received.Sign() > 0 {
 		return "underpaid"

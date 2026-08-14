@@ -35,10 +35,17 @@ func syncSweepJob(app core.App, intent *core.Record, observedUnits string, eligi
 	}
 
 	if !eligible {
+		changed := job.GetString("observed_units") != observedUnits
+		if changed {
+			job.Set("observed_units", observedUnits)
+		}
 		if !terminalSweepStatus(job.GetString("status")) && job.GetString("status") != "paused" {
 			job.Set("status", "paused")
 			job.Set("lock_owner", "")
 			job.Set("locked_until", 0)
+			changed = true
+		}
+		if changed {
 			return app.Save(job)
 		}
 		return nil

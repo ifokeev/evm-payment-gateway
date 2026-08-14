@@ -606,6 +606,11 @@ func decodeTokenTransfer(data []byte) (common.Address, *big.Int, bool) {
 	if len(data) != 68 || !bytes.Equal(data[:4], transferSelector) {
 		return common.Address{}, nil, false
 	}
+	for _, value := range data[4:16] {
+		if value != 0 {
+			return common.Address{}, nil, false
+		}
+	}
 	return common.BytesToAddress(data[4:36]), new(big.Int).SetBytes(data[36:68]), true
 }
 
@@ -613,6 +618,9 @@ func bufferedUint64(value uint64, bps int64) uint64 {
 	result := new(big.Int).Mul(new(big.Int).SetUint64(value), big.NewInt(bps))
 	result.Add(result, big.NewInt(9999))
 	result.Div(result, big.NewInt(10000))
+	if !result.IsUint64() {
+		return ^uint64(0)
+	}
 	return result.Uint64()
 }
 
@@ -648,5 +656,9 @@ func gasFundingUsed(transactions []sweepTransactionPayload) (*big.Int, error) {
 
 func knownTransactionError(err error) bool {
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "already known") || strings.Contains(message, "known transaction")
+	if strings.Contains(message, "already known") {
+		return true
+	}
+	index := strings.Index(message, "known transaction")
+	return index == 0 || index > 0 && (message[index-1] < 'a' || message[index-1] > 'z')
 }

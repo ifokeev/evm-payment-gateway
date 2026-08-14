@@ -115,13 +115,13 @@ func loadNetworks() (map[string]Network, error) {
 		network.NativeAsset = strings.ToUpper(network.NativeAsset)
 		network.ExplorerURL = strings.TrimSuffix(network.ExplorerURL, "/")
 		network.TreasuryAddress = os.Getenv(network.TreasuryAddressEnv)
-		if !common.IsHexAddress(network.TreasuryAddress) {
+		if !common.IsHexAddress(network.TreasuryAddress) || common.HexToAddress(network.TreasuryAddress) == (common.Address{}) {
 			return nil, fmt.Errorf("invalid or missing treasury address for %s (%s)", name, network.TreasuryAddressEnv)
 		}
 		network.TreasuryAddress = common.HexToAddress(network.TreasuryAddress).Hex()
 		cleanTokens := make(map[string]TokenConfig, len(network.Tokens))
 		for symbol, token := range network.Tokens {
-			if !common.IsHexAddress(token.Address) {
+			if !common.IsHexAddress(token.Address) || common.HexToAddress(token.Address) == (common.Address{}) {
 				return nil, fmt.Errorf("invalid token address for %s/%s", name, symbol)
 			}
 			token.Address = common.HexToAddress(token.Address).Hex()

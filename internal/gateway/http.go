@@ -3,9 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -71,13 +69,8 @@ func (s *Service) createIntentRoute(event *core.RequestEvent) error {
 		return apis.NewBadRequestError("Idempotency-Key is required and must be at most 200 characters", nil)
 	}
 	var request createRequest
-	decoder := json.NewDecoder(io.LimitReader(event.Request.Body, 64<<10))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeLimitedJSON(event.Request, &request, 64<<10); err != nil {
 		return apis.NewBadRequestError("invalid JSON body", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return apis.NewBadRequestError("request body must contain one JSON object", nil)
 	}
 	ctx, cancel := contextWithTimeout(event.Request.Context())
 	defer cancel()
