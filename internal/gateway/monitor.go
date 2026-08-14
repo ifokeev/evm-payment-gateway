@@ -340,7 +340,7 @@ func (s *Service) rewind(chain string, fromBlock int64) (map[string]bool, error)
 	}
 	err = s.app.RunInTransaction(func(txApp core.App) error {
 		params := dbx.Params{"chain": chain, "block": fromBlock}
-		if _, err := txApp.DB().NewQuery("UPDATE sweep_jobs SET status = 'queued', next_attempt_at = {:now}, completed_at = 0 WHERE status = 'complete' AND id IN (SELECT sweep_job FROM sweep_transactions WHERE chain = {:chain} AND block_number >= {:block} AND status = 'confirmed')").Bind(dbx.Params{"chain": chain, "block": fromBlock, "now": time.Now().Unix()}).Execute(); err != nil {
+		if _, err := txApp.DB().NewQuery("UPDATE sweep_jobs SET status = 'queued', next_attempt_at = {:now}, completed_at = 0 WHERE status IN ('complete', 'external') AND id IN (SELECT sweep_job FROM sweep_transactions WHERE chain = {:chain} AND block_number >= {:block} AND status = 'confirmed')").Bind(dbx.Params{"chain": chain, "block": fromBlock, "now": time.Now().Unix()}).Execute(); err != nil {
 			return err
 		}
 		if _, err := txApp.DB().NewQuery("UPDATE sweep_transactions SET status = 'submitted', block_number = 0 WHERE chain = {:chain} AND block_number >= {:block} AND status = 'confirmed'").Bind(params).Execute(); err != nil {

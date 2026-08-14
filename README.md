@@ -124,14 +124,17 @@ sweep job. The separate `sweeper` process does the following:
 
 1. Derives the intent's child key and verifies it matches the deposit address.
 2. For ERC-20 payments, estimates the transfer cost and sends only the missing
-   ETH or BNB from a capped gas wallet.
+   ETH or BNB from a gas wallet with a cumulative per-job cap.
 3. Saves the signed raw transaction before broadcasting it.
 4. Waits for the funding transaction, sweeps the balance to the allowlisted
    treasury, and waits for the chain's configured confirmations.
 5. Reconciles receipts and balances after every restart or retry.
 
-Native payments pay their own fee and need no gas-wallet funding. Base sweeps
-also include the chain's L1 security fee using the Base GasPriceOracle upper
+Native payments pay their own fee and need no gas-wallet funding. Native
+treasury transfers use buffered gas estimation, so contract wallets are
+supported without repeatedly burning 21,000-gas reverts. A temporarily
+uneconomical native balance stays queued; post-sweep dust is completed. Base
+sweeps also include the chain's L1 security fee using the Base GasPriceOracle upper
 bound described in [Base's fee documentation](https://docs.base.org/base-chain/network-information/network-fees).
 A small native residue can remain after an ERC-20 sweep because unused
 gas is refunded and may itself cost more to transfer than it is worth.
@@ -141,6 +144,11 @@ immediately while expired token underpayments sweep only when they meet
 `SWEEPER_MIN_TOKEN_PAYMENT_BPS` of the invoice. Native underpayments sweep after
 expiry when their balance exceeds the transfer fee. Run one sweeper replica;
 horizontal scaling requires coordinated gas-wallet nonce allocation.
+
+On upgrades from a watch-only deployment, a confirmed job whose deposit address
+is already empty is recorded as `external` instead of retried forever. This
+means the balance was consolidated outside the gateway and remains visible in
+sweep status history.
 
 ## Configuration
 
@@ -166,9 +174,11 @@ list; Ethereum USDT uses Tether's published ERC-20 contract.
 | `PAYMENT_GRACE_SECONDS` | `60` | Block timestamp grace after expiry. |
 | `REORG_HISTORY_BLOCKS` | `256` | Recent canonical block hashes retained. |
 | `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | `5000` | Minimum expired token payment ratio eligible for automatic recovery. |
-| `SWEEPER_MAX_GAS_FUNDING_WEI` | `10000000000000000` | Maximum native top-up per sweep. |
+| `SWEEPER_MAX_GAS_FUNDING_WEI` | `10000000000000000` | Cumulative native top-up limit per sweep job. |
 
-The sweeper-only file contains:
+Compose gives the sweeper only the allowlisted non-payment values from `.env`;
+`PAYMENT_API_KEY` and `PAYMENT_WEBHOOK_SECRET` are never injected into that
+container. The sweeper-only file contains:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |

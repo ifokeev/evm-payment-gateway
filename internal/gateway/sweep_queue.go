@@ -35,7 +35,7 @@ func syncSweepJob(app core.App, intent *core.Record, observedUnits string, eligi
 	}
 
 	if !eligible {
-		if job.GetString("status") != "complete" && job.GetString("status") != "paused" {
+		if !terminalSweepStatus(job.GetString("status")) && job.GetString("status") != "paused" {
 			job.Set("status", "paused")
 			job.Set("lock_owner", "")
 			job.Set("locked_until", 0)
@@ -49,7 +49,7 @@ func syncSweepJob(app core.App, intent *core.Record, observedUnits string, eligi
 	if changed {
 		job.Set("observed_units", observedUnits)
 	}
-	if job.GetString("status") == "paused" || (job.GetString("status") == "complete" && previous != observedUnits) {
+	if job.GetString("status") == "paused" || (terminalSweepStatus(job.GetString("status")) && previous != observedUnits) {
 		job.Set("status", "queued")
 		job.Set("next_attempt_at", time.Now().Unix())
 		job.Set("completed_at", 0)
@@ -59,4 +59,8 @@ func syncSweepJob(app core.App, intent *core.Record, observedUnits string, eligi
 		return nil
 	}
 	return app.Save(job)
+}
+
+func terminalSweepStatus(status string) bool {
+	return status == "complete" || status == "external"
 }

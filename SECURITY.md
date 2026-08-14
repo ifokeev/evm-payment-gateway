@@ -10,6 +10,7 @@ a seed phrase, xprv, or gas-wallet private key.
 The separate sweeper container needs the matching account xprv and per-network
 gas-wallet keys. Use a wallet created only for this gateway, restrict access to
 the internal sweeper API at the reverse proxy, keep little native currency in
-each gas wallet, and never commit `.env` or `.sweeper.env`. Run one sweeper
-replica unless gas-wallet nonce allocation is coordinated outside this
-application.
+each gas wallet, and never commit `.env` or `.sweeper.env`. The Compose service
+intentionally does not receive `PAYMENT_API_KEY` or `PAYMENT_WEBHOOK_SECRET`.
+Run one sweeper replica unless gas-wallet nonce allocation is coordinated
+outside this application.

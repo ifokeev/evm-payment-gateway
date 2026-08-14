@@ -116,6 +116,56 @@ func TestSweepTransactionEncodingAndThreshold(t *testing.T) {
 	if _, _, _, err := validateSignedSweepTransaction(network, deposit.Hex(), token.Hex(), big.NewInt(1e16), "sweep", wrongTreasurySweep); err == nil {
 		t.Fatal("token sweep to a non-treasury address was accepted")
 	}
+
+	contractSweep, _, err := signLegacyTransaction(8453, 9, treasury, amount, 75000, big.NewInt(1_000_000), nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := validateSignedSweepTransaction(network, deposit.Hex(), "", big.NewInt(1e16), "sweep", contractSweep); err != nil {
+		t.Fatalf("buffered native contract-wallet sweep was rejected: %v", err)
+	}
+	oversizedSweep, _, err := signLegacyTransaction(8453, 10, treasury, amount, maxNativeSweepGas+1, big.NewInt(1_000_000), nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := validateSignedSweepTransaction(network, deposit.Hex(), "", big.NewInt(1e16), "sweep", oversizedSweep); err == nil {
+		t.Fatal("native sweep above the gas safety ceiling was accepted")
+	}
+}
+
+func TestSweepRetryAndFundingLimits(t *testing.T) {
+	historical := zeroBalanceOutcome(false)
+	if !historical.External || historical.Complete {
+		t.Fatal("historical zero balance was not classified as externally swept")
+	}
+	confirmed := zeroBalanceOutcome(true)
+	if !confirmed.Complete || confirmed.External {
+		t.Fatal("confirmed zero balance was not completed")
+	}
+	feeSpike := nativeFeeOutcome(false, big.NewInt(100))
+	if feeSpike.Complete || feeSpike.External || feeSpike.DelaySeconds == 0 {
+		t.Fatal("initial native balance was stranded during a transient fee spike")
+	}
+	postSweepDust := nativeFeeOutcome(true, big.NewInt(100))
+	if !postSweepDust.Complete {
+		t.Fatal("post-sweep native dust was not completed")
+	}
+
+	used, err := gasFundingUsed([]sweepTransactionPayload{
+		{Kind: "gas", Status: "confirmed", AmountUnits: "40"},
+		{Kind: "gas", Status: "submitted", AmountUnits: "30"},
+		{Kind: "gas", Status: "failed", AmountUnits: "1000"},
+		{Kind: "sweep", Status: "confirmed", AmountUnits: "500"},
+	})
+	if err != nil || used.Cmp(big.NewInt(70)) != 0 {
+		t.Fatalf("cumulative gas funding is wrong: %v %v", used, err)
+	}
+	if requiresGasKey(Network{}) {
+		t.Fatal("native-only network unexpectedly requires a gas key")
+	}
+	if !requiresGasKey(Network{Tokens: map[string]TokenConfig{"USDC": {}}}) {
+		t.Fatal("token network did not require a gas key")
+	}
 }
 
 func bytesOf(size int, value byte) []byte {

@@ -37,6 +37,8 @@ var (
 	baseGasOracle      = common.HexToAddress("0x420000000000000000000000000000000000000F")
 )
 
+const maxNativeSweepGas = uint64(1_000_000)
+
 type sweeperConfig struct {
 	GatewayURL   string
 	APIKey       string
@@ -61,6 +63,7 @@ type automaticSweeper struct {
 
 type sweepOutcome struct {
 	Complete       bool
+	External       bool
 	RemainingUnits string
 	DelaySeconds   int
 }
@@ -85,10 +88,6 @@ func RegisterSweeperCommand(root *cobra.Command) {
 }
 
 func loadSweeperConfig() (sweeperConfig, error) {
-	base, err := LoadConfig()
-	if err != nil {
-		return sweeperConfig{}, err
-	}
 	gatewayURL := strings.TrimSuffix(os.Getenv("GATEWAY_URL"), "/")
 	parsedURL, err := url.Parse(gatewayURL)
 	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
@@ -98,8 +97,16 @@ func loadSweeperConfig() (sweeperConfig, error) {
 	if err != nil || !root.IsPrivate {
 		return sweeperConfig{}, errors.New("DEPOSIT_XPRV must be the private counterpart of DEPOSIT_XPUB")
 	}
-	if root.PublicKey().B58Serialize() != base.DepositXPub {
+	if root.PublicKey().B58Serialize() != os.Getenv("DEPOSIT_XPUB") {
 		return sweeperConfig{}, errors.New("DEPOSIT_XPRV does not match DEPOSIT_XPUB")
+	}
+	apiKey := os.Getenv("SWEEPER_API_KEY")
+	if len(apiKey) < 24 {
+		return sweeperConfig{}, errors.New("SWEEPER_API_KEY must be at least 24 characters")
+	}
+	maxGasWei, err := envBigInt("SWEEPER_MAX_GAS_FUNDING_WEI", "10000000000000000")
+	if err != nil {
+		return sweeperConfig{}, err
 	}
 	bufferBPS := envInt("SWEEPER_GAS_BUFFER_BPS", 12000)
 	pollSeconds := envInt("SWEEPER_POLL_INTERVAL_SECONDS", 5)
@@ -107,12 +114,19 @@ func loadSweeperConfig() (sweeperConfig, error) {
 		return sweeperConfig{}, errors.New("invalid sweeper gas buffer or poll interval")
 	}
 
-	networks := make(map[string]*sweeperNetwork, len(base.Networks))
-	for name, network := range base.Networks {
-		keyText := strings.TrimPrefix(strings.TrimSpace(os.Getenv(network.GasPrivateKeyEnv)), "0x")
-		gasKey, err := crypto.HexToECDSA(keyText)
-		if err != nil {
-			return sweeperConfig{}, fmt.Errorf("invalid or missing gas private key for %s (%s)", name, network.GasPrivateKeyEnv)
+	configuredNetworks, err := loadNetworks()
+	if err != nil {
+		return sweeperConfig{}, err
+	}
+	networks := make(map[string]*sweeperNetwork, len(configuredNetworks))
+	for name, network := range configuredNetworks {
+		var gasKey *ecdsa.PrivateKey
+		if requiresGasKey(network) {
+			keyText := strings.TrimPrefix(strings.TrimSpace(os.Getenv(network.GasPrivateKeyEnv)), "0x")
+			gasKey, err = crypto.HexToECDSA(keyText)
+			if err != nil {
+				return sweeperConfig{}, fmt.Errorf("invalid or missing gas private key for %s (%s)", name, network.GasPrivateKeyEnv)
+			}
 		}
 		client, err := ethclient.Dial(network.RPCURL)
 		if err != nil {
@@ -128,9 +142,9 @@ func loadSweeperConfig() (sweeperConfig, error) {
 		networks[name] = &sweeperNetwork{Network: network, Client: client, GasKey: gasKey}
 	}
 	return sweeperConfig{
-		GatewayURL: gatewayURL, APIKey: base.SweeperAPIKey, Root: root,
+		GatewayURL: gatewayURL, APIKey: apiKey, Root: root,
 		PollInterval: time.Duration(pollSeconds) * time.Second,
-		GasBufferBPS: int64(bufferBPS), MaxGasWei: new(big.Int).Set(base.SweeperMaxGasWei), Networks: networks,
+		GasBufferBPS: int64(bufferBPS), MaxGasWei: maxGasWei, Networks: networks,
 	}, nil
 }
 
@@ -227,7 +241,7 @@ func (s *automaticSweeper) processNative(ctx context.Context, job sweepJobPayloa
 		return sweepOutcome{}, err
 	}
 	if balance.Sign() == 0 {
-		return sweepOutcome{Complete: confirmedSweep, RemainingUnits: "0", DelaySeconds: 30}, nil
+		return zeroBalanceOutcome(confirmedSweep), nil
 	}
 	gasPrice, err := network.Client.SuggestGasPrice(ctx)
 	if err != nil {
@@ -237,25 +251,39 @@ func (s *automaticSweeper) processNative(ctx context.Context, job sweepJobPayloa
 	if err != nil {
 		return sweepOutcome{}, err
 	}
-	executionFee := new(big.Int).Mul(big.NewInt(21000), gasPrice)
-	if balance.Cmp(executionFee) <= 0 {
-		return sweepOutcome{Complete: true, RemainingUnits: balance.String()}, nil
+	value := big.NewInt(1)
+	gasLimit := uint64(21000)
+	var transaction *types.Transaction
+	var raw []byte
+	for range 2 {
+		estimatedGas, err := network.Client.EstimateGas(ctx, ethereum.CallMsg{From: deposit, To: &treasury, Value: value})
+		if err != nil {
+			return sweepOutcome{}, fmt.Errorf("estimate native treasury transfer gas: %w", err)
+		}
+		gasLimit = bufferedUint64(estimatedGas, s.config.GasBufferBPS)
+		if gasLimit < 21000 || gasLimit > maxNativeSweepGas {
+			return sweepOutcome{}, fmt.Errorf("estimated native treasury transfer gas %d is outside the allowed range", gasLimit)
+		}
+		executionFee := new(big.Int).Mul(new(big.Int).SetUint64(gasLimit), gasPrice)
+		if balance.Cmp(executionFee) <= 0 {
+			return nativeFeeOutcome(confirmedSweep, balance), nil
+		}
+		value.Sub(balance, executionFee)
+		transaction, raw, err = signLegacyTransaction(network.ChainID, nonce, treasury, value, gasLimit, gasPrice, nil, key)
+		if err != nil {
+			return sweepOutcome{}, err
+		}
+		l1Fee, err := network.l1FeeUpperBound(ctx, len(raw)+16)
+		if err != nil {
+			return sweepOutcome{}, err
+		}
+		totalFee := new(big.Int).Add(executionFee, l1Fee)
+		if balance.Cmp(totalFee) <= 0 {
+			return nativeFeeOutcome(confirmedSweep, balance), nil
+		}
+		value.Sub(balance, totalFee)
 	}
-	value := new(big.Int).Sub(balance, executionFee)
-	_, raw, err := signLegacyTransaction(network.ChainID, nonce, treasury, value, 21000, gasPrice, nil, key)
-	if err != nil {
-		return sweepOutcome{}, err
-	}
-	l1Fee, err := network.l1FeeUpperBound(ctx, len(raw)+16)
-	if err != nil {
-		return sweepOutcome{}, err
-	}
-	totalFee := new(big.Int).Add(executionFee, l1Fee)
-	if balance.Cmp(totalFee) <= 0 {
-		return sweepOutcome{Complete: true, RemainingUnits: balance.String()}, nil
-	}
-	value.Sub(balance, totalFee)
-	transaction, raw, err := signLegacyTransaction(network.ChainID, nonce, treasury, value, 21000, gasPrice, nil, key)
+	transaction, raw, err = signLegacyTransaction(network.ChainID, nonce, treasury, value, gasLimit, gasPrice, nil, key)
 	if err != nil {
 		return sweepOutcome{}, err
 	}
@@ -280,7 +308,7 @@ func (s *automaticSweeper) processToken(ctx context.Context, job sweepJobPayload
 			}
 			return sweepOutcome{Complete: true, RemainingUnits: remaining}, nil
 		}
-		return sweepOutcome{RemainingUnits: "0", DelaySeconds: 30}, errors.New("confirmed deposit balance is not currently available")
+		return zeroBalanceOutcome(false), nil
 	}
 	data := encodeTokenTransfer(treasury, balance)
 	estimatedGas, err := network.Client.EstimateGas(ctx, ethereum.CallMsg{From: deposit, To: &token, Data: data})
@@ -311,8 +339,16 @@ func (s *automaticSweeper) processToken(ctx context.Context, job sweepJobPayload
 	}
 	if nativeBalance.Cmp(required) < 0 {
 		shortfall := new(big.Int).Sub(required, nativeBalance)
-		if shortfall.Cmp(s.config.MaxGasWei) > 0 {
-			return sweepOutcome{}, fmt.Errorf("required gas funding %s exceeds configured maximum", shortfall)
+		used, err := gasFundingUsed(job.SweepTransactions)
+		if err != nil {
+			return sweepOutcome{}, err
+		}
+		remainingAllowance := new(big.Int).Sub(s.config.MaxGasWei, used)
+		if remainingAllowance.Sign() < 0 {
+			remainingAllowance.SetInt64(0)
+		}
+		if remainingAllowance.Sign() == 0 || shortfall.Cmp(remainingAllowance) > 0 {
+			return sweepOutcome{}, fmt.Errorf("required gas funding %s exceeds remaining sweep allowance %s", shortfall, remainingAllowance)
 		}
 		if err := s.fundGas(ctx, job.ID, network, deposit, shortfall); err != nil {
 			return sweepOutcome{}, err
@@ -326,6 +362,9 @@ func (s *automaticSweeper) processToken(ctx context.Context, job sweepJobPayload
 }
 
 func (s *automaticSweeper) fundGas(ctx context.Context, jobID string, network *sweeperNetwork, deposit common.Address, amount *big.Int) error {
+	if network.GasKey == nil {
+		return errors.New("gas wallet is not configured for this network")
+	}
 	from := crypto.PubkeyToAddress(network.GasKey.PublicKey)
 	nonce, err := network.Client.PendingNonceAt(ctx, from)
 	if err != nil {
@@ -454,6 +493,8 @@ func (s *automaticSweeper) release(ctx context.Context, id string, outcome sweep
 	status := "queued"
 	if outcome.Complete {
 		status = "complete"
+	} else if outcome.External {
+		status = "external"
 	}
 	errorText := ""
 	if processErr != nil {
@@ -573,6 +614,36 @@ func bufferedUint64(value uint64, bps int64) uint64 {
 	result.Add(result, big.NewInt(9999))
 	result.Div(result, big.NewInt(10000))
 	return result.Uint64()
+}
+
+func nativeFeeOutcome(confirmedSweep bool, balance *big.Int) sweepOutcome {
+	if confirmedSweep {
+		return sweepOutcome{Complete: true, RemainingUnits: balance.String()}
+	}
+	return sweepOutcome{RemainingUnits: balance.String(), DelaySeconds: 60}
+}
+
+func zeroBalanceOutcome(confirmedSweep bool) sweepOutcome {
+	return sweepOutcome{Complete: confirmedSweep, External: !confirmedSweep, RemainingUnits: "0"}
+}
+
+func requiresGasKey(network Network) bool {
+	return len(network.Tokens) > 0
+}
+
+func gasFundingUsed(transactions []sweepTransactionPayload) (*big.Int, error) {
+	total := new(big.Int)
+	for _, transaction := range transactions {
+		if transaction.Kind != "gas" || transaction.Status == "failed" {
+			continue
+		}
+		amount, ok := new(big.Int).SetString(transaction.AmountUnits, 10)
+		if !ok || amount.Sign() <= 0 {
+			return nil, errors.New("sweep history contains an invalid gas funding amount")
+		}
+		total.Add(total, amount)
+	}
+	return total, nil
 }
 
 func knownTransactionError(err error) bool {

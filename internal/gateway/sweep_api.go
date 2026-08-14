@@ -124,35 +124,69 @@ func (s *Service) registerSweepTransactionRoute(event *core.RequestEvent) error 
 		return apis.NewBadRequestError(err.Error(), nil)
 	}
 
-	existing, err := s.app.FindFirstRecordByFilter(
-		"sweep_transactions", "chain = {:chain} && tx_hash = {:hash}",
-		dbx.Params{"chain": job.GetString("chain"), "hash": transaction.Hash().Hex()},
-	)
-	if err == nil {
-		if existing.GetString("sweep_job") != job.Id || existing.GetString("kind") != request.Kind {
-			return apis.NewApiError(http.StatusConflict, "transaction already belongs to another sweep", nil)
+	var record *core.Record
+	created := false
+	err = s.app.RunInTransaction(func(txApp core.App) error {
+		existing, err := txApp.FindFirstRecordByFilter(
+			"sweep_transactions", "chain = {:chain} && tx_hash = {:hash}",
+			dbx.Params{"chain": job.GetString("chain"), "hash": transaction.Hash().Hex()},
+		)
+		if err == nil {
+			if existing.GetString("sweep_job") != job.Id || existing.GetString("kind") != request.Kind {
+				return apis.NewApiError(http.StatusConflict, "transaction already belongs to another sweep", nil)
+			}
+			record = existing
+			return nil
 		}
-		payload := s.sweepTransactionPayload(existing, true)
-		return event.JSON(http.StatusOK, payload)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	collection, err := s.app.FindCollectionByNameOrId("sweep_transactions")
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if request.Kind == "gas" {
+			records, err := txApp.FindRecordsByFilter(
+				"sweep_transactions", "sweep_job = {:id}", "", 0, 0, dbx.Params{"id": job.Id},
+			)
+			if err != nil {
+				return err
+			}
+			history := make([]sweepTransactionPayload, 0, len(records))
+			for _, prior := range records {
+				history = append(history, sweepTransactionPayload{
+					Kind: prior.GetString("kind"), Status: prior.GetString("status"), AmountUnits: prior.GetString("amount_units"),
+				})
+			}
+			used, err := gasFundingUsed(history)
+			if err != nil {
+				return err
+			}
+			if used.Add(used, amount).Cmp(s.config.SweeperMaxGasWei) > 0 {
+				return apis.NewBadRequestError("gas funding exceeds the sweep job limit", nil)
+			}
+		}
+		collection, err := txApp.FindCollectionByNameOrId("sweep_transactions")
+		if err != nil {
+			return err
+		}
+		record = core.NewRecord(collection)
+		record.Load(map[string]any{
+			"sweep_job": job.Id, "chain": job.GetString("chain"), "kind": request.Kind,
+			"tx_hash": transaction.Hash().Hex(), "raw_tx": "0x" + hex.EncodeToString(raw),
+			"from_address": from.Hex(), "to_address": to.Hex(), "amount_units": amount.String(),
+			"nonce": transaction.Nonce(), "status": "prepared",
+		})
+		if err := txApp.Save(record); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	record := core.NewRecord(collection)
-	record.Load(map[string]any{
-		"sweep_job": job.Id, "chain": job.GetString("chain"), "kind": request.Kind,
-		"tx_hash": transaction.Hash().Hex(), "raw_tx": "0x" + hex.EncodeToString(raw),
-		"from_address": from.Hex(), "to_address": to.Hex(), "amount_units": amount.String(),
-		"nonce": transaction.Nonce(), "status": "prepared",
-	})
-	if err := s.app.Save(record); err != nil {
-		return err
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
 	}
-	return event.JSON(http.StatusCreated, s.sweepTransactionPayload(record, true))
+	return event.JSON(status, s.sweepTransactionPayload(record, true))
 }
 
 func (s *Service) sweepTransactionResultRoute(event *core.RequestEvent) error {
@@ -200,8 +234,8 @@ func (s *Service) releaseSweepRoute(event *core.RequestEvent) error {
 	if err := decodeLimitedJSON(event.Request, &request); err != nil {
 		return apis.NewBadRequestError("invalid JSON body", err)
 	}
-	if request.Status != "queued" && request.Status != "complete" {
-		return apis.NewBadRequestError("status must be queued or complete", nil)
+	if request.Status != "queued" && request.Status != "complete" && request.Status != "external" {
+		return apis.NewBadRequestError("status must be queued, complete, or external", nil)
 	}
 	if value, ok := new(big.Int).SetString(request.RemainingUnits, 10); !ok || value.Sign() < 0 {
 		return apis.NewBadRequestError("remainingUnits must be a non-negative integer", nil)
@@ -212,7 +246,7 @@ func (s *Service) releaseSweepRoute(event *core.RequestEvent) error {
 	job.Set("last_error", truncate(request.Error, 1000))
 	job.Set("lock_owner", "")
 	job.Set("locked_until", 0)
-	if request.Status == "complete" {
+	if request.Status == "complete" || request.Status == "external" {
 		job.Set("completed_at", now)
 		job.Set("next_attempt_at", now)
 	} else {
@@ -279,7 +313,7 @@ func validateSignedSweepTransaction(network Network, depositAddress, tokenAddres
 			return common.Address{}, common.Address{}, nil, errors.New("sweep must be signed by the deposit address")
 		}
 		if tokenAddress == "" {
-			if to != treasury || len(transaction.Data()) != 0 || transaction.Gas() != 21000 || transaction.Value().Sign() <= 0 {
+			if to != treasury || len(transaction.Data()) != 0 || transaction.Gas() < 21000 || transaction.Gas() > maxNativeSweepGas || transaction.Value().Sign() <= 0 {
 				return common.Address{}, common.Address{}, nil, errors.New("invalid native sweep transaction")
 			}
 			return from, to, transaction.Value(), nil
@@ -300,7 +334,7 @@ func (s *Service) sweepJobPayload(job *core.Record, includeRaw bool) (sweepJobPa
 		return sweepJobPayload{}, err
 	}
 	network := s.config.Networks[job.GetString("chain")]
-	records, err := s.app.FindRecordsByFilter("sweep_transactions", "sweep_job = {:id}", "created", 1000, 0, dbx.Params{"id": job.Id})
+	records, err := s.app.FindRecordsByFilter("sweep_transactions", "sweep_job = {:id}", "created", 0, 0, dbx.Params{"id": job.Id})
 	if err != nil {
 		return sweepJobPayload{}, err
 	}

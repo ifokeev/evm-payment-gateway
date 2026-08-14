@@ -65,9 +65,9 @@ func LoadConfig() (Config, error) {
 	if len(cfg.APIKey) < 24 || len(cfg.WebhookSecret) < 24 || len(cfg.SweeperAPIKey) < 24 {
 		return cfg, errors.New("PAYMENT_API_KEY, PAYMENT_WEBHOOK_SECRET, and SWEEPER_API_KEY must be at least 24 characters")
 	}
-	maxGasWei, ok := new(big.Int).SetString(envString("SWEEPER_MAX_GAS_FUNDING_WEI", "10000000000000000"), 10)
-	if !ok || maxGasWei.Sign() <= 0 {
-		return cfg, errors.New("SWEEPER_MAX_GAS_FUNDING_WEI must be a positive integer")
+	maxGasWei, err := envBigInt("SWEEPER_MAX_GAS_FUNDING_WEI", "10000000000000000")
+	if err != nil {
+		return cfg, err
 	}
 	cfg.SweeperMaxGasWei = maxGasWei
 	if !strings.HasPrefix(cfg.DepositXPub, "xpub") {
@@ -80,19 +80,27 @@ func LoadConfig() (Config, error) {
 		return cfg, errors.New("invalid polling or expiry settings")
 	}
 
+	cfg.Networks, err = loadNetworks()
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func loadNetworks() (map[string]Network, error) {
 	file := os.Getenv("NETWORKS_FILE")
 	if file == "" {
 		file = "config/networks.json"
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return cfg, fmt.Errorf("read networks config: %w", err)
+		return nil, fmt.Errorf("read networks config: %w", err)
 	}
 	var networks map[string]Network
 	if err := json.Unmarshal(data, &networks); err != nil {
-		return cfg, fmt.Errorf("parse networks config: %w", err)
+		return nil, fmt.Errorf("parse networks config: %w", err)
 	}
-	cfg.Networks = make(map[string]Network)
+	enabled := make(map[string]Network)
 	for name, network := range networks {
 		if network.RPCURL == "" && network.RPCEnv != "" {
 			network.RPCURL = os.Getenv(network.RPCEnv)
@@ -101,31 +109,31 @@ func LoadConfig() (Config, error) {
 			continue
 		}
 		if network.ChainID < 1 || network.Confirmations < 1 || network.NativeAsset == "" {
-			return cfg, fmt.Errorf("invalid network %q", name)
+			return nil, fmt.Errorf("invalid network %q", name)
 		}
 		network.Name = name
 		network.NativeAsset = strings.ToUpper(network.NativeAsset)
 		network.ExplorerURL = strings.TrimSuffix(network.ExplorerURL, "/")
 		network.TreasuryAddress = os.Getenv(network.TreasuryAddressEnv)
 		if !common.IsHexAddress(network.TreasuryAddress) {
-			return cfg, fmt.Errorf("invalid or missing treasury address for %s (%s)", name, network.TreasuryAddressEnv)
+			return nil, fmt.Errorf("invalid or missing treasury address for %s (%s)", name, network.TreasuryAddressEnv)
 		}
 		network.TreasuryAddress = common.HexToAddress(network.TreasuryAddress).Hex()
 		cleanTokens := make(map[string]TokenConfig, len(network.Tokens))
 		for symbol, token := range network.Tokens {
 			if !common.IsHexAddress(token.Address) {
-				return cfg, fmt.Errorf("invalid token address for %s/%s", name, symbol)
+				return nil, fmt.Errorf("invalid token address for %s/%s", name, symbol)
 			}
 			token.Address = common.HexToAddress(token.Address).Hex()
 			cleanTokens[strings.ToUpper(symbol)] = token
 		}
 		network.Tokens = cleanTokens
-		cfg.Networks[name] = network
+		enabled[name] = network
 	}
-	if len(cfg.Networks) == 0 {
-		return cfg, errors.New("no networks enabled; set at least one configured RPC environment variable")
+	if len(enabled) == 0 {
+		return nil, errors.New("no networks enabled; set at least one configured RPC environment variable")
 	}
-	return cfg, nil
+	return enabled, nil
 }
 
 func envInt(name string, fallback int) int {
@@ -145,4 +153,12 @@ func envString(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBigInt(name, fallback string) (*big.Int, error) {
+	value, ok := new(big.Int).SetString(envString(name, fallback), 10)
+	if !ok || value.Sign() <= 0 {
+		return nil, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return value, nil
 }
