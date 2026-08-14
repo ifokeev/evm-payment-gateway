@@ -3,3 +3,10 @@
 pb_data/
 evm-payment-gateway
 *.sqlite*
+cloudflare/node_modules/
+cloudflare/.api.secrets
+cloudflare/.sweeper.secrets
+cloudflare/.dev.vars
+cloudflare/.wrangler/
+cloudflare/infra/.terraform/
+cloudflare/infra/*.tfstate*

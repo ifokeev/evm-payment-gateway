@@ -1,0 +1,48 @@
+{
+  "name": "evm-payment-gateway-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npm run typecheck && npm test && npm run deploy:dry-run",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:dry-run": "wrangler deploy --dry-run --config wrangler.api.jsonc --secrets-file .api.secrets.example && wrangler deploy --dry-run --config wrangler.sweeper.jsonc --secrets-file .sweeper.secrets.example",
+    "dev": "wrangler dev --config wrangler.api.jsonc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@scure/bip32": "2.3.0",
+    "uqr": "0.1.3",
+    "viem": "2.55.16"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@cloudflare/workers-types": "5.20260814.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.123.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "cloudflare": {
+    "bindings": {
+      "PAYMENT_API_KEY": {
+        "description": "Random server-to-server API key with at least 24 characters."
+      },
+      "DEPOSIT_XPUB": {
+        "description": "Watch-only BIP-32 account xpub used to derive deposit addresses."
+      },
+      "NETWORKS_JSON": {
+        "description": "JSON array of enabled EVM networks; see .dev.vars.example."
+      },
+      "PAYMENT_WEBHOOK_URL": {
+        "description": "Absolute HTTPS URL that receives payment events."
+      },
+      "PAYMENT_WEBHOOK_SECRET": {
+        "description": "Random HMAC signing key with at least 24 characters."
+      }
+    }
+  }
+}

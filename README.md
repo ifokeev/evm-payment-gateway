@@ -1,5 +1,10 @@
 # EVM Payment Gateway
 
+> **Cloudflare-native rewrite:** the no-server Workers + D1 + Queues edition is
+> in [cloudflare/](cloudflare/). It is now the deployment target; the Go and
+> PocketBase implementation remains temporarily as a behavioral reference while
+> parity is verified.
+
 **A small, self-hosted crypto payment gateway built with Go and PocketBase.**
 
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white)
