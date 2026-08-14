@@ -1,4 +1,5 @@
-.env
-pb_data/
-evm-payment-gateway
-*.sqlite*
+node_modules/
+.wrangler/
+.api.secrets
+.sweeper.secrets
+.dev.vars

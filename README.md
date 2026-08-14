@@ -1,168 +1,146 @@
-# EVM Payment Gateway
+# Cloudflare-native EVM payment gateway
 
-**A small, self-hosted crypto payment gateway built with Go and PocketBase.**
+The gateway uses two Cloudflare Workers, D1, Queues, and a one-minute Cron
+trigger. There is no VM, container, persistent disk, or polling daemon to
+operate.
 
-![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white)
-![PocketBase](https://img.shields.io/badge/PocketBase-0.39-8996FF?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+The public Worker creates and polls payment intents, monitors canonical EVM
+blocks, stores history in D1, and signs webhooks. It has only the watch-only
+xpub. The private queue Worker has the xprv and gas-wallet keys; after a payment
+is confirmed, it transfers the complete deposit balance to that network's
+configured `treasuryAddress` (your main wallet).
 
-EVM Payment Gateway creates payment intents, returns exact amounts with EIP-681
-deep links and QR codes, watches EVM chains, waits for confirmations, and sends
-signed, retryable webhooks. The application that sells a product remains the
-authority for granting access, credits, or subscriptions.
+## Deploy
 
-## Features
-
-- Base, Ethereum, and BNB Chain through configurable mainnet/testnet RPCs
-- Native assets and configured ERC-20 tokens such as USDC and USDT
-- Unique deposit address per intent from a watch-only xpub
-- Exact atomic-unit accounting, partial/underpayment detection, and expiry
-- Confirmation tracking, canonical-chain checks, and reorg events
-- Persistent transaction and webhook delivery history in PocketBase
-- Idempotent intent creation and webhook event IDs
-- One Go binary with PocketBase's private admin dashboard
-
-## Getting started
-
-Requirements: Docker, an EVM RPC URL, and a watch-only account xpub at
-`m/44'/60'/0'/0`.
+Requirements: Node.js 22+, Cloudflare Workers Paid, an EVM RPC URL, and a
+dedicated BIP-32 account xpub/xprv pair at `m/44'/60'/0'/0`. D1 and Queues have
+free allowances, but the Free plan's 10 ms Worker CPU limit is too small for a
+meaningful scanner-and-sweeper test.
 
 ```bash
-cp .env.example .env
-# Set PAYMENT_API_KEY, PAYMENT_WEBHOOK_*, DEPOSIT_XPUB, and one RPC URL.
-docker compose up --build
+npm ci
+cp .api.secrets.example .api.secrets
+cp .sweeper.secrets.example .sweeper.secrets
+# Edit both files. Keep the API and sweeper files separate.
+npx wrangler login
+npm run deploy
 ```
 
-Create the first PocketBase superuser in a separate process:
+`npm run deploy` deploys the public Worker first, lets Wrangler provision D1
+and the Queue, applies D1 migrations, and then deploys the isolated sweeper.
+The API URL is printed by Wrangler. Re-running the same command upgrades the
+deployment without creating new stateful resources.
 
-```bash
-docker compose exec gateway ./evm-payment-gateway superuser create admin@example.com 'change-this-password' --dir=/pb_data
-```
+Use `wrangler dev --config wrangler.api.jsonc --env-file .api.secrets` for local
+API development. The `secrets.required` allowlists ensure that payment API and
+webhook credentials are never injected into the sweeper Worker.
 
-The payment API listens on `http://localhost:8090`; the PocketBase dashboard is
-at `http://localhost:8090/_/`. Put both behind TLS and restrict dashboard access
-before a production deployment.
+## Treasury flow
 
-## Create a payment intent
+Each intent receives a unique child deposit address. After the configured
+confirmations:
 
-```bash
-curl -X POST http://localhost:8090/api/payments/v1/intents \
-  -H "Authorization: Bearer $PAYMENT_API_KEY" \
-  -H "Idempotency-Key: invoice_2026_08_account_123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "kind": "subscription_invoice",
-    "externalId": "invoice_2026_08_account_123",
-    "chain": "base-sepolia",
-    "asset": "USDC",
-    "amount": "19.00",
-    "expiresInSeconds": 1800,
-    "metadata": { "accountId": "account_123" }
-  }'
-```
+1. Native ETH/BNB deposits pay their own transfer fee and are swept to
+   `treasuryAddress`. Gas is estimated, so a contract treasury such as a Safe is
+   supported.
+2. USDC/USDT deposits receive only the missing ETH/BNB from the low-balance gas
+   wallet, then the entire token balance is swept to `treasuryAddress`.
+3. The API validates every signed raw sweep against the chain, token, deposit
+   address, treasury, and cumulative gas-funding cap before retaining it.
 
-The response contains `expectedAmount`, `expectedUnits`, `depositAddress`,
-`paymentUri`, `qrCodeDataUrl`, `status`, expiry, and transaction history.
-
-Poll an intent or its transactions:
-
-```text
-GET /api/payments/v1/intents/{id}
-GET /api/payments/v1/intents/{id}/transactions
-GET /api/payments/v1/health
-```
-
-Supported states:
-
-| Status | Meaning |
-| --- | --- |
-| `pending` | No on-time payment has been observed. |
-| `underpaid` | On-time canonical transfers total less than the expected amount. |
-| `confirming` | The amount is sufficient but confirmations are still pending. |
-| `paid` | The confirmed canonical total meets or exceeds the expected amount. |
-| `expired` | The intent expired without an on-time payment. |
-| `reorged` | A previously paid transfer left the canonical chain. |
-
-Late and orphaned transfers remain in transaction history but never count
-toward payment. Overpayments count as paid and preserve the full received total.
-
-## Webhooks
-
-The gateway emits `payment.succeeded` and `payment.reorged`. Failed deliveries
-retry with exponential backoff. Every retry keeps the same `Webhook-Id` and raw
-JSON body.
-
-Headers:
-
-```text
-Webhook-Id: evt_...
-Webhook-Timestamp: 1786720000
-Webhook-Signature: v1,<hex-hmac-sha256>
-```
-
-Verify the signature over `<timestamp>.<raw request body>` using
-`PAYMENT_WEBHOOK_SECRET`, reject stale timestamps, and store `Webhook-Id` under
-a unique constraint before processing. Grant a purchase only once per payment
-intent ID. A `payment.reorged` event should move the purchase into the product's
-own reconciliation policy rather than silently granting it again.
-
-For manual monthly crypto subscriptions, create a new `subscription_invoice`
-intent and external invoice ID each month. The gateway does not perform token
-approvals or automatic withdrawals.
+Use a separate treasury per chain if desired. The same address can also be used
+on all EVM networks. Never use the gas wallet as the treasury.
 
 ## Configuration
 
-Networks and tokens live in [config/networks.json](config/networks.json). A
-network is enabled only when its RPC environment variable is set. Token
-addresses and decimals are configuration, so verify them against the issuer and
-explorer before enabling mainnet.
+Both Workers receive a JSON network list because their secrets must remain
+isolated. The non-key fields must match exactly. A network object is:
 
-The included BNB `USDT` entry is the Binance-Peg token, not a Circle-issued
-asset. Base and Ethereum USDC addresses come from Circle's published contract
-list; Ethereum USDT uses Tether's published ERC-20 contract.
-
-| Environment variable | Default | Purpose |
-| --- | --- | --- |
-| `PAYMENT_API_KEY` | required | Server-to-server payment API key, minimum 24 characters. |
-| `PAYMENT_WEBHOOK_URL` | required | Single HTTPS event destination. |
-| `PAYMENT_WEBHOOK_SECRET` | required | HMAC secret, minimum 24 characters. |
-| `DEPOSIT_XPUB` | required | Watch-only account xpub. |
-| `POLL_INTERVAL_SECONDS` | `5` | Chain polling interval. |
-| `DEFAULT_EXPIRY_SECONDS` | `1800` | Default intent lifetime. |
-| `PAYMENT_GRACE_SECONDS` | `60` | Block timestamp grace after expiry. |
-| `REORG_HISTORY_BLOCKS` | `256` | Recent canonical block hashes retained. |
-
-## Design boundaries
-
-The caller supplies the exact asset amount. Fiat conversion and quote locking
-belong in the commerce application or its chosen price source; this gateway
-does not silently choose exchange rates.
-
-Unique derived addresses make partial and underpayments unambiguous without
-holding private keys online. Consolidation is intentionally outside this
-service. Native deposits can pay their own sweep gas. For ERC-20 deposits, an
-isolated sweeper sends a small amount of the chain's native asset to the funded
-address, then signs a token transfer to treasury with the matching child key.
-Trigger this only after a confirmed, economically useful deposit; cap the gas
-wallet and keep the signer separate from the gateway. Full automation requires
-an online signer—an offline wallet is for manual sweeps only. At high payment
-volume, an audited payment contract may cost less operationally, but it adds
-contract-call/approval UX and smart-contract audit risk.
-
-Native transfers made as top-level wallet transactions are detected. Internal
-contract calls that transfer native value require non-standard trace APIs and
-are not accepted. ERC-20 transfers are detected from standard `Transfer` logs.
-
-PocketBase is pre-1.0. Pin the version, read its upgrade notes, back up
-`/pb_data`, and test migrations before upgrading.
-
-## Development
-
-```bash
-docker run --rm -v "$PWD":/app -w /app golang:1.26.5-alpine go test ./...
-docker build -t evm-payment-gateway .
+```json
+{
+  "name": "base-sepolia",
+  "chainId": 84532,
+  "rpcUrl": "https://your-private-rpc",
+  "treasuryAddress": "0xYourMainWallet",
+  "confirmations": 3,
+  "nativeAsset": "ETH",
+  "explorerUrl": "https://sepolia.basescan.org",
+  "tokens": {
+    "USDC": {
+      "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      "decimals": 6
+    }
+  }
+}
 ```
 
-## License
+The sweeper copy adds `gasPrivateKey` only on networks with configured tokens.
+That key should control a deliberately low-balance wallet. Native-only networks
+do not need it. `networks.example.json` contains presets for Ethereum, Base, and
+BNB Chain mainnets/testnets; replace every RPC URL and treasury address, delete
+unused networks, then minify it into `NETWORKS_JSON`. Verify token contracts
+against their issuers before using mainnet.
 
-[MIT](LICENSE)
+The API contract remains `/api/payments/v1`: create an intent with `POST
+/intents`, poll with `GET /intents/{id}`, inspect `/transactions` and `/sweep`,
+and use `/health` for scanner state. Crypto subscriptions remain manual monthly
+`subscription_invoice` intents; the gateway never pulls funds automatically.
+
+Create a Base Sepolia native-token test intent with the URL printed by
+Wrangler:
+
+```bash
+curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
+  -H "Authorization: Bearer $PAYMENT_API_KEY" \
+  -H "Idempotency-Key: smoke-test-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "kind": "credit_pack",
+    "externalId": "smoke-test-001",
+    "chain": "base-sepolia",
+    "asset": "ETH",
+    "amount": "0.0001",
+    "expiresInSeconds": 1800,
+    "metadata": { "accountId": "test-account" }
+  }'
+```
+
+Pay the returned `paymentUri` or QR code, then poll
+`GET /api/payments/v1/intents/{id}` with the same bearer token.
+
+## Deploy button
+
+Cloudflare's deploy button currently requires a public GitHub/GitLab repository
+and deploys only one Worker from a multi-Worker repository. This repository is
+private and the signer must remain a separate Worker, so a button would be
+incomplete today. Add it when the project becomes public and Cloudflare supports
+multi-Worker deploy buttons; until then `npm run deploy` is the complete path.
+
+## Verify
+
+```bash
+npm run check
+```
+
+Tests execute in Cloudflare's `workerd` runtime with a real local D1 database.
+
+## Test on Cloudflare
+
+Start on Base Sepolia with disposable keys and no real funds. You need:
+
+- a Cloudflare login or scoped API token;
+- a Base Sepolia RPC URL;
+- a dedicated test xpub/xprv pair;
+- a test treasury address;
+- a low-balance gas-wallet key plus test ETH for USDC sweeps;
+- a staging webhook URL and two random secrets for API and webhook signing.
+
+Put only the public values in `.api.secrets`; put the xprv and gas-wallet key in
+`.sweeper.secrets`. Then run `npm run deploy`. Wrangler provisions the D1
+database and Queue, applies the schema, and deploys both Workers.
+
+For the first end-to-end run, create a small native-ETH intent, pay it, and
+verify `pending -> confirming -> paid`, one signed webhook, and a completed
+sweep into the treasury. Repeat with test USDC to exercise automatic gas
+funding, then check underpayment and expiry. Reorg behavior stays in the local
+deterministic suite because a public testnet reorg cannot be safely forced.
