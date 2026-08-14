@@ -1,0 +1,25 @@
+[
+  {
+    "policyName": "Deny all raw payload signing",
+    "effect": "EFFECT_DENY",
+    "condition": "activity.kind == 'SIGN_RAW_PAYLOAD' || activity.kind == 'SIGN_RAW_PAYLOADS'"
+  },
+  {
+    "policyName": "Allow the gateway address allocator",
+    "effect": "EFFECT_ALLOW",
+    "consensus": "credentials.any(credential, credential.public_key == '<ALLOCATOR_API_PUBLIC_KEY>')",
+    "condition": "activity.type == 'ACTIVITY_TYPE_CREATE_WALLET_ACCOUNTS'"
+  },
+  {
+    "policyName": "Allow one network's native sweeps",
+    "effect": "EFFECT_ALLOW",
+    "consensus": "credentials.any(credential, credential.public_key == '<SIGNER_API_PUBLIC_KEY>')",
+    "condition": "activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && activity.params.type == 'TRANSACTION_TYPE_ETHEREUM' && wallet.id == '<WALLET_ID>' && eth.tx.type == 'LEGACY' && eth.tx.chain_id == <CHAIN_ID> && eth.tx.to == '<TREASURY_ADDRESS_LOWERCASE>' && eth.tx.data == '0x' && eth.tx.value > 0 && eth.tx.gas >= 21000 && eth.tx.gas <= 1000000 && eth.tx.gas_price > 0 && eth.tx.gas_price <= <MAX_GAS_PRICE_WEI>"
+  },
+  {
+    "policyName": "Allow one network's ERC-20 sweeps",
+    "effect": "EFFECT_ALLOW",
+    "consensus": "credentials.any(credential, credential.public_key == '<SIGNER_API_PUBLIC_KEY>')",
+    "condition": "activity.type == 'ACTIVITY_TYPE_SIGN_TRANSACTION_V2' && activity.params.type == 'TRANSACTION_TYPE_ETHEREUM' && wallet.id == '<WALLET_ID>' && eth.tx.type == 'LEGACY' && eth.tx.chain_id == <CHAIN_ID> && eth.tx.to == '<TOKEN_ADDRESS_LOWERCASE>' && eth.tx.value == 0 && eth.tx.data[0..10] == '0xa9059cbb' && eth.tx.data[34..74] == '<TREASURY_ADDRESS_WITHOUT_0X_LOWERCASE>' && eth.tx.gas >= 21000 && eth.tx.gas <= 500000 && eth.tx.gas_price > 0 && eth.tx.gas_price <= <MAX_GAS_PRICE_WEI>"
+  }
+]
