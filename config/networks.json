@@ -1,0 +1,61 @@
+{
+  "ethereum": {
+    "chainId": 1,
+    "rpcEnv": "ETHEREUM_RPC_URL",
+    "confirmations": 12,
+    "nativeAsset": "ETH",
+    "explorerUrl": "https://etherscan.io",
+    "tokens": {
+      "USDC": { "address": "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "decimals": 6 },
+      "USDT": { "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "decimals": 6 }
+    }
+  },
+  "ethereum-sepolia": {
+    "chainId": 11155111,
+    "rpcEnv": "ETHEREUM_SEPOLIA_RPC_URL",
+    "confirmations": 3,
+    "nativeAsset": "ETH",
+    "explorerUrl": "https://sepolia.etherscan.io",
+    "tokens": {
+      "USDC": { "address": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", "decimals": 6 }
+    }
+  },
+  "base": {
+    "chainId": 8453,
+    "rpcEnv": "BASE_RPC_URL",
+    "confirmations": 12,
+    "nativeAsset": "ETH",
+    "explorerUrl": "https://basescan.org",
+    "tokens": {
+      "USDC": { "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "decimals": 6 }
+    }
+  },
+  "base-sepolia": {
+    "chainId": 84532,
+    "rpcEnv": "BASE_SEPOLIA_RPC_URL",
+    "confirmations": 3,
+    "nativeAsset": "ETH",
+    "explorerUrl": "https://sepolia.basescan.org",
+    "tokens": {
+      "USDC": { "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "decimals": 6 }
+    }
+  },
+  "bnb": {
+    "chainId": 56,
+    "rpcEnv": "BNB_RPC_URL",
+    "confirmations": 15,
+    "nativeAsset": "BNB",
+    "explorerUrl": "https://bscscan.com",
+    "tokens": {
+      "USDT": { "address": "0x55d398326f99059fF775485246999027B3197955", "decimals": 18 }
+    }
+  },
+  "bnb-testnet": {
+    "chainId": 97,
+    "rpcEnv": "BNB_TESTNET_RPC_URL",
+    "confirmations": 3,
+    "nativeAsset": "tBNB",
+    "explorerUrl": "https://testnet.bscscan.com",
+    "tokens": {}
+  }
+}

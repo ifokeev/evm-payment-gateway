@@ -1,0 +1,5 @@
+.env
+.git
+pb_data
+*.sqlite*
+evm-payment-gateway

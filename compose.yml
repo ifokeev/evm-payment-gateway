@@ -1,0 +1,12 @@
+services:
+  gateway:
+    build: .
+    env_file: .env
+    ports:
+      - "8090:8090"
+    volumes:
+      - gateway-data:/pb_data
+    restart: unless-stopped
+
+volumes:
+  gateway-data:
