@@ -6,7 +6,16 @@
   "workers_dev": true,
   "observability": { "enabled": true },
   "secrets": {
-    "required": ["PAYMENT_API_KEY", "TURNKEY_ORGANIZATION_ID", "TURNKEY_WALLET_ID", "TURNKEY_API_PUBLIC_KEY", "TURNKEY_API_PRIVATE_KEY", "NETWORKS_JSON", "PAYMENT_WEBHOOK_URL", "PAYMENT_WEBHOOK_SECRET"]
+    "required": [
+      "PAYMENT_API_KEY",
+      "TURNKEY_ORGANIZATION_ID",
+      "TURNKEY_WALLET_ID",
+      "TURNKEY_API_PUBLIC_KEY",
+      "TURNKEY_API_PRIVATE_KEY",
+      "NETWORKS_JSON",
+      "PAYMENT_WEBHOOK_URL",
+      "PAYMENT_WEBHOOK_SECRET"
+    ]
   },
   "d1_databases": [
     {
@@ -16,9 +25,7 @@
     }
   ],
   "queues": {
-    "producers": [
-      { "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps" }
-    ]
+    "producers": [{ "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps" }]
   },
   "triggers": {
     "crons": ["* * * * *"]

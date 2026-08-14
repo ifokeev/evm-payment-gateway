@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const apiSecrets = process.argv[2] ?? ".api.secrets";
 const sweeperSecrets = process.argv[3] ?? ".sweeper.secrets";
@@ -11,11 +11,22 @@ for (const file of [apiSecrets, sweeperSecrets]) {
 }
 
 run("wrangler", ["deploy", "--config", "wrangler.api.jsonc", "--secrets-file", apiSecrets]);
-run("wrangler", ["d1", "migrations", "apply", "evm-payment-gateway", "--remote", "--config", "wrangler.api.jsonc"]);
+run("wrangler", [
+  "d1",
+  "migrations",
+  "apply",
+  "evm-payment-gateway",
+  "--remote",
+  "--config",
+  "wrangler.api.jsonc",
+]);
 run("wrangler", ["deploy", "--config", "wrangler.sweeper.jsonc", "--secrets-file", sweeperSecrets]);
 
 function run(command, args) {
-  const result = spawnSync(command, args, { stdio: "inherit", shell: process.platform === "win32" });
+  const result = spawnSync(command, args, {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

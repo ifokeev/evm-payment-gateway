@@ -277,12 +277,15 @@ npm run check
 ```
 
 Tests execute in Cloudflare's `workerd` runtime against a real local D1
-database. `npm run check` runs TypeScript checking, the deterministic payment
-and sweep suite, and dry-runs both Worker deployments.
+database. `npm run check` runs Biome, TypeScript checking, the deterministic
+payment and sweep suite, and dry-runs both Worker deployments.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the API Worker locally. |
+| `npm run format` | Format supported files with Biome. |
+| `npm run lint` | Lint the codebase with Biome. |
+| `npm run quality` | Check formatting, imports, and lint rules. |
 | `npm test` | Run the Worker and D1 tests. |
 | `npm run typecheck` | Check TypeScript without emitting files. |
 | `npm run deploy:dry-run` | Build both Workers without deploying. |

@@ -1,4 +1,4 @@
-import { getAddress, isAddress, isAddressEqual, zeroAddress, type Address } from "viem";
+import { type Address, getAddress, isAddress, isAddressEqual, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { NetworkConfig, PaymentStatus, TokenConfig } from "./types";
 
@@ -8,8 +8,11 @@ export function parseAmount(input: string, decimals: number): { amount: string; 
   const value = input.trim();
   if (!/^\d+(\.\d+)?$/.test(value)) throw new Error("amount must be a positive decimal string");
   const [whole, fraction = ""] = value.split(".");
-  if (fraction.length > decimals) throw new Error(`amount supports at most ${decimals} decimal places`);
-  const units = BigInt(whole) * 10n ** BigInt(decimals) + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+  if (fraction.length > decimals)
+    throw new Error(`amount supports at most ${decimals} decimal places`);
+  const units =
+    BigInt(whole) * 10n ** BigInt(decimals) +
+    BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
   if (units <= 0n) throw new Error("amount must be greater than zero");
   if (units > UINT256_MAX) throw new Error("amount exceeds uint256");
   return { amount: formatUnits(units, decimals), units };
@@ -22,7 +25,13 @@ export function formatUnits(units: bigint, decimals: number): string {
   return fraction ? `${digits.slice(0, -decimals)}.${fraction}` : digits.slice(0, -decimals);
 }
 
-export function deriveStatus(received: bigint, confirmed: bigint, expected: bigint, expired: boolean, reorged: boolean): PaymentStatus {
+export function deriveStatus(
+  received: bigint,
+  confirmed: bigint,
+  expected: bigint,
+  expired: boolean,
+  reorged: boolean,
+): PaymentStatus {
   if (confirmed >= expected) return "paid";
   if (reorged) return "reorged";
   if (received >= expected) return "confirming";
@@ -30,7 +39,12 @@ export function deriveStatus(received: bigint, confirmed: bigint, expected: bigi
   return expired ? "expired" : "pending";
 }
 
-export function paymentUri(network: NetworkConfig, tokenAddress: Address | "", depositAddress: Address, units: string): string {
+export function paymentUri(
+  network: NetworkConfig,
+  tokenAddress: Address | "",
+  depositAddress: Address,
+  units: string,
+): string {
   return tokenAddress
     ? `ethereum:${tokenAddress}@${network.chainId}/transfer?address=${depositAddress}&uint256=${units}`
     : `ethereum:${depositAddress}@${network.chainId}?value=${units}`;
@@ -43,7 +57,8 @@ export function loadNetworks(raw: string, requireGasKeys = false): Map<string, N
   } catch {
     throw new Error("network configuration must be valid JSON");
   }
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("at least one network must be configured");
+  if (!Array.isArray(parsed) || parsed.length === 0)
+    throw new Error("at least one network must be configured");
   const result = new Map<string, NetworkConfig>();
   const chainIds = new Set<number>();
   for (const item of parsed) {
@@ -55,7 +70,8 @@ export function loadNetworks(raw: string, requireGasKeys = false): Map<string, N
     const chainId = integerField(item, "chainId", 1, Number.MAX_SAFE_INTEGER);
     const confirmations = integerField(item, "confirmations", 1, 10_000);
     const maxGasPriceWei = positiveBigIntField(item, "maxGasPriceWei");
-    if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(name) || !/^[A-Z0-9]{2,20}$/.test(nativeAsset)) throw new Error(`invalid network name or native asset: ${name}`);
+    if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(name) || !/^[A-Z0-9]{2,20}$/.test(nativeAsset))
+      throw new Error(`invalid network name or native asset: ${name}`);
     let url: URL;
     try {
       url = new URL(rpcUrl);
@@ -70,30 +86,46 @@ export function loadNetworks(raw: string, requireGasKeys = false): Map<string, N
         throw new Error(`explorer URL for ${name} must use HTTPS`);
       }
     }
-    const treasuryAddress = checkedAddress(stringField(item, "treasuryAddress"), `treasury address for ${name}`);
-    if (result.has(name) || chainIds.has(chainId)) throw new Error(`duplicate network name or chain ID: ${name}`);
+    const treasuryAddress = checkedAddress(
+      stringField(item, "treasuryAddress"),
+      `treasury address for ${name}`,
+    );
+    if (result.has(name) || chainIds.has(chainId))
+      throw new Error(`duplicate network name or chain ID: ${name}`);
     const tokens: Record<string, TokenConfig> = {};
     const tokenInput = item.tokens ?? {};
     if (!isObject(tokenInput)) throw new Error(`tokens for ${name} must be an object`);
     for (const [rawSymbol, rawToken] of Object.entries(tokenInput)) {
       const symbol = rawSymbol.trim().toUpperCase();
-      if (!/^[A-Z0-9]{2,20}$/.test(symbol) || !isObject(rawToken) || tokens[symbol]) throw new Error(`invalid token symbol for ${name}`);
-      if (symbol === nativeAsset) throw new Error(`token symbol must not match native asset for ${name}`);
-      const address = checkedAddress(stringField(rawToken, "address"), `token address for ${name}/${symbol}`);
-      if (isAddressEqual(address, treasuryAddress)) throw new Error(`token address must not match treasury for ${name}/${symbol}`);
+      if (!/^[A-Z0-9]{2,20}$/.test(symbol) || !isObject(rawToken) || tokens[symbol])
+        throw new Error(`invalid token symbol for ${name}`);
+      if (symbol === nativeAsset)
+        throw new Error(`token symbol must not match native asset for ${name}`);
+      const address = checkedAddress(
+        stringField(rawToken, "address"),
+        `token address for ${name}/${symbol}`,
+      );
+      if (isAddressEqual(address, treasuryAddress))
+        throw new Error(`token address must not match treasury for ${name}/${symbol}`);
       tokens[symbol] = {
         address,
         decimals: integerField(rawToken, "decimals", 0, 255),
       };
     }
     const gasPrivateKey = optionalString(item, "gasPrivateKey") as `0x${string}` | "";
-    if (gasPrivateKey && !/^0x[0-9a-fA-F]{64}$/.test(gasPrivateKey)) throw new Error(`invalid gasPrivateKey for ${name}`);
-    if (!requireGasKeys && gasPrivateKey) throw new Error(`API network ${name} must not contain gasPrivateKey`);
+    if (gasPrivateKey && !/^0x[0-9a-fA-F]{64}$/.test(gasPrivateKey))
+      throw new Error(`invalid gasPrivateKey for ${name}`);
+    if (!requireGasKeys && gasPrivateKey)
+      throw new Error(`API network ${name} must not contain gasPrivateKey`);
     if (requireGasKeys && Object.keys(tokens).length && !gasPrivateKey) {
       throw new Error(`gasPrivateKey is required for token network ${name}`);
     }
-    if (requireGasKeys && !Object.keys(tokens).length && gasPrivateKey) throw new Error(`gasPrivateKey is not allowed for native-only network ${name}`);
-    if (gasPrivateKey && isAddressEqual(privateKeyToAccount(gasPrivateKey).address, treasuryAddress)) {
+    if (requireGasKeys && !Object.keys(tokens).length && gasPrivateKey)
+      throw new Error(`gasPrivateKey is not allowed for native-only network ${name}`);
+    if (
+      gasPrivateKey &&
+      isAddressEqual(privateKeyToAccount(gasPrivateKey).address, treasuryAddress)
+    ) {
       throw new Error(`gas wallet must not be the treasury for ${name}`);
     }
     result.set(name, {
@@ -115,11 +147,22 @@ export function loadNetworks(raw: string, requireGasKeys = false): Map<string, N
 
 export function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  if (isObject(value))
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
   return JSON.stringify(value);
 }
 
-export function eligibleForSweep(isToken: boolean, status: PaymentStatus, confirmed: bigint, expected: bigint, expiredWithGrace: boolean, minTokenBps: number): boolean {
+export function eligibleForSweep(
+  isToken: boolean,
+  status: PaymentStatus,
+  confirmed: bigint,
+  expected: bigint,
+  expiredWithGrace: boolean,
+  minTokenBps: number,
+): boolean {
   if (confirmed <= 0n) return false;
   if (status === "paid") return true;
   if (!expiredWithGrace) return false;
@@ -147,7 +190,8 @@ export function remainingGasFunding(maximum: bigint, history: string[], requeste
 
 export function intSetting(raw: string, name: string, minimum: number, maximum: number): number {
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(`${name} is invalid`);
+  if (!Number.isInteger(value) || value < minimum || value > maximum)
+    throw new Error(`${name} is invalid`);
   return value;
 }
 
@@ -171,16 +215,24 @@ function optionalString(value: Record<string, unknown>, key: string): string {
   return value[key];
 }
 
-function integerField(value: Record<string, unknown>, key: string, minimum: number, maximum: number): number {
+function integerField(
+  value: Record<string, unknown>,
+  key: string,
+  minimum: number,
+  maximum: number,
+): number {
   const number = value[key];
-  if (!Number.isSafeInteger(number) || (number as number) < minimum || (number as number) > maximum) throw new Error(`${key} is invalid`);
+  if (!Number.isSafeInteger(number) || (number as number) < minimum || (number as number) > maximum)
+    throw new Error(`${key} is invalid`);
   return number as number;
 }
 
 function positiveBigIntField(value: Record<string, unknown>, key: string): bigint {
   const raw = value[key];
-  if (typeof raw !== "string" || !/^\d+$/.test(raw)) throw new Error(`${key} must be a positive integer string`);
+  if (typeof raw !== "string" || !/^\d+$/.test(raw))
+    throw new Error(`${key} must be a positive integer string`);
   const number = BigInt(raw);
-  if (number <= 0n || number > UINT256_MAX) throw new Error(`${key} must be a positive integer string`);
+  if (number <= 0n || number > UINT256_MAX)
+    throw new Error(`${key} must be a positive integer string`);
   return number;
 }

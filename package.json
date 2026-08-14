@@ -4,10 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "npm run typecheck && npm test && npm run deploy:dry-run",
+    "check": "npm run quality && npm run typecheck && npm test && npm run deploy:dry-run",
+    "check:staged": "biome check --staged",
     "deploy": "node scripts/deploy.mjs",
     "deploy:dry-run": "wrangler deploy --dry-run --config wrangler.api.jsonc --secrets-file .api.secrets.example && wrangler deploy --dry-run --config wrangler.sweeper.jsonc --secrets-file .sweeper.secrets.example",
     "dev": "wrangler dev --config wrangler.api.jsonc",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "prepare": "husky",
+    "quality": "biome check .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -17,8 +22,10 @@
     "viem": "2.55.16"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.8",
     "@cloudflare/vitest-pool-workers": "0.21.3",
     "@cloudflare/workers-types": "5.20260814.1",
+    "husky": "9.1.7",
     "typescript": "7.0.2",
     "vitest": "4.1.10",
     "wrangler": "4.123.0"

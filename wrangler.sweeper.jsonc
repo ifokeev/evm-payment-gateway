@@ -6,7 +6,12 @@
   "workers_dev": false,
   "observability": { "enabled": true },
   "secrets": {
-    "required": ["TURNKEY_ORGANIZATION_ID", "TURNKEY_API_PUBLIC_KEY", "TURNKEY_API_PRIVATE_KEY", "SWEEPER_NETWORKS_JSON"]
+    "required": [
+      "TURNKEY_ORGANIZATION_ID",
+      "TURNKEY_API_PUBLIC_KEY",
+      "TURNKEY_API_PRIVATE_KEY",
+      "SWEEPER_NETWORKS_JSON"
+    ]
   },
   "services": [
     {
@@ -16,9 +21,7 @@
     }
   ],
   "queues": {
-    "producers": [
-      { "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps" }
-    ],
+    "producers": [{ "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps" }],
     "consumers": [
       {
         "queue": "evm-payment-gateway-sweeps",

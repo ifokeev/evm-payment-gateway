@@ -132,9 +132,24 @@ export type SweepJob = {
 
 export interface SweepCoordinatorService extends Fetcher {
   claimSweep(jobId: string, owner: string): Promise<SweepJob | null>;
-  registerSweepTransaction(jobId: string, owner: string, kind: "gas" | "sweep", rawTransaction: Hex): Promise<SweepTransaction>;
-  reportSweepTransaction(id: string, owner: string, status: "submitted" | "confirmed" | "failed", blockNumber: number, error: string): Promise<void>;
-  releaseSweep(jobId: string, owner: string, outcome: SweepOutcome): Promise<{ delaySeconds: number }>;
+  registerSweepTransaction(
+    jobId: string,
+    owner: string,
+    kind: "gas" | "sweep",
+    rawTransaction: Hex,
+  ): Promise<SweepTransaction>;
+  reportSweepTransaction(
+    id: string,
+    owner: string,
+    status: "submitted" | "confirmed" | "failed",
+    blockNumber: number,
+    error: string,
+  ): Promise<void>;
+  releaseSweep(
+    jobId: string,
+    owner: string,
+    outcome: SweepOutcome,
+  ): Promise<{ delaySeconds: number }>;
 }
 
 export type SweepOutcome = {

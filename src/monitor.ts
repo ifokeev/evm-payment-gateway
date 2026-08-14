@@ -1,15 +1,16 @@
-import {
-  createPublicClient,
-  getAddress,
-  http,
-  parseAbiItem,
-  type Address,
-  type Hex,
-} from "viem";
+import { type Address, createPublicClient, getAddress, type Hex, http, parseAbiItem } from "viem";
 import { deriveStatus, eligibleForSweep, intSetting, loadNetworks } from "./domain";
-import type { ApiEnv, IntentRow, NetworkConfig, PaymentTransactionRow, SweepMessage } from "./types";
+import type {
+  ApiEnv,
+  IntentRow,
+  NetworkConfig,
+  PaymentTransactionRow,
+  SweepMessage,
+} from "./types";
 
-const transferEvent = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
+const transferEvent = parseAbiItem(
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+);
 
 type ObservedPayment = {
   intentId: string;
@@ -27,9 +28,12 @@ type ObservedPayment = {
 
 export async function runScheduled(env: ApiEnv): Promise<void> {
   const networks = loadNetworks(env.NETWORKS_JSON);
-  const results = await Promise.allSettled([...networks.values()].map((network) => syncChain(env, network)));
+  const results = await Promise.allSettled(
+    [...networks.values()].map((network) => syncChain(env, network)),
+  );
   for (const [index, result] of results.entries()) {
-    if (result.status === "rejected") console.error("chain sync failed", [...networks.keys()][index], safeErrorText(result.reason));
+    if (result.status === "rejected")
+      console.error("chain sync failed", [...networks.keys()][index], safeErrorText(result.reason));
   }
   for (const [name, task] of [
     ["intent expiry", () => expirePendingIntents(env.DB)],
@@ -45,7 +49,11 @@ export async function runScheduled(env: ApiEnv): Promise<void> {
 }
 
 export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<void> {
-  const intents = await all<IntentRow>(env.DB, "SELECT * FROM payment_intents WHERE chain = ? ORDER BY derivation_index", network.name);
+  const intents = await all<IntentRow>(
+    env.DB,
+    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY derivation_index",
+    network.name,
+  );
   if (!intents.length) return;
 
   const now = unixNow();
@@ -57,33 +65,53 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
     ON CONFLICT(chain) DO UPDATE SET lock_owner = excluded.lock_owner, locked_until = excluded.locked_until, updated_at = excluded.updated_at
     WHERE chain_states.locked_until <= excluded.updated_at
     RETURNING last_scanned
-  `).bind(network.name, Math.max(-1, earliest - 1), owner, now + 55, now).first<{ last_scanned: number }>();
+  `)
+    .bind(network.name, Math.max(-1, earliest - 1), owner, now + 55, now)
+    .first<{ last_scanned: number }>();
   if (!lease) return;
 
   try {
     const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 20_000 }) });
     const remoteChainId = await client.getChainId();
-    if (remoteChainId !== network.chainId) throw new Error(`RPC chain ID ${remoteChainId} does not match ${network.chainId}`);
+    if (remoteChainId !== network.chainId)
+      throw new Error(`RPC chain ID ${remoteChainId} does not match ${network.chainId}`);
     let last = lease.last_scanned;
     const reorged = new Set<string>();
-    if (last >= 0) last = await rewindIfNeeded(env, network, client, last, owner, reorged, earliest);
+    if (last >= 0)
+      last = await rewindIfNeeded(env, network, client, last, owner, reorged, earliest);
 
     const latest = Number(await client.getBlockNumber());
     let start = Math.max(0, earliest, last < 0 ? earliest : last);
     // ponytail: catch up 200 blocks per minute; add a dedicated scanner only when a real chain routinely exceeds it.
     const target = Math.min(latest, start + 199);
-    const depositIntents = new Map(intents.map((intent) => [intent.deposit_address.toLowerCase(), intent]));
-    const nativeAddresses = new Set(intents.filter((intent) => !intent.token_address).map((intent) => intent.deposit_address.toLowerCase()));
-    const tokenAddresses = [...new Set(intents.filter((intent) => intent.token_address).map((intent) => getAddress(intent.token_address)))];
+    const depositIntents = new Map(
+      intents.map((intent) => [intent.deposit_address.toLowerCase(), intent]),
+    );
+    const nativeAddresses = new Set(
+      intents
+        .filter((intent) => !intent.token_address)
+        .map((intent) => intent.deposit_address.toLowerCase()),
+    );
+    const tokenAddresses = [
+      ...new Set(
+        intents
+          .filter((intent) => intent.token_address)
+          .map((intent) => getAddress(intent.token_address)),
+      ),
+    ];
 
     for (; start <= target; start++) {
       const number = BigInt(start);
-      const block = await client.getBlock({ blockNumber: number, includeTransactions: nativeAddresses.size > 0 });
+      const block = await client.getBlock({
+        blockNumber: number,
+        includeTransactions: nativeAddresses.size > 0,
+      });
       const payments: ObservedPayment[] = [];
 
       if (nativeAddresses.size) {
         for (const transaction of block.transactions) {
-          if (typeof transaction === "string" || !transaction.to || transaction.value <= 0n) continue;
+          if (typeof transaction === "string" || !transaction.to || transaction.value <= 0n)
+            continue;
           const intent = depositIntents.get(transaction.to.toLowerCase());
           if (!intent || intent.token_address || intent.start_block > start) continue;
           const receipt = await client.getTransactionReceipt({ hash: transaction.hash });
@@ -105,11 +133,29 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       }
 
       if (tokenAddresses.length) {
-        const logs = await client.getLogs({ address: tokenAddresses, event: transferEvent, fromBlock: number, toBlock: number, strict: true });
+        const logs = await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          fromBlock: number,
+          toBlock: number,
+          strict: true,
+        });
         for (const log of logs) {
-          if (!log.args.to || !log.args.from || log.args.value === undefined || log.blockHash !== block.hash || log.blockNumber === null) continue;
+          if (
+            !log.args.to ||
+            !log.args.from ||
+            log.args.value === undefined ||
+            log.blockHash !== block.hash ||
+            log.blockNumber === null
+          )
+            continue;
           const intent = depositIntents.get(log.args.to.toLowerCase());
-          if (!intent || !intent.token_address || getAddress(intent.token_address) !== getAddress(log.address) || intent.start_block > start) continue;
+          if (
+            !intent?.token_address ||
+            getAddress(intent.token_address) !== getAddress(log.address) ||
+            intent.start_block > start
+          )
+            continue;
           payments.push({
             intentId: intent.id,
             chain: network.name,
@@ -130,10 +176,16 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
 
     if (target >= 0) await recalculateChain(env, network, intents, target, reorged);
     const history = intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000);
-    if (target > history) await env.DB.prepare("DELETE FROM chain_blocks WHERE chain = ? AND block_number < ?").bind(network.name, target - history).run();
+    if (target > history)
+      await env.DB.prepare("DELETE FROM chain_blocks WHERE chain = ? AND block_number < ?")
+        .bind(network.name, target - history)
+        .run();
   } finally {
-    await env.DB.prepare("UPDATE chain_states SET lock_owner = '', locked_until = 0, updated_at = ? WHERE chain = ? AND lock_owner = ?")
-      .bind(unixNow(), network.name, owner).run();
+    await env.DB.prepare(
+      "UPDATE chain_states SET lock_owner = '', locked_until = 0, updated_at = ? WHERE chain = ? AND lock_owner = ?",
+    )
+      .bind(unixNow(), network.name, owner)
+      .run();
   }
 }
 
@@ -146,8 +198,11 @@ async function rewindIfNeeded(
   reorged: Set<string>,
   earliest: number,
 ): Promise<number> {
-  const stored = await env.DB.prepare("SELECT block_hash FROM chain_blocks WHERE chain = ? AND block_number = ?")
-    .bind(network.name, last).first<{ block_hash: Hex }>();
+  const stored = await env.DB.prepare(
+    "SELECT block_hash FROM chain_blocks WHERE chain = ? AND block_number = ?",
+  )
+    .bind(network.name, last)
+    .first<{ block_hash: Hex }>();
   const remote = await client.getBlock({ blockNumber: BigInt(last), includeTransactions: false });
   if (stored?.block_hash.toLowerCase() === remote.hash.toLowerCase()) return last;
 
@@ -155,32 +210,49 @@ async function rewindIfNeeded(
   const floor = Math.max(0, last - history);
   let ancestor = last - 1;
   for (; ancestor >= floor; ancestor--) {
-    const candidate = await env.DB.prepare("SELECT block_hash FROM chain_blocks WHERE chain = ? AND block_number = ?")
-      .bind(network.name, ancestor).first<{ block_hash: Hex }>();
+    const candidate = await env.DB.prepare(
+      "SELECT block_hash FROM chain_blocks WHERE chain = ? AND block_number = ?",
+    )
+      .bind(network.name, ancestor)
+      .first<{ block_hash: Hex }>();
     if (!candidate) continue;
-    const header = await client.getBlock({ blockNumber: BigInt(ancestor), includeTransactions: false });
+    const header = await client.getBlock({
+      blockNumber: BigInt(ancestor),
+      includeTransactions: false,
+    });
     if (candidate.block_hash.toLowerCase() === header.hash.toLowerCase()) break;
   }
   if (ancestor < floor) ancestor = earliest - 1;
   const fromBlock = ancestor + 1;
-  const affected = await all<{ id: string }>(env.DB, `
+  const affected = await all<{ id: string }>(
+    env.DB,
+    `
     SELECT DISTINCT i.id FROM payment_intents i
     JOIN payment_transactions t ON t.payment_intent = i.id
     WHERE i.chain = ? AND i.status = 'paid' AND t.canonical = 1 AND t.block_number >= ?
-  `, network.name, fromBlock);
+  `,
+    network.name,
+    fromBlock,
+  );
   for (const row of affected) reorged.add(row.id);
   await env.DB.batch([
     env.DB.prepare(`UPDATE sweep_jobs SET status = 'queued', next_attempt_at = ?, completed_at = NULL, updated_at = ?
       WHERE status IN ('complete', 'external') AND id IN (
         SELECT sweep_job FROM sweep_transactions WHERE chain = ? AND block_number >= ? AND status = 'confirmed'
       )`).bind(unixNow(), unixNow(), network.name, fromBlock),
-    env.DB.prepare("UPDATE sweep_transactions SET status = 'submitted', block_number = NULL, updated_at = ? WHERE chain = ? AND block_number >= ? AND status = 'confirmed'")
-      .bind(unixNow(), network.name, fromBlock),
-    env.DB.prepare("UPDATE payment_transactions SET canonical = 0, updated_at = ? WHERE chain = ? AND block_number >= ? AND canonical = 1")
-      .bind(unixNow(), network.name, fromBlock),
-    env.DB.prepare("DELETE FROM chain_blocks WHERE chain = ? AND block_number >= ?").bind(network.name, fromBlock),
-    env.DB.prepare("UPDATE chain_states SET last_scanned = ?, updated_at = ? WHERE chain = ? AND lock_owner = ?")
-      .bind(ancestor, unixNow(), network.name, owner),
+    env.DB.prepare(
+      "UPDATE sweep_transactions SET status = 'submitted', block_number = NULL, updated_at = ? WHERE chain = ? AND block_number >= ? AND status = 'confirmed'",
+    ).bind(unixNow(), network.name, fromBlock),
+    env.DB.prepare(
+      "UPDATE payment_transactions SET canonical = 0, updated_at = ? WHERE chain = ? AND block_number >= ? AND canonical = 1",
+    ).bind(unixNow(), network.name, fromBlock),
+    env.DB.prepare("DELETE FROM chain_blocks WHERE chain = ? AND block_number >= ?").bind(
+      network.name,
+      fromBlock,
+    ),
+    env.DB.prepare(
+      "UPDATE chain_states SET last_scanned = ?, updated_at = ? WHERE chain = ? AND lock_owner = ?",
+    ).bind(ancestor, unixNow(), network.name, owner),
   ]);
   return ancestor;
 }
@@ -194,28 +266,59 @@ async function saveBlock(
 ): Promise<void> {
   const now = unixNow();
   const statements = [
-    db.prepare(`INSERT INTO chain_blocks (chain, block_number, block_hash, parent_hash, block_timestamp)
+    db
+      .prepare(`INSERT INTO chain_blocks (chain, block_number, block_hash, parent_hash, block_timestamp)
       VALUES (?, ?, ?, ?, ?) ON CONFLICT(chain, block_number) DO UPDATE SET
       block_hash = excluded.block_hash, parent_hash = excluded.parent_hash, block_timestamp = excluded.block_timestamp`)
       .bind(chain, Number(block.number), block.hash, block.parentHash, Number(block.timestamp)),
-    ...payments.map((payment) => db.prepare(`INSERT INTO payment_transactions
+    ...payments.map((payment) =>
+      db
+        .prepare(`INSERT INTO payment_transactions
       (id, payment_intent, chain, tx_hash, event_index, asset, from_address, to_address, amount_units, block_number, block_hash, block_timestamp, canonical, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(chain, tx_hash, event_index) DO UPDATE SET payment_intent = excluded.payment_intent,
       asset = excluded.asset, from_address = excluded.from_address, to_address = excluded.to_address,
       amount_units = excluded.amount_units, block_number = excluded.block_number, block_hash = excluded.block_hash,
       block_timestamp = excluded.block_timestamp, canonical = 1, updated_at = excluded.updated_at`)
-      .bind(randomId("ptx"), payment.intentId, payment.chain, payment.txHash, payment.eventIndex, payment.asset,
-        payment.from, payment.to, payment.amountUnits, payment.blockNumber, payment.blockHash, payment.blockTimestamp, now, now)),
-    db.prepare("UPDATE chain_states SET last_scanned = ?, locked_until = ?, updated_at = ? WHERE chain = ? AND lock_owner = ?")
+        .bind(
+          randomId("ptx"),
+          payment.intentId,
+          payment.chain,
+          payment.txHash,
+          payment.eventIndex,
+          payment.asset,
+          payment.from,
+          payment.to,
+          payment.amountUnits,
+          payment.blockNumber,
+          payment.blockHash,
+          payment.blockTimestamp,
+          now,
+          now,
+        ),
+    ),
+    db
+      .prepare(
+        "UPDATE chain_states SET last_scanned = ?, locked_until = ?, updated_at = ? WHERE chain = ? AND lock_owner = ?",
+      )
       .bind(Number(block.number), now + 55, now, chain, owner),
   ];
   const result = await db.batch(statements);
   if (!result.at(-1)?.meta.changes) throw new Error(`lost ${chain} scan lease`);
 }
 
-export async function recalculateChain(env: ApiEnv, network: NetworkConfig, intents: IntentRow[], head: number, reorged: Set<string>): Promise<void> {
-  const transactions = await all<PaymentTransactionRow>(env.DB, "SELECT * FROM payment_transactions WHERE chain = ? ORDER BY block_number, event_index", network.name);
+export async function recalculateChain(
+  env: ApiEnv,
+  network: NetworkConfig,
+  intents: IntentRow[],
+  head: number,
+  reorged: Set<string>,
+): Promise<void> {
+  const transactions = await all<PaymentTransactionRow>(
+    env.DB,
+    "SELECT * FROM payment_transactions WHERE chain = ? ORDER BY block_number, event_index",
+    network.name,
+  );
   const byIntent = new Map<string, PaymentTransactionRow[]>();
   for (const transaction of transactions) {
     const list = byIntent.get(transaction.payment_intent) ?? [];
@@ -223,7 +326,12 @@ export async function recalculateChain(env: ApiEnv, network: NetworkConfig, inte
     byIntent.set(transaction.payment_intent, list);
   }
   const grace = intSetting(env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
-  const minTokenBps = intSetting(env.SWEEPER_MIN_TOKEN_PAYMENT_BPS, "SWEEPER_MIN_TOKEN_PAYMENT_BPS", 1, 10_000);
+  const minTokenBps = intSetting(
+    env.SWEEPER_MIN_TOKEN_PAYMENT_BPS,
+    "SWEEPER_MIN_TOKEN_PAYMENT_BPS",
+    1,
+    10_000,
+  );
   const now = unixNow();
   for (const intent of intents) {
     let received = 0n;
@@ -237,7 +345,9 @@ export async function recalculateChain(env: ApiEnv, network: NetworkConfig, inte
         continue;
       }
       const amount = BigInt(transaction.amount_units);
-      const isConfirmed = head >= transaction.block_number && head - transaction.block_number + 1 >= intent.confirmations;
+      const isConfirmed =
+        head >= transaction.block_number &&
+        head - transaction.block_number + 1 >= intent.confirmations;
       if (isConfirmed) allConfirmed += amount;
       if (transaction.block_timestamp > intent.expires_at + grace) continue;
       received += amount;
@@ -245,10 +355,32 @@ export async function recalculateChain(env: ApiEnv, network: NetworkConfig, inte
       hashes.push(transaction.tx_hash);
     }
     const expected = BigInt(intent.expected_units);
-    const status = deriveStatus(received, confirmed, expected, now > intent.expires_at, reorged.has(intent.id) || intent.status === "reorged");
+    const status = deriveStatus(
+      received,
+      confirmed,
+      expected,
+      now > intent.expires_at,
+      reorged.has(intent.id) || intent.status === "reorged",
+    );
     if (status === "reorged") hashes.push(...orphanedHashes);
-    const eligible = eligibleForSweep(Boolean(intent.token_address), status, allConfirmed, expected, now > intent.expires_at + grace, minTokenBps);
-    await updatePayment(env.DB, intent, received, confirmed, allConfirmed, status, hashes, eligible);
+    const eligible = eligibleForSweep(
+      Boolean(intent.token_address),
+      status,
+      allConfirmed,
+      expected,
+      now > intent.expires_at + grace,
+      minTokenBps,
+    );
+    await updatePayment(
+      env.DB,
+      intent,
+      received,
+      confirmed,
+      allConfirmed,
+      status,
+      hashes,
+      eligible,
+    );
     intent.received_units = received.toString();
     intent.confirmed_units = confirmed.toString();
     intent.status = status;
@@ -257,8 +389,12 @@ export async function recalculateChain(env: ApiEnv, network: NetworkConfig, inte
 
 export async function expirePendingIntents(db: D1Database): Promise<void> {
   const now = unixNow();
-  await db.prepare("UPDATE payment_intents SET status = 'expired', updated_at = ? WHERE status = 'pending' AND received_units = '0' AND expires_at < ?")
-    .bind(now, now).run();
+  await db
+    .prepare(
+      "UPDATE payment_intents SET status = 'expired', updated_at = ? WHERE status = 'pending' AND received_units = '0' AND expires_at < ?",
+    )
+    .bind(now, now)
+    .run();
 }
 
 async function updatePayment(
@@ -272,27 +408,59 @@ async function updatePayment(
   sweepEligible: boolean,
 ): Promise<void> {
   const now = unixNow();
-  const changed = intent.received_units !== received.toString() || intent.confirmed_units !== confirmed.toString() || intent.status !== status;
+  const changed =
+    intent.received_units !== received.toString() ||
+    intent.confirmed_units !== confirmed.toString() ||
+    intent.status !== status;
   const statements: D1PreparedStatement[] = [];
-  if (changed) statements.push(db.prepare(`UPDATE payment_intents SET received_units = ?, confirmed_units = ?, status = ?, updated_at = ? WHERE id = ?`)
-    .bind(received.toString(), confirmed.toString(), status, now, intent.id));
+  if (changed)
+    statements.push(
+      db
+        .prepare(
+          `UPDATE payment_intents SET received_units = ?, confirmed_units = ?, status = ?, updated_at = ? WHERE id = ?`,
+        )
+        .bind(received.toString(), confirmed.toString(), status, now, intent.id),
+    );
 
-  const job = await db.prepare("SELECT id, observed_units, status FROM sweep_jobs WHERE payment_intent = ?")
-    .bind(intent.id).first<{ id: string; observed_units: string; status: string }>();
+  const job = await db
+    .prepare("SELECT id, observed_units, status FROM sweep_jobs WHERE payment_intent = ?")
+    .bind(intent.id)
+    .first<{ id: string; observed_units: string; status: string }>();
   if (!job && sweepEligible) {
-    statements.push(db.prepare(`INSERT INTO sweep_jobs
+    statements.push(
+      db
+        .prepare(`INSERT INTO sweep_jobs
       (id, payment_intent, chain, observed_units, remaining_units, status, attempts, next_attempt_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, '0', 'queued', 0, ?, ?, ?)`)
-      .bind(randomId("swp"), intent.id, intent.chain, sweepUnits.toString(), now, now, now));
+        .bind(randomId("swp"), intent.id, intent.chain, sweepUnits.toString(), now, now, now),
+    );
   } else if (job) {
     if (!sweepEligible && !["complete", "external", "paused"].includes(job.status)) {
-      statements.push(db.prepare("UPDATE sweep_jobs SET observed_units = ?, status = 'paused', lock_owner = '', locked_until = 0, updated_at = ? WHERE id = ?")
-        .bind(sweepUnits.toString(), now, job.id));
-    } else if (sweepEligible && (job.status === "paused" || (["complete", "external"].includes(job.status) && job.observed_units !== sweepUnits.toString()))) {
-      statements.push(db.prepare(`UPDATE sweep_jobs SET observed_units = ?, status = 'queued', next_attempt_at = ?, completed_at = NULL,
-        lock_owner = '', locked_until = 0, updated_at = ? WHERE id = ?`).bind(sweepUnits.toString(), now, now, job.id));
+      statements.push(
+        db
+          .prepare(
+            "UPDATE sweep_jobs SET observed_units = ?, status = 'paused', lock_owner = '', locked_until = 0, updated_at = ? WHERE id = ?",
+          )
+          .bind(sweepUnits.toString(), now, job.id),
+      );
+    } else if (
+      sweepEligible &&
+      (job.status === "paused" ||
+        (["complete", "external"].includes(job.status) &&
+          job.observed_units !== sweepUnits.toString()))
+    ) {
+      statements.push(
+        db
+          .prepare(`UPDATE sweep_jobs SET observed_units = ?, status = 'queued', next_attempt_at = ?, completed_at = NULL,
+        lock_owner = '', locked_until = 0, updated_at = ? WHERE id = ?`)
+          .bind(sweepUnits.toString(), now, now, job.id),
+      );
     } else if (job.observed_units !== sweepUnits.toString()) {
-      statements.push(db.prepare("UPDATE sweep_jobs SET observed_units = ?, updated_at = ? WHERE id = ?").bind(sweepUnits.toString(), now, job.id));
+      statements.push(
+        db
+          .prepare("UPDATE sweep_jobs SET observed_units = ?, updated_at = ? WHERE id = ?")
+          .bind(sweepUnits.toString(), now, job.id),
+      );
     }
   }
 
@@ -305,39 +473,57 @@ async function updatePayment(
       id: eventId,
       type: eventType,
       createdAt: new Date(now * 1000).toISOString(),
-      data: { paymentIntent: {
-        id: intent.id,
-        externalId: intent.external_id,
-        kind: intent.kind,
-        chain: intent.chain,
-        chainId: intent.chain_id,
-        asset: intent.asset,
-        expectedAmount: intent.expected_amount,
-        receivedUnits: received.toString(),
-        confirmedUnits: confirmed.toString(),
-        depositAddress: intent.deposit_address,
-        status,
-        transactionHashes: hashes,
-      } },
+      data: {
+        paymentIntent: {
+          id: intent.id,
+          externalId: intent.external_id,
+          kind: intent.kind,
+          chain: intent.chain,
+          chainId: intent.chain_id,
+          asset: intent.asset,
+          expectedAmount: intent.expected_amount,
+          receivedUnits: received.toString(),
+          confirmedUnits: confirmed.toString(),
+          depositAddress: intent.deposit_address,
+          status,
+          transactionHashes: hashes,
+        },
+      },
     });
-    statements.push(db.prepare(`INSERT INTO webhook_events
+    statements.push(
+      db
+        .prepare(`INSERT INTO webhook_events
       (event_id, type, payment_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`).bind(eventId, eventType, intent.id, body, now, now, now));
+      VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`)
+        .bind(eventId, eventType, intent.id, body, now, now, now),
+    );
   }
   if (statements.length) await db.batch(statements);
 }
 
 export async function deliverWebhooks(env: ApiEnv): Promise<void> {
-  if (env.PAYMENT_WEBHOOK_SECRET.length < 24) throw new Error("PAYMENT_WEBHOOK_SECRET must be at least 24 characters");
+  if (env.PAYMENT_WEBHOOK_SECRET.length < 24)
+    throw new Error("PAYMENT_WEBHOOK_SECRET must be at least 24 characters");
   const endpoint = new URL(env.PAYMENT_WEBHOOK_URL);
   if (endpoint.protocol !== "https:") throw new Error("PAYMENT_WEBHOOK_URL must use HTTPS");
   const now = unixNow();
-  const events = await all<{ event_id: string; body: string; attempts: number }>(env.DB,
-    "SELECT event_id, body, attempts FROM webhook_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at LIMIT 20", now);
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.PAYMENT_WEBHOOK_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const events = await all<{ event_id: string; body: string; attempts: number }>(
+    env.DB,
+    "SELECT event_id, body, attempts FROM webhook_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at LIMIT 20",
+    now,
+  );
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(env.PAYMENT_WEBHOOK_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
   for (const event of events) {
     const timestamp = unixNow().toString();
-    const signature = toHexString(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${event.body}`)));
+    const signature = toHexString(
+      await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${event.body}`)),
+    );
     let error = "";
     try {
       const response = await fetch(endpoint, {
@@ -359,29 +545,51 @@ export async function deliverWebhooks(env: ApiEnv): Promise<void> {
     }
     const attempts = event.attempts + 1;
     if (!error) {
-      await env.DB.prepare("UPDATE webhook_events SET status = 'delivered', attempts = ?, last_error = '', delivered_at = ?, updated_at = ? WHERE event_id = ?")
-        .bind(attempts, unixNow(), unixNow(), event.event_id).run();
+      await env.DB.prepare(
+        "UPDATE webhook_events SET status = 'delivered', attempts = ?, last_error = '', delivered_at = ?, updated_at = ? WHERE event_id = ?",
+      )
+        .bind(attempts, unixNow(), unixNow(), event.event_id)
+        .run();
     } else {
       const delay = Math.min(3_600, 2 ** Math.min(attempts, 12));
-      await env.DB.prepare("UPDATE webhook_events SET attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ?")
-        .bind(attempts, error.slice(0, 1_000), unixNow() + delay, unixNow(), event.event_id).run();
+      await env.DB.prepare(
+        "UPDATE webhook_events SET attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ?",
+      )
+        .bind(attempts, error.slice(0, 1_000), unixNow() + delay, unixNow(), event.event_id)
+        .run();
     }
   }
 }
 
 async function dispatchSweeps(env: ApiEnv): Promise<void> {
   const now = unixNow();
-  const jobs = await all<{ id: string }>(env.DB, `SELECT id FROM sweep_jobs
+  const jobs = await all<{ id: string }>(
+    env.DB,
+    `SELECT id FROM sweep_jobs
     WHERE ((status = 'queued' AND next_attempt_at <= ?) OR (status = 'processing' AND locked_until <= ?))
-      AND last_dispatched_at <= ? ORDER BY next_attempt_at LIMIT 100`, now, now, now - 45);
+      AND last_dispatched_at <= ? ORDER BY next_attempt_at LIMIT 100`,
+    now,
+    now,
+    now - 45,
+  );
   if (!jobs.length) return;
-  await env.SWEEP_QUEUE.sendBatch(jobs.map((job) => ({ body: { jobId: job.id } satisfies SweepMessage })));
-  await env.DB.batch(jobs.map((job) => env.DB.prepare("UPDATE sweep_jobs SET last_dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'")
-    .bind(now, now, job.id)));
+  await env.SWEEP_QUEUE.sendBatch(
+    jobs.map((job) => ({ body: { jobId: job.id } satisfies SweepMessage })),
+  );
+  await env.DB.batch(
+    jobs.map((job) =>
+      env.DB.prepare(
+        "UPDATE sweep_jobs SET last_dispatched_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'",
+      ).bind(now, now, job.id),
+    ),
+  );
 }
 
 export async function all<T>(db: D1Database, sql: string, ...bindings: unknown[]): Promise<T[]> {
-  const result = await db.prepare(sql).bind(...bindings).all<T>();
+  const result = await db
+    .prepare(sql)
+    .bind(...bindings)
+    .all<T>();
   return result.results;
 }
 
