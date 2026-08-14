@@ -24,9 +24,9 @@ flowchart LR
     Gateway -->|"Asynchronous sweep"| Treasury
 ```
 
-Your application remains the system of record for orders, credits, and
-subscriptions. The gateway detects payments and collects funds; it never grants
-a product or renews a subscription.
+Your application remains the system of record for orders and entitlements. The
+gateway detects payments and collects funds; it never fulfills the thing being
+sold.
 
 All payment endpoints use the `/api/payments/v1` prefix and require
 `Authorization: Bearer <PAYMENT_API_KEY>`. Only `GET /health` is public.
@@ -64,7 +64,7 @@ export async function createCryptoCheckout(order: {
       "Idempotency-Key": `payment:${order.paymentAttemptId}`,
     },
     body: JSON.stringify({
-      kind: "credit_pack",
+      kind: "payment",
       externalId: order.id,
       chain: "base",
       asset: "USDC",
@@ -83,12 +83,16 @@ Use one stable `Idempotency-Key` for all retries of the same checkout. The first
 request returns `201`; an identical replay returns `200`. Reusing the key with a
 different body returns `409`.
 
+Use `payment` for a one-time charge and `invoice` for a payable invoice. The
+gateway processes both identically; your application decides what is being
+sold.
+
 The response includes the fields needed by your checkout:
 
 ```json
 {
   "id": "pi_example",
-  "kind": "credit_pack",
+  "kind": "payment",
   "externalId": "order_123",
   "chain": "base",
   "chainId": 8453,
@@ -257,7 +261,7 @@ Example event:
     "paymentIntent": {
       "id": "pi_example",
       "externalId": "order_123",
-      "kind": "credit_pack",
+      "kind": "payment",
       "chain": "base",
       "chainId": 8453,
       "asset": "USDC",
@@ -304,12 +308,12 @@ payments, and non-canonical transactions. The sweep endpoint is operational
 history only. Do not wait for a treasury sweep before fulfilling a `paid`
 intent.
 
-## Monthly subscriptions
+## Recurring billing
 
-Create a new `subscription_invoice` intent for every billing period. Use a new
-invoice ID and idempotency key each month, and activate that period only after
-its own `payment.succeeded` event. The gateway never stores an allowance or
-withdraws from the customer's wallet automatically.
+For any recurring product, create a new `invoice` intent for every billing
+period. Use a new external ID and idempotency key each period, and fulfill it
+only after its own `payment.succeeded` event. The gateway never stores an
+allowance or withdraws from the customer's wallet automatically.
 
 ## Production checklist
 

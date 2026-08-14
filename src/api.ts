@@ -89,12 +89,12 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   const idempotencyKey = request.headers.get("Idempotency-Key")?.trim() ?? "";
   if (!idempotencyKey || idempotencyKey.length > 200) throw new HttpError(400, "Idempotency-Key is required and must be at most 200 characters");
   const body = await readObject(request, ["kind", "externalId", "chain", "asset", "amount", "expiresInSeconds", "metadata"]);
-  const kind = requiredString(body, "kind");
+  const kind = requiredString(body, "kind").trim();
   const externalId = requiredString(body, "externalId").trim();
   const chainName = requiredString(body, "chain").trim();
   const asset = requiredString(body, "asset").trim().toUpperCase();
   const rawAmount = requiredString(body, "amount");
-  if (kind !== "credit_pack" && kind !== "subscription_invoice") throw new HttpError(400, "kind must be credit_pack or subscription_invoice");
+  if (kind !== "payment" && kind !== "invoice") throw new HttpError(400, "kind must be payment or invoice");
   if (!externalId || externalId.length > 200) throw new HttpError(400, "externalId is required and must be at most 200 characters");
   if (rawAmount.trim().length > 100) throw new HttpError(400, "amount must be at most 100 characters");
 

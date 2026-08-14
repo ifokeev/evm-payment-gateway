@@ -18,9 +18,9 @@ and sweep funds into your treasury—without operating servers.
 </div>
 
 > [!IMPORTANT]
-> The gateway detects and collects payments. Your application remains
-> responsible for granting credits, fulfilling orders, and activating monthly
-> subscription invoices. It never performs automatic wallet withdrawals.
+> The gateway detects and collects payments. Your application decides what each
+> intent represents and remains responsible for fulfillment. The gateway never
+> performs automatic wallet withdrawals.
 
 ## Why this gateway
 
@@ -81,7 +81,8 @@ flowchart LR
     Chain -->|"Collected funds"| Treasury
 ```
 
-1. Your backend creates a `credit_pack` or `subscription_invoice` intent.
+1. Your backend creates a generic `payment` or `invoice` intent. Product details
+   stay in your application and optional metadata.
 2. The API returns a unique deposit address, exact amount, QR code, and wallet
    deep link.
 3. Cron scans canonical blocks and tracks `pending`, `underpaid`, `confirming`,
@@ -212,7 +213,7 @@ curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
   -H "Idempotency-Key: checkout-attempt-001" \
   -H "Content-Type: application/json" \
   -d '{
-    "kind": "credit_pack",
+    "kind": "payment",
     "externalId": "order-001",
     "chain": "base-sepolia",
     "asset": "USDC",
@@ -225,6 +226,9 @@ curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
 The response includes the immutable invoice URI and QR plus dynamic
 `remainingAmount`, `remainingUnits`, `topUpPaymentUri`, and
 `topUpQrCodeDataUrl`. Top-up fields become `null` after payment or expiry.
+`kind` is either `payment` for a one-time charge or `invoice` for a payable
+invoice. The gateway processes both identically; product behavior stays in your
+application.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -264,15 +268,6 @@ Read [`SECURITY.md`](SECURITY.md) before production deployment and install
 destination, chain, token calldata, gas, and gas-price policies before storing
 Worker credentials. Keep policy administration and wallet export behind
 human-controlled root quorum.
-
-<details>
-<summary>Upgrading from a legacy local-key installation</summary>
-
-Drain funded legacy addresses before upgrading, or import the original mnemonic
-into Turnkey and verify every derived address. New installations should let
-Turnkey generate a wallet and should never export it.
-
-</details>
 
 ## Development
 

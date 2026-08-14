@@ -55,7 +55,7 @@ export type IntentRow = {
   id: string;
   idempotency_key: string;
   request_hash: string;
-  kind: "credit_pack" | "subscription_invoice";
+  kind: "payment" | "invoice";
   external_id: string;
   chain: string;
   chain_id: number;

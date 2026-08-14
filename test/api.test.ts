@@ -48,6 +48,7 @@ describe("payment API", () => {
     const first = await create(key, { amount: "0010.250000", metadata: { z: 1, a: 2 } });
     expect(first.status).toBe(201);
     const body = await first.json<Record<string, unknown>>();
+    expect(body.kind).toBe("payment");
     expect(body.expectedAmount).toBe("10.25");
     expect(body.expectedUnits).toBe("10250000");
     expect(body.remainingAmount).toBe("10.25");
@@ -111,7 +112,7 @@ describe("payment API", () => {
     const request = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
-      body: JSON.stringify({ kind: "credit_pack", externalId: "order", chain: "test", asset: "USDC", amount: "1", unexpected: true }),
+      body: JSON.stringify({ kind: "payment", externalId: "order", chain: "test", asset: "USDC", amount: "1", unexpected: true }),
     });
     expect((await api.fetch(request)).status).toBe(400);
     const wrongType = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
@@ -122,6 +123,22 @@ describe("payment API", () => {
       method: "POST", headers: { "Content-Type": "application/jsonp", "Idempotency-Key": randomId("idem") }, body: "{}",
     });
     expect((await api.fetch(jsonp)).status).toBe(415);
+  });
+
+  it("accepts only generic payment and invoice kinds", async () => {
+    const invoice = await create(randomId("idem"), { amount: "1", metadata: {}, kind: "invoice" });
+    expect(invoice.status).toBe(201);
+    expect((await invoice.json<{ kind: string }>()).kind).toBe("invoice");
+
+    const invalid = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
+      body: JSON.stringify({ kind: "custom", externalId: "unsupported-kind", chain: "test", asset: "USDC", amount: "1" }),
+    });
+    expect(await (await api.fetch(invalid)).json()).toEqual({ error: "kind must be payment or invoice" });
+    const schema = await bindings.DB.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'payment_intents'")
+      .first<{ sql: string }>();
+    expect(schema?.sql).toContain("kind IN ('payment', 'invoice')");
   });
 
   it("redacts RPC credentials and raw transactions from errors", () => {
@@ -140,7 +157,7 @@ describe("sweep coordinator", () => {
       bindings.DB.prepare(`INSERT INTO payment_intents
         (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,derivation_index,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'credit_pack','order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,900,1,2,'paid',?,'{}',?,?)`)
+         VALUES (?,?,?,'payment','order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,900,1,2,'paid',?,'{}',?,?)`)
         .bind(intentId, randomId("idem"), "a".repeat(64), deposit, now + 3600, now, now),
       bindings.DB.prepare(`INSERT INTO sweep_jobs
         (id,payment_intent,chain,observed_units,remaining_units,status,next_attempt_at,created_at,updated_at)
@@ -166,7 +183,7 @@ describe("confirmation and reorg state", () => {
     await bindings.DB.prepare(`INSERT INTO payment_intents
       (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
        deposit_address,derivation_index,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-       VALUES (?,?,?,'credit_pack','expired-order','test',1337,'ETH','',18,'1','100',?,902,10,2,'pending',?,'{}',?,?)`)
+       VALUES (?,?,?,'invoice','expired-order','test',1337,'ETH','',18,'1','100',?,902,10,2,'pending',?,'{}',?,?)`)
       .bind(intentId, randomId("idem"), "c".repeat(64), "0x6666666666666666666666666666666666666666", now - 1, now - 3601, now - 3601).run();
     await expirePendingIntents(bindings.DB);
     expect((await bindings.DB.prepare("SELECT status FROM payment_intents WHERE id = ?").bind(intentId).first<{ status: string }>())?.status).toBe("expired");
@@ -178,7 +195,7 @@ describe("confirmation and reorg state", () => {
     await bindings.DB.prepare(`INSERT INTO payment_intents
       (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
        deposit_address,derivation_index,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-       VALUES (?,?,?,'credit_pack','reorg-order','test',1337,'ETH','',18,'0.0000000000000001','100',?,901,10,2,'pending',?,'{}',?,?)`)
+       VALUES (?,?,?,'payment','reorg-order','test',1337,'ETH','',18,'0.0000000000000001','100',?,901,10,2,'pending',?,'{}',?,?)`)
       .bind(intentId, randomId("idem"), "b".repeat(64), "0x4444444444444444444444444444444444444444", now + 3600, now, now).run();
     await bindings.DB.prepare(`INSERT INTO payment_transactions
       (id,payment_intent,chain,tx_hash,event_index,asset,from_address,to_address,amount_units,block_number,block_hash,block_timestamp,canonical,created_at,updated_at)
@@ -214,7 +231,7 @@ describe("confirmation and reorg state", () => {
       bindings.DB.prepare(`INSERT INTO payment_intents
         (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,derivation_index,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'credit_pack','late-order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,904,1,2,'expired',?,'{}',?,?)`)
+         VALUES (?,?,?,'payment','late-order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,904,1,2,'expired',?,'{}',?,?)`)
         .bind(intentId, randomId("idem"), "e".repeat(64), "0x8888888888888888888888888888888888888888", now - 120, now - 3600, now - 3600),
       bindings.DB.prepare(`INSERT INTO payment_transactions
         (id,payment_intent,chain,tx_hash,event_index,asset,from_address,to_address,amount_units,block_number,block_hash,block_timestamp,canonical,created_at,updated_at)
@@ -298,7 +315,7 @@ describe("webhook delivery", () => {
       bindings.DB.prepare(`INSERT INTO payment_intents
         (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,derivation_index,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'credit_pack','dispatch-test','test',1337,'ETH','',18,'1','1',?,903,1,2,'paid',?,'{}',?,?)`)
+         VALUES (?,?,?,'invoice','dispatch-test','test',1337,'ETH','',18,'1','1',?,903,1,2,'paid',?,'{}',?,?)`)
         .bind(intentId, randomId("idem"), "d".repeat(64), "0x7777777777777777777777777777777777777777", now + 3600, now, now),
       bindings.DB.prepare(`INSERT INTO sweep_jobs
         (id,payment_intent,chain,observed_units,remaining_units,status,next_attempt_at,last_dispatched_at,created_at,updated_at)
@@ -319,12 +336,12 @@ describe("webhook delivery", () => {
   });
 });
 
-function create(idempotencyKey: string, overrides: { amount: string; metadata: Record<string, unknown> }): Promise<Response> {
+function create(idempotencyKey: string, overrides: { amount: string; metadata: Record<string, unknown>; kind?: "payment" | "invoice" }): Promise<Response> {
   return api.fetch(authorizedRequest("https://gateway.test/api/payments/v1/intents", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
     body: JSON.stringify({
-      kind: "credit_pack", externalId: idempotencyKey, chain: "test", asset: "USDC", expiresInSeconds: 1800, ...overrides,
+      kind: "payment", externalId: idempotencyKey, chain: "test", asset: "USDC", expiresInSeconds: 1800, ...overrides,
     }),
   }));
 }

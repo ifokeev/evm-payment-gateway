@@ -10,7 +10,7 @@ CREATE TABLE payment_intents (
   id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,
   request_hash TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('credit_pack', 'subscription_invoice')),
+  kind TEXT NOT NULL CHECK (kind IN ('payment', 'invoice')),
   external_id TEXT NOT NULL,
   chain TEXT NOT NULL,
   chain_id INTEGER NOT NULL,
