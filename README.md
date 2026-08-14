@@ -1,124 +1,172 @@
-# Cloudflare-native EVM payment gateway
+<div align="center">
 
-The gateway uses two Cloudflare Workers, D1, Queues, and a one-minute Cron
-trigger. There is no VM, container, persistent disk, or polling daemon to
-operate.
+# EVM Payment Gateway
 
-The public Worker creates and polls payment intents, monitors canonical EVM
-blocks, stores history in D1, allocates Turnkey wallet accounts, and signs
-webhooks. The private queue Worker asks Turnkey to sign policy-approved sweeps;
-the deposit seed and deposit private keys never enter Cloudflare. After a
-payment is confirmed, it transfers the complete deposit balance to that
-network's configured `treasuryAddress` (your main wallet).
+**Serverless crypto payments you deploy in your own Cloudflare account.**
 
-See the [application integration guide](INTEGRATION.md) for backend checkout,
-status polling, signed webhooks, idempotent fulfillment, reorg handling, and
-monthly subscription invoices.
+Create exact payment intents, confirm EVM transfers, deliver signed webhooks,
+and sweep funds into your treasury—without operating servers.
 
-## Deploy
+[Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
+[Security](#security) · [Integration guide](INTEGRATION.md)
 
-Requirements: Node.js 22+, Cloudflare Workers Paid, an EVM RPC URL, and a
-Turnkey organization with one dedicated HD wallet. D1 and Queues have free
-allowances, but the Free plan's 10 ms Worker CPU limit is too small for a
-meaningful scanner-and-sweeper test.
+![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![EVM compatible](https://img.shields.io/badge/EVM-Compatible-3C3C3D?style=for-the-badge&logo=ethereum&logoColor=white)
+[![MIT license](https://img.shields.io/badge/License-MIT-2EA44F?style=for-the-badge)](LICENSE)
 
-Before deployment, create two different non-root Turnkey API credentials:
+</div>
 
-1. An address allocator used only by the API Worker.
-2. A transaction signer used only by the sweeper Worker.
+> [!IMPORTANT]
+> The gateway detects and collects payments. Your application remains
+> responsible for granting credits, fulfilling orders, and activating monthly
+> subscription invoices. It never performs automatic wallet withdrawals.
 
-Install the policies in [`turnkey/policies.example.json`](turnkey/policies.example.json)
-before placing either credential in Cloudflare. Replace every placeholder and
-duplicate the native policy per network and the token policy per configured
-token. Keep policy administration, wallet export, and root quorum restricted to
-human-controlled passkeys; neither Worker credential may be a root credential.
+## Why this gateway
+
+| | |
+| --- | --- |
+| **No server operations** | Two Cloudflare Workers, D1, Queues, and Cron replace VMs, containers, and polling daemons. |
+| **Exact checkout** | Every intent receives a unique address, exact decimal amount, EIP-681 deep link, and SVG QR code. |
+| **Reliable settlement** | Confirmation tracking, expiry, partial payments, top-up QR codes, reorg recovery, and transaction history are built in. |
+| **Treasury collection** | Native and ERC-20 balances sweep automatically; token wallets receive only the gas they need. |
+| **Policy-limited custody** | Turnkey holds the deposit wallet and signs only transactions allowed by your policies. Deposit keys never enter Cloudflare. |
+| **Application-safe events** | HMAC-signed, retryable webhooks use stable event IDs for idempotent fulfillment. |
+
+## Supported networks
+
+Networks and tokens are configuration, not hard-coded branches. The included
+presets cover:
+
+| Network | Production | Testnet | Native asset | Example tokens |
+| --- | --- | --- | --- | --- |
+| Ethereum | Mainnet | Sepolia | ETH | USDC, USDT |
+| Base | Mainnet | Sepolia | ETH | USDC |
+| BNB Chain | Mainnet | BNB Testnet | BNB / TBNB | USDT on mainnet |
+
+Always verify mainnet token contracts with their issuers before accepting
+payments.
+
+## How it works
+
+```mermaid
+flowchart LR
+    App["Application backend"]
+    Customer["Customer wallet"]
+    Webhook["Webhook receiver"]
+    RPC["HTTPS EVM RPC"]
+    Chain["EVM network"]
+    Turnkey["Turnkey wallet"]
+    Treasury["Treasury wallet"]
+
+    subgraph CF["Your Cloudflare account"]
+        API["Public API Worker"]
+        DB[(D1)]
+        Cron["1-minute Cron"]
+        Queue[[Sweep Queue]]
+        Sweeper["Private Sweeper Worker"]
+    end
+
+    App -->|"Create and poll intents"| API
+    API -->|"Signed events"| Webhook
+    API <--> DB
+    Cron --> API
+    API -->|"Allocate addresses"| Turnkey
+    API -->|"Scan canonical blocks"| RPC
+    Customer -->|"Pay exact amount"| Chain
+    RPC <--> Chain
+    API --> Queue --> Sweeper
+    Sweeper -->|"Policy-approved signing"| Turnkey
+    Sweeper -->|"Broadcast sweep"| RPC
+    Chain -->|"Collected funds"| Treasury
+```
+
+1. Your backend creates a `credit_pack` or `subscription_invoice` intent.
+2. The API returns a unique deposit address, exact amount, QR code, and wallet
+   deep link.
+3. Cron scans canonical blocks and tracks `pending`, `underpaid`, `confirming`,
+   `paid`, `expired`, and `reorged` states.
+4. A confirmed payment emits `payment.succeeded`; a later chain reorg emits
+   `payment.reorged`.
+5. The private Worker sweeps the complete recoverable balance to your configured
+   treasury.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> underpaid: Partial payment
+    pending --> confirming: Full amount observed
+    underpaid --> confirming: Timely top-up
+    pending --> expired: No timely payment
+    expired --> confirming: Timely transaction found during grace
+    confirming --> paid: Confirmations reached
+    paid --> reorged: Transaction becomes non-canonical
+    reorged --> paid: Payment reconfirmed
+```
+
+Native deposits pay their own sweep fee. USDC and USDT deposit addresses receive
+only the missing ETH or BNB from a deliberately low-balance gas wallet before
+their complete token balance is swept. Gas funding is capped cumulatively per
+sweep job.
+
+## Quick start
+
+### Requirements
+
+- Node.js 22 or newer
+- A Cloudflare account with Workers, D1, Queues, and Cron enabled
+- An HTTPS RPC endpoint for each EVM network
+- A Turnkey organization with one dedicated HD wallet
+- A treasury address; use a Safe or another multisig for production
+
+### Deploy
 
 ```bash
+git clone https://github.com/ifokeev/evm-payment-gateway.git
+cd evm-payment-gateway
 npm ci
 cp .api.secrets.example .api.secrets
 cp .sweeper.secrets.example .sweeper.secrets
-# Edit both files. Keep the API and sweeper files separate.
 npx wrangler login
 npm run deploy
 ```
 
-`npm run deploy` deploys the public Worker first, lets Wrangler provision D1
-and the Queue, applies D1 migrations, and then deploys the isolated sweeper.
-The API URL is printed by Wrangler. Re-running the same command upgrades the
-deployment without creating new stateful resources.
+Before running the last command:
 
-Use `wrangler dev --config wrangler.api.jsonc --env-file .api.secrets` for local
-API development. The `secrets.required` allowlists ensure that payment API and
-webhook credentials are never injected into the sweeper Worker. The two files
-must contain different Turnkey API key pairs.
+1. Create separate non-root Turnkey credentials for the API address allocator
+   and transaction signer.
+2. Install and specialize the policies in
+   [`turnkey/policies.example.json`](turnkey/policies.example.json).
+3. Configure networks and secrets in the two local secrets files. Never commit
+   them.
 
-## Treasury flow
+`npm run deploy` provisions and deploys the public API Worker, applies D1
+migrations, and deploys the isolated queue consumer. Re-run it to upgrade the
+same installation.
 
-Each intent receives a unique child deposit address. After the configured
-confirmations:
-
-1. Native ETH/BNB deposits pay their own transfer fee and are swept to
-   `treasuryAddress`. Gas is estimated, so a contract treasury such as a Safe is
-   supported.
-2. USDC/USDT deposits receive only the missing ETH/BNB from the low-balance gas
-   wallet, then the entire token balance is swept to `treasuryAddress`.
-3. The API validates every signed raw sweep against the chain, token, deposit
-   address, treasury, and cumulative gas-funding cap before retaining it.
-
-Use a separate treasury per chain if desired. The same address can also be used
-on all EVM networks. Never use the gas wallet as the treasury.
-
-## Production key management
-
-Turnkey generates the BIP-32 `secp256k1` deposit wallet and derives one account
-at `m/44'/60'/0'/0/{index}` per intent. The API Worker can allocate accounts but
-cannot sign. The sweeper can request Ethereum transaction signatures but cannot
-create credentials, change policies, or export the wallet. Every returned raw
-transaction is independently decoded and validated by the API Worker before it
-is stored or broadcast.
-
-Cloudflare still holds extractable Turnkey API credentials, so Turnkey policies
-are mandatory: they must restrict signing to configured chain IDs, treasury
-addresses, token contracts, ERC-20 `transfer` calldata, gas limits, and
-`maxGasPriceWei`. A compromised Worker can then request only the same constrained
-sweeps it was intended to request.
-
-For production:
-
-- Send every sweep to a Safe or other multisig treasury. Never give the Worker
-  treasury owner keys.
-- Use a separate, deliberately low-balance gas wallet per chain. The normal
-  gateway flow funds only confirmed deposit addresses and enforces the
-  cumulative cap, but a compromised sweeper can drain the gas wallet directly.
-- Keep Turnkey recovery material and API credential backups in 1Password with
-  restricted human access. Do not store or fetch an exported deposit seed from
-  1Password at runtime.
-- Sweep frequently, monitor failed jobs and gas-wallet balances, and keep the
-  configured cumulative gas-funding cap small.
-
-1Password is a suitable backup and operational vault, but not an EVM HSM/MPC
-signer. Its non-extractable SSH agent does not sign EVM transactions. See the
-[Turnkey signing API](https://docs.turnkey.com/api-reference/activities/sign-transaction),
-[Turnkey EVM policy examples](https://docs.turnkey.com/features/policies/examples/ethereum),
-and [Cloudflare secret documentation](https://developers.cloudflare.com/workers/configuration/secrets/)
-for the relevant security boundaries.
-
-Do not upgrade an installation with funded legacy xprv-derived addresses until
-those addresses are drained or the original mnemonic has been imported into
-Turnkey and every derived address has been verified. New installations should
-let Turnkey generate a new wallet and should never export it.
+> [!WARNING]
+> Start on Base Sepolia with disposable credentials and test funds. Review the
+> [security model](#security) before enabling any mainnet network.
 
 ## Configuration
 
-Both Workers receive a JSON network list because their secrets must remain
-isolated. The non-key fields must match exactly. A network object is:
+The Workers intentionally receive separate secret sets:
+
+| API Worker | Sweeper Worker |
+| --- | --- |
+| Payment API and webhook secrets | No payment API or webhook secrets |
+| Turnkey address-allocator credential | Different Turnkey signer credential |
+| Network configuration without gas keys | Matching network configuration plus low-balance gas keys for token networks |
+
+<details>
+<summary>Network configuration example</summary>
 
 ```json
 {
   "name": "base-sepolia",
   "chainId": 84532,
-  "rpcUrl": "https://your-private-rpc",
-  "treasuryAddress": "0xYourMainWallet",
+  "rpcUrl": "https://rpc-provider.example",
+  "treasuryAddress": "0xYourTreasuryAddress",
   "confirmations": 3,
   "maxGasPriceWei": "5000000000",
   "nativeAsset": "ETH",
@@ -132,80 +180,131 @@ isolated. The non-key fields must match exactly. A network object is:
 }
 ```
 
-All RPC and explorer URLs, and `PAYMENT_WEBHOOK_URL`, must use HTTPS. The API
-Worker's `NETWORKS_JSON` must never contain `gasPrivateKey`; the sweeper copy
-adds it only on networks with configured tokens. That key should control a
-deliberately low-balance wallet. Native-only networks do not need it.
-`maxGasPriceWei` is a hard signing and validation ceiling; choose a chain-specific
-operational maximum and use the same value in the matching Turnkey policies.
-`networks.example.json` contains presets for Ethereum, Base, and BNB Chain
-mainnets/testnets; replace every RPC URL and treasury address, delete unused
-networks, then minify it into `NETWORKS_JSON`. Verify token contracts against
-their issuers before using mainnet.
+</details>
 
-The API contract remains `/api/payments/v1`: create an intent with `POST
-/intents`, poll with `GET /intents/{id}`, inspect `/transactions` and `/sweep`,
-and use `/health` for scanner state. Crypto subscriptions remain manual monthly
-`subscription_invoice` intents; the gateway never pulls funds automatically.
+Copy the networks you need from [`networks.example.json`](networks.example.json),
+replace every RPC URL and treasury address, remove unused networks, and minify
+the result into `NETWORKS_JSON`. The matching `SWEEPER_NETWORKS_JSON` adds
+`gasPrivateKey` only to networks with configured tokens.
 
-Create a Base Sepolia native-token test intent with the URL printed by
-Wrangler:
+All RPC, explorer, and webhook URLs must use HTTPS. The API configuration
+rejects gas private keys, native-only networks reject unused gas keys, and a gas
+wallet can never equal the treasury.
+
+| Setting | Purpose |
+| --- | --- |
+| `DEFAULT_EXPIRY_SECONDS` | Default checkout lifetime. |
+| `PAYMENT_GRACE_SECONDS` | Accepts transactions mined shortly after expiry. |
+| `REORG_HISTORY_BLOCKS` | Canonical block window retained for reorg recovery. |
+| `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment worth recovering. |
+| `SWEEPER_MAX_GAS_FUNDING_WEI` | Cumulative gas-funding ceiling for one sweep. |
+| `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated sweep gas. |
+| `SWEEPER_RETRY_SECONDS` | Delay before retrying incomplete sweeps. |
+
+## API
+
+All payment routes use `/api/payments/v1`. Only `GET /health` is public; every
+intent route requires the server-side bearer key.
 
 ```bash
 curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
   -H "Authorization: Bearer $PAYMENT_API_KEY" \
-  -H "Idempotency-Key: smoke-test-001" \
+  -H "Idempotency-Key: checkout-attempt-001" \
   -H "Content-Type: application/json" \
   -d '{
     "kind": "credit_pack",
-    "externalId": "smoke-test-001",
+    "externalId": "order-001",
     "chain": "base-sepolia",
-    "asset": "ETH",
-    "amount": "0.0001",
+    "asset": "USDC",
+    "amount": "10.25",
     "expiresInSeconds": 1800,
-    "metadata": { "accountId": "test-account" }
+    "metadata": { "accountId": "account-001" }
   }'
 ```
 
-Pay the returned `paymentUri` or QR code, then poll
-`GET /api/payments/v1/intents/{id}` with the same bearer token.
+The response includes the immutable invoice URI and QR plus dynamic
+`remainingAmount`, `remainingUnits`, `topUpPaymentUri`, and
+`topUpQrCodeDataUrl`. Top-up fields become `null` after payment or expiry.
 
-## Deploy button
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/intents` | Create or idempotently replay an intent. |
+| `GET` | `/intents/{id}` | Poll state and included transactions. |
+| `GET` | `/intents/{id}/transactions` | Inspect payment transaction history. |
+| `GET` | `/intents/{id}/sweep` | Inspect treasury collection history. |
+| `GET` | `/health` | Read scanner progress by network. |
 
-Cloudflare's deploy button currently requires a public GitHub/GitLab repository
-and deploys only one Worker from a multi-Worker repository. This repository is
-private and the signer must remain a separate Worker, so a button would be
-incomplete today. Add it when the project becomes public and Cloudflare supports
-multi-Worker deploy buttons; until then `npm run deploy` is the complete path.
+See [Application integration](INTEGRATION.md) for the complete request and
+response contract, webhook verification code, polling guidance, idempotent
+fulfillment, partial payments, reorgs, and monthly invoices.
 
-## Verify
+## Security
+
+This gateway moves real funds. Its primary boundaries are credential isolation
+and restrictive Turnkey policies:
+
+- Turnkey generates and retains the deposit wallet. Never export its seed into
+  Cloudflare.
+- The API credential can allocate accounts but cannot sign. The sweeper
+  credential can request only policy-approved EVM transactions.
+- The API independently decodes every signed raw transaction and validates its
+  signer, chain, destination, calldata, value, gas, and gas price before storage
+  or broadcast.
+- Treasury keys and Safe owner keys never enter either Worker.
+- Each chain uses a separate, deliberately low-balance gas wallet. A compromised
+  sweeper can drain that wallet, so monitor and fund it conservatively.
+- Webhooks use HMAC-SHA256 over the exact body and timestamp, never follow
+  redirects, and retry with stable event IDs.
+
+Keep Turnkey recovery material and credential backups in an access-restricted
+vault such as 1Password. Do not fetch an exported seed from a password manager
+at runtime; 1Password is an operational vault, not an EVM signer.
+
+Read [`SECURITY.md`](SECURITY.md) before production deployment and install
+destination, chain, token calldata, gas, and gas-price policies before storing
+Worker credentials. Keep policy administration and wallet export behind
+human-controlled root quorum.
+
+<details>
+<summary>Upgrading from a legacy local-key installation</summary>
+
+Drain funded legacy addresses before upgrading, or import the original mnemonic
+into Turnkey and verify every derived address. New installations should let
+Turnkey generate a wallet and should never export it.
+
+</details>
+
+## Development
 
 ```bash
+npm ci
 npm run check
 ```
 
-Tests execute in Cloudflare's `workerd` runtime with a real local D1 database.
+Tests execute in Cloudflare's `workerd` runtime against a real local D1
+database. `npm run check` runs TypeScript checking, the deterministic payment
+and sweep suite, and dry-runs both Worker deployments.
 
-## Test on Cloudflare
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the API Worker locally. |
+| `npm test` | Run the Worker and D1 tests. |
+| `npm run typecheck` | Check TypeScript without emitting files. |
+| `npm run deploy:dry-run` | Build both Workers without deploying. |
+| `npm run check` | Run every required verification. |
+| `npm run deploy` | Deploy or upgrade both Workers. |
 
-Start on Base Sepolia with disposable keys and no real funds. You need:
+For a live end-to-end test, start with a small Base Sepolia native payment, then
+repeat with USDC to exercise automatic gas funding. Test reorg behavior locally;
+a public testnet reorg cannot be forced safely.
 
-- a Cloudflare login or scoped API token;
-- a Base Sepolia RPC URL;
-- a dedicated Turnkey test wallet;
-- separate non-root allocator and signer API credentials with the example
-  policies installed;
-- a test treasury address;
-- a low-balance gas-wallet key plus test ETH for USDC sweeps;
-- a staging webhook URL and two random secrets for API and webhook signing.
+## Contributing
 
-Put the allocator credential in `.api.secrets`; put the signer credential and
-gas-wallet key in `.sweeper.secrets`. Then run `npm run deploy`. Wrangler
-provisions the D1 database and Queue, applies the schema, and deploys both
-Workers. The Turnkey wallet seed is not placed in either file.
+Issues and pull requests are welcome. Keep changes focused, add a regression
+test for payment or security behavior, and run `npm run check` before opening a
+pull request. Report vulnerabilities through GitHub's private vulnerability
+reporting instead of a public issue.
 
-For the first end-to-end run, create a small native-ETH intent, pay it, and
-verify `pending -> confirming -> paid`, one signed webhook, and a completed
-sweep into the treasury. Repeat with test USDC to exercise automatic gas
-funding, then check underpayment and expiry. Reorg behavior stays in the local
-deterministic suite because a public testnet reorg cannot be safely forced.
+## License
+
+Released under the [MIT License](LICENSE).
