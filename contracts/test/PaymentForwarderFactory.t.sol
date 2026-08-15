@@ -199,6 +199,30 @@ contract PaymentForwarderFactoryTest is TestBase {
         assertTrue(factory.predict(salt, treasury, address(0)) != factory.predict(salt, treasury, address(1)));
     }
 
+    function testWrongAssetsRemainRecoverableToTreasury() public {
+        MockToken intended = new MockToken();
+        MockToken wrong = new MockToken();
+        bytes32 salt = keccak256("wrong-assets");
+        address predicted = factory.predict(salt, treasury, address(intended));
+        vm.deal(predicted, 1 ether);
+        wrong.mint(predicted, 25);
+
+        (address forwarder,) = factory.deployAndCollect(salt, treasury, address(intended));
+        PaymentForwarder(payable(forwarder)).collectNative();
+        PaymentForwarder(payable(forwarder)).collectToken(address(wrong));
+
+        assertEq(treasury.balance, 1 ether);
+        assertEq(wrong.balanceOf(treasury), 25);
+        assertEq(forwarder.balance, 0);
+        assertEq(wrong.balanceOf(forwarder), 0);
+    }
+
+    function testZeroAddressCannotBeCollectedAsToken() public {
+        (address forwarder,) = factory.deployAndCollect(keccak256("invalid-token"), treasury, address(0));
+        vm.expectRevert(PaymentForwarder.InvalidAsset.selector);
+        PaymentForwarder(payable(forwarder)).collectToken(address(0));
+    }
+
     function testFuzzPredictionMatchesCreate2Formula(bytes32 salt, address payable fuzzTreasury, address asset) public {
         vm.assume(fuzzTreasury != address(0));
         bytes32 initHash =

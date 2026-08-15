@@ -11,6 +11,9 @@ factory, random salt, treasury, and asset. No private key exists for a deposit
 address. The immutable forwarder can send only its complete native or ERC-20
 balance to the committed treasury.
 
+If a payer sends the wrong asset, anyone can invoke native or token recovery,
+but recovery still routes the complete balance only to the immutable treasury.
+
 The factory and forwarder have no administrator, proxy, upgrade path,
 `delegatecall`, `selfdestruct`, or arbitrary withdrawal destination. Anyone may
 call collection; paying gas never grants control over the funds.

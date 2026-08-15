@@ -96,6 +96,9 @@ flowchart LR
 5. The application receives `payment.succeeded` independently of treasury
    collection, so relayer downtime never changes payment truth.
 
+Unexpected native or ERC-20 assets can also be collected permissionlessly, but
+their only possible destination remains the immutable treasury.
+
 The payer never interacts with the factory directly and never needs extra gas
 beyond the transfer itself. The deposit address never needs ETH or BNB for an
 ERC-20 collection.

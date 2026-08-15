@@ -7,6 +7,7 @@ interface IERC20Balance {
 
 contract PaymentForwarder {
     error InvalidTreasury();
+    error InvalidAsset();
     error NativeTransferFailed();
     error TokenTransferFailed();
 
@@ -27,14 +28,26 @@ contract PaymentForwarder {
 
     function collect() external returns (uint256 amount) {
         if (asset == address(0)) return _collectNative();
+        return _collectToken(asset);
+    }
 
-        amount = IERC20Balance(asset).balanceOf(address(this));
+    function collectNative() external returns (uint256 amount) {
+        return _collectNative();
+    }
+
+    function collectToken(address token) external returns (uint256 amount) {
+        if (token == address(0)) revert InvalidAsset();
+        return _collectToken(token);
+    }
+
+    function _collectToken(address token) private returns (uint256 amount) {
+        amount = IERC20Balance(token).balanceOf(address(this));
         if (amount == 0) return 0;
-        (bool success, bytes memory result) = asset.call(abi.encodeWithSelector(0xa9059cbb, treasury, amount));
+        (bool success, bytes memory result) = token.call(abi.encodeWithSelector(0xa9059cbb, treasury, amount));
         if (!success || (result.length != 0 && !abi.decode(result, (bool)))) {
             revert TokenTransferFailed();
         }
-        emit FundsCollected(asset, amount);
+        emit FundsCollected(token, amount);
     }
 
     function _collectNative() private returns (uint256 amount) {
