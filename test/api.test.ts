@@ -170,6 +170,51 @@ describe("payment API", () => {
     expect(overpaid.topUpQrCodeDataUrl).toBeNull();
   });
 
+  it("creates independent intents concurrently and collapses racing retries", async () => {
+    const prefix = `concurrent-${crypto.randomUUID()}`;
+    const distinct = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        create(`${prefix}-${index}`, { amount: "1", metadata: { index } }),
+      ),
+    );
+    expect(distinct.map((response) => response.status)).toEqual(Array(12).fill(201));
+    const distinctBodies = await Promise.all(
+      distinct.map((response) => response.json<{ id: string; depositAddress: string }>()),
+    );
+    expect(new Set(distinctBodies.map((intent) => intent.id)).size).toBe(12);
+    expect(new Set(distinctBodies.map((intent) => intent.depositAddress)).size).toBe(12);
+
+    const retryKey = `${prefix}-retry`;
+    const retries = await Promise.all(
+      Array.from({ length: 6 }, () => create(retryKey, { amount: "2", metadata: { retry: true } })),
+    );
+    expect(retries.filter((response) => response.status === 201)).toHaveLength(1);
+    expect(retries.every((response) => response.status === 200 || response.status === 201)).toBe(
+      true,
+    );
+    const retryBodies = await Promise.all(
+      retries.map((response) => response.json<{ id: string }>()),
+    );
+    expect(new Set(retryBodies.map((intent) => intent.id)).size).toBe(1);
+
+    const conflictKey = `${prefix}-conflict`;
+    const conflicts = await Promise.all([
+      create(conflictKey, { amount: "3", metadata: {} }),
+      create(conflictKey, { amount: "4", metadata: {} }),
+    ]);
+    expect(conflicts.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(
+      await bindings.DB.prepare(
+        "SELECT COUNT(*) AS count FROM payment_intents WHERE instr(idempotency_key, ?) = 1",
+      )
+        .bind(prefix)
+        .first(),
+    ).toEqual({ count: 14 });
+    await bindings.DB.prepare("DELETE FROM payment_intents WHERE instr(idempotency_key, ?) = 1")
+      .bind(prefix)
+      .run();
+  });
+
   it("fails closed when the configured factory code is absent or changed", async () => {
     rpcFactoryCode = "0x6001";
     const response = await create(randomId("idem"), { amount: "1", metadata: {} });
@@ -264,8 +309,10 @@ describe("sweep coordinator", () => {
         (id,payment_intent,chain,observed_units,remaining_units,status,next_attempt_at,created_at,updated_at)
         VALUES (?,?,'test','100','0','queued',?,?,?)`).bind(jobId, intentId, now, now, now),
     ]);
-    const owner = randomId("owner");
-    expect(await coordinator.claimSweep(jobId, owner)).not.toBeNull();
+    const owners = [randomId("owner"), randomId("owner")];
+    const claims = await Promise.all(owners.map((owner) => coordinator.claimSweep(jobId, owner)));
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    const owner = claims[0] ? owners[0] : owners[1];
     const data = collectionCall(fields.salt, testTreasury, testToken);
     const firstRaw = await relayer.signTransaction({
       type: "legacy",
@@ -442,8 +489,10 @@ describe("chain scanner", () => {
     const now = unixNow();
     const nativeId = randomId("pi");
     const tokenId = randomId("pi");
+    const secondTokenId = randomId("pi");
     const native = intentFields("a1", "");
     const token = intentFields("b2", testToken);
+    const secondToken = intentFields("c3", testToken);
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO payment_intents
         (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
@@ -476,12 +525,29 @@ describe("chain scanner", () => {
         now,
         now,
       ),
+      bindings.DB.prepare(`INSERT INTO payment_intents
+        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+         deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
+         VALUES (?,?,?,'payment','batch-token-2','batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+        secondTokenId,
+        randomId("idem"),
+        "f".repeat(64),
+        testToken,
+        secondToken.address,
+        secondToken.salt,
+        testFactory,
+        secondToken.initCodeHash,
+        now + 3600,
+        now,
+        now,
+      ),
     ]);
 
     const batchSizes: number[] = [];
     const blockRequests: Array<{ params: unknown[] }> = [];
     const logFilters: Array<Record<string, string>> = [];
     const tokenTxHash = `0x${"a".repeat(64)}`;
+    const secondTokenTxHash = `0x${"b".repeat(64)}`;
     let returnTokenPayment = false;
     let activeRpcRequests = 0;
     let maxConcurrentRpcRequests = 0;
@@ -506,21 +572,8 @@ describe("chain scanner", () => {
           logFilters.push(rpc.params[0] as Record<string, string>);
           result = returnTokenPayment
             ? [
-                {
-                  address: testToken,
-                  blockHash: `0x${(150).toString(16).padStart(64, "0")}`,
-                  blockNumber: "0x96",
-                  data: `0x${(100).toString(16).padStart(64, "0")}`,
-                  logIndex: "0x0",
-                  removed: false,
-                  topics: [
-                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-                    `0x${"0".repeat(24)}${"5".repeat(40)}`,
-                    `0x${"0".repeat(24)}${token.address.slice(2).toLowerCase()}`,
-                  ],
-                  transactionHash: tokenTxHash,
-                  transactionIndex: "0x0",
-                },
+                tokenTransferLog(token.address, tokenTxHash, "5", 0),
+                tokenTransferLog(secondToken.address, secondTokenTxHash, "6", 1),
               ]
             : [];
         } else if (rpc.method === "eth_getBlockByNumber") {
@@ -607,9 +660,25 @@ describe("chain scanner", () => {
         .bind(tokenId)
         .first(),
     ).toEqual({ status: "paid" });
+    expect(
+      await bindings.DB.prepare(
+        "SELECT tx_hash, amount_units, block_number FROM payment_transactions WHERE payment_intent = ?",
+      )
+        .bind(secondTokenId)
+        .first(),
+    ).toEqual({ tx_hash: secondTokenTxHash, amount_units: "100", block_number: 150 });
+    expect(
+      await bindings.DB.prepare("SELECT status FROM payment_intents WHERE id = ?")
+        .bind(secondTokenId)
+        .first(),
+    ).toEqual({ status: "paid" });
 
     await bindings.DB.batch([
-      bindings.DB.prepare("DELETE FROM payment_intents WHERE id IN (?, ?)").bind(nativeId, tokenId),
+      bindings.DB.prepare("DELETE FROM payment_intents WHERE id IN (?, ?, ?)").bind(
+        nativeId,
+        tokenId,
+        secondTokenId,
+      ),
       bindings.DB.prepare("DELETE FROM chain_blocks WHERE chain = 'batch-test'"),
       bindings.DB.prepare("DELETE FROM chain_states WHERE chain = 'batch-test'"),
     ]);
@@ -1067,4 +1136,22 @@ function authorizedRequest(url: string, init: RequestInit = {}): Request {
 function intentFields(seed: string, tokenAddress: typeof testToken | "") {
   const salt = `0x${seed.repeat(32)}` as `0x${string}`;
   return { salt, ...counterfactualAddress(testFactory, salt, testTreasury, tokenAddress) };
+}
+
+function tokenTransferLog(to: string, transactionHash: string, fromNibble: string, index: number) {
+  return {
+    address: testToken,
+    blockHash: `0x${(150).toString(16).padStart(64, "0")}`,
+    blockNumber: "0x96",
+    data: `0x${(100).toString(16).padStart(64, "0")}`,
+    logIndex: "0x0",
+    removed: false,
+    topics: [
+      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+      `0x${"0".repeat(24)}${fromNibble.repeat(40)}`,
+      `0x${"0".repeat(24)}${to.slice(2).toLowerCase()}`,
+    ],
+    transactionHash,
+    transactionIndex: `0x${index.toString(16)}`,
+  };
 }
