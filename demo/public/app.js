@@ -1,3 +1,5 @@
+import { walletPayment } from "./wallet.js";
+
 const form = document.querySelector("#payment-form");
 const purpose = document.querySelector("#purpose");
 const purposeHelp = document.querySelector("#purpose-help");
@@ -12,6 +14,7 @@ const intentState = document.querySelector("#intent-state");
 const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
 const copyLabel = document.querySelector("#copy-label");
+const walletLink = document.querySelector("#wallet-link");
 
 let config;
 let turnstileToken = "";
@@ -19,6 +22,8 @@ let turnstileWidget;
 let submitting = false;
 let pollTimer;
 let pollAttempts = 0;
+let openingWallet = false;
+let walletPaymentUri = "";
 let currentIntentId = sessionStorage.getItem("demo:intentId") ?? "";
 let accessToken = sessionStorage.getItem("demo:accessToken") ?? "";
 let idempotencyKey = sessionStorage.getItem("demo:idempotencyKey") ?? crypto.randomUUID();
@@ -45,6 +50,36 @@ copyAddress.addEventListener("click", async () => {
     }, 1_500);
   } catch {
     showGlobalError("Copy failed. Select the address manually.");
+  }
+});
+
+walletLink.addEventListener("click", async (event) => {
+  if (walletLink.getAttribute("aria-disabled") === "true" || !walletPaymentUri) {
+    event.preventDefault();
+    return;
+  }
+  const provider = window.ethereum;
+  if (typeof provider?.request !== "function") return;
+  event.preventDefault();
+  if (openingWallet) return;
+
+  openingWallet = true;
+  globalError.hidden = true;
+  walletLink.textContent = "Opening wallet...";
+  try {
+    const accounts = await provider.request({ method: "eth_requestAccounts" });
+    const payment = walletPayment(walletPaymentUri, accounts?.[0] ?? "");
+    await switchWalletNetwork(provider, payment.chainId);
+    await provider.request({ method: "eth_sendTransaction", params: [payment.transaction] });
+  } catch (error) {
+    showGlobalError(
+      walletErrorCode(error) === 4001
+        ? "Wallet request was cancelled."
+        : "Wallet could not open this payment. Scan the QR code or copy the address.",
+    );
+  } finally {
+    openingWallet = false;
+    walletLink.textContent = "Open wallet";
   }
 });
 
@@ -198,12 +233,13 @@ function renderPayment(state) {
 
   const paymentUri = intent.topUpPaymentUri ?? intent.paymentUri;
   const qrCode = intent.topUpQrCodeDataUrl ?? intent.qrCodeDataUrl;
-  const walletLink = document.querySelector("#wallet-link");
   const paymentQr = document.querySelector("#payment-qr");
   if (!intent.expired && typeof paymentUri === "string" && paymentUri.startsWith("ethereum:")) {
+    walletPaymentUri = paymentUri;
     walletLink.href = paymentUri;
     walletLink.removeAttribute("aria-disabled");
   } else {
+    walletPaymentUri = "";
     walletLink.removeAttribute("href");
     walletLink.setAttribute("aria-disabled", "true");
   }
@@ -216,6 +252,32 @@ function renderPayment(state) {
   renderTransactions(transactions, status, intent.chain);
   renderDelivery(webhookEvent);
   renderSweep(sweep);
+}
+
+async function switchWalletNetwork(provider, chainId) {
+  try {
+    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId }] });
+  } catch (error) {
+    if (walletErrorCode(error) !== 4902 || chainId !== "0x14a34") throw error;
+    await provider.request({
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId,
+          chainName: "Base Sepolia",
+          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+          rpcUrls: ["https://sepolia.base.org"],
+          blockExplorerUrls: ["https://sepolia.basescan.org"],
+        },
+      ],
+    });
+  }
+}
+
+function walletErrorCode(error) {
+  if (!error || typeof error !== "object") return 0;
+  if (typeof error.code === "number") return error.code;
+  return typeof error.data?.originalError?.code === "number" ? error.data.originalError.code : 0;
 }
 
 function renderConfirmation(intent, transactions) {
