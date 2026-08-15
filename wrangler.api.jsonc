@@ -3,6 +3,7 @@
   "name": "evm-payment-gateway-api",
   "main": "src/api.ts",
   "compatibility_date": "2026-08-14",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "workers_dev": true,
   "observability": { "enabled": true },
   "d1_databases": [
