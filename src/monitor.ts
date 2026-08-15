@@ -51,7 +51,7 @@ export async function runScheduled(env: ApiEnv): Promise<void> {
 export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<void> {
   const intents = await all<IntentRow>(
     env.DB,
-    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY derivation_index",
+    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY created_at, id",
     network.name,
   );
   if (!intents.length) return;
@@ -235,14 +235,8 @@ async function rewindIfNeeded(
     fromBlock,
   );
   for (const row of affected) reorged.add(row.id);
+  await rewindCollections(env.DB, network.name, fromBlock);
   await env.DB.batch([
-    env.DB.prepare(`UPDATE sweep_jobs SET status = 'queued', next_attempt_at = ?, completed_at = NULL, updated_at = ?
-      WHERE status IN ('complete', 'external') AND id IN (
-        SELECT sweep_job FROM sweep_transactions WHERE chain = ? AND block_number >= ? AND status = 'confirmed'
-      )`).bind(unixNow(), unixNow(), network.name, fromBlock),
-    env.DB.prepare(
-      "UPDATE sweep_transactions SET status = 'submitted', block_number = NULL, updated_at = ? WHERE chain = ? AND block_number >= ? AND status = 'confirmed'",
-    ).bind(unixNow(), network.name, fromBlock),
     env.DB.prepare(
       "UPDATE payment_transactions SET canonical = 0, updated_at = ? WHERE chain = ? AND block_number >= ? AND canonical = 1",
     ).bind(unixNow(), network.name, fromBlock),
@@ -255,6 +249,55 @@ async function rewindIfNeeded(
     ).bind(ancestor, unixNow(), network.name, owner),
   ]);
   return ancestor;
+}
+
+export async function rewindCollections(
+  db: D1Database,
+  chain: string,
+  fromBlock: number,
+): Promise<void> {
+  const rows = await all<{
+    sweep_job: string;
+    amount_units: string;
+    collected_units: string;
+  }>(
+    db,
+    `SELECT t.sweep_job, t.amount_units, j.collected_units
+     FROM sweep_transactions t JOIN sweep_jobs j ON j.id = t.sweep_job
+     WHERE t.chain = ? AND t.block_number >= ? AND t.status = 'confirmed'`,
+    chain,
+    fromBlock,
+  );
+  if (!rows.length) return;
+  const removed = new Map<string, { collected: bigint; amount: bigint }>();
+  for (const row of rows) {
+    const value = removed.get(row.sweep_job) ?? {
+      collected: BigInt(row.collected_units),
+      amount: 0n,
+    };
+    value.amount += BigInt(row.amount_units);
+    removed.set(row.sweep_job, value);
+  }
+  const now = unixNow();
+  await db.batch([
+    ...[...removed].map(([jobId, value]) =>
+      db
+        .prepare(`UPDATE sweep_jobs SET status = CASE WHEN status = 'paused' THEN status ELSE 'queued' END,
+          collected_units = ?, next_attempt_at = ?, completed_at = NULL, lock_owner = '', locked_until = 0, updated_at = ?
+          WHERE id = ?`)
+        .bind(
+          (value.collected > value.amount ? value.collected - value.amount : 0n).toString(),
+          now,
+          now,
+          jobId,
+        ),
+    ),
+    db
+      .prepare(`UPDATE sweep_transactions SET status = 'submitted', block_number = NULL,
+        amount_units = '0', fee_wei = '0', updated_at = ?
+        WHERE chain = ? AND block_number >= ? AND status = 'confirmed'`)
+      .bind(now, chain, fromBlock),
+  ]);
 }
 
 async function saveBlock(

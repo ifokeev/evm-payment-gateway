@@ -1,11 +1,5 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE gateway_state (
-  key TEXT PRIMARY KEY,
-  value INTEGER NOT NULL CHECK (value >= 0)
-);
-INSERT INTO gateway_state (key, value) VALUES ('next_derivation_index', 0);
-
 CREATE TABLE payment_intents (
   id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,
@@ -22,7 +16,9 @@ CREATE TABLE payment_intents (
   received_units TEXT NOT NULL DEFAULT '0',
   confirmed_units TEXT NOT NULL DEFAULT '0',
   deposit_address TEXT NOT NULL UNIQUE,
-  derivation_index INTEGER NOT NULL UNIQUE,
+  intent_salt TEXT NOT NULL UNIQUE,
+  factory_address TEXT NOT NULL,
+  forwarder_init_code_hash TEXT NOT NULL,
   start_block INTEGER NOT NULL,
   confirmations INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -90,6 +86,7 @@ CREATE TABLE sweep_jobs (
   payment_intent TEXT NOT NULL UNIQUE REFERENCES payment_intents(id) ON DELETE CASCADE,
   chain TEXT NOT NULL,
   observed_units TEXT NOT NULL,
+  collected_units TEXT NOT NULL DEFAULT '0',
   remaining_units TEXT NOT NULL DEFAULT '0',
   status TEXT NOT NULL DEFAULT 'queued',
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -108,12 +105,13 @@ CREATE TABLE sweep_transactions (
   id TEXT PRIMARY KEY,
   sweep_job TEXT NOT NULL REFERENCES sweep_jobs(id) ON DELETE CASCADE,
   chain TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('gas', 'sweep')),
+  kind TEXT NOT NULL CHECK (kind IN ('deploy_collect', 'collect')),
   tx_hash TEXT NOT NULL,
   raw_tx TEXT NOT NULL,
   from_address TEXT NOT NULL,
   to_address TEXT NOT NULL,
   amount_units TEXT NOT NULL,
+  fee_wei TEXT NOT NULL DEFAULT '0',
   nonce INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'prepared',
   block_number INTEGER,

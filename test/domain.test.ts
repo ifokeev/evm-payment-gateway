@@ -1,5 +1,6 @@
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
+import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH } from "../src/contracts.generated";
 import {
   deriveStatus,
   eligibleForSweep,
@@ -7,9 +8,23 @@ import {
   loadNetworks,
   parseAmount,
   paymentUri,
-  remainingGasFunding,
   stableStringify,
 } from "../src/domain";
+
+const relayerPrivateKey = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const relayerAddress = privateKeyToAccount(relayerPrivateKey).address;
+const base = {
+  name: "test",
+  chainId: 1337,
+  rpcUrl: "https://rpc.test",
+  treasuryAddress: "0x2222222222222222222222222222222222222222",
+  factoryAddress: "0x3333333333333333333333333333333333333333",
+  factoryCodeHash: PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH,
+  relayerAddress,
+  confirmations: 2,
+  maxGasPriceWei: "1000000000",
+  nativeAsset: "ETH",
+};
 
 describe("payment domain", () => {
   it("keeps decimal amounts exact through uint256 boundaries", () => {
@@ -38,14 +53,12 @@ describe("payment domain", () => {
     const [network] = loadNetworks(
       JSON.stringify([
         {
+          ...base,
           name: "base",
           chainId: 8453,
-          rpcUrl: "https://rpc.test",
-          treasuryAddress: "0x2222222222222222222222222222222222222222",
-          confirmations: 12,
-          maxGasPriceWei: "5000000000",
-          nativeAsset: "ETH",
-          tokens: { USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 } },
+          tokens: {
+            USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
+          },
         },
       ]),
     ).values();
@@ -55,17 +68,7 @@ describe("payment domain", () => {
     expect(paymentUri(network, "", deposit, "100")).toBe(`ethereum:${deposit}@8453?value=100`);
   });
 
-  it("validates network secrets and token recovery thresholds", () => {
-    const gasPrivateKey = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const base = {
-      name: "test",
-      chainId: 1337,
-      rpcUrl: "https://rpc.test",
-      treasuryAddress: "0x2222222222222222222222222222222222222222",
-      confirmations: 2,
-      maxGasPriceWei: "1000000000",
-      nativeAsset: "ETH",
-    };
+  it("isolates the relayer key and validates contract identities", () => {
     expect(() =>
       loadNetworks(
         JSON.stringify([
@@ -73,32 +76,42 @@ describe("payment domain", () => {
         ]),
       ),
     ).toThrow("treasury");
+    expect(() => loadNetworks(JSON.stringify([{ ...base, factoryCodeHash: "0x1234" }]))).toThrow(
+      "code hash",
+    );
+    expect(() =>
+      loadNetworks(JSON.stringify([{ ...base, relayerAddress: base.treasuryAddress }])),
+    ).toThrow("must differ");
+    expect(() => loadNetworks(JSON.stringify([{ ...base, tokens: {} }]), true)).toThrow(
+      "relayerPrivateKey",
+    );
+    expect(
+      loadNetworks(JSON.stringify([{ ...base, tokens: {}, relayerPrivateKey }]), true).size,
+    ).toBe(1);
     expect(() =>
       loadNetworks(
         JSON.stringify([
           {
             ...base,
-            tokens: {
-              USDC: { address: "0x9999999999999999999999999999999999999999", decimals: 6 },
-            },
+            tokens: {},
+            relayerPrivateKey: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
           },
         ]),
         true,
       ),
-    ).toThrow("gasPrivateKey");
+    ).toThrow("does not match");
+    expect(() =>
+      loadNetworks(JSON.stringify([{ ...base, tokens: {}, relayerPrivateKey }])),
+    ).toThrow("must not contain");
     expect(() =>
       loadNetworks(JSON.stringify([{ ...base, maxGasPriceWei: "0", tokens: {} }])),
     ).toThrow("maxGasPriceWei");
-    expect(loadNetworks(JSON.stringify([{ ...base, tokens: {} }]), true).size).toBe(1);
     expect(() =>
       loadNetworks(JSON.stringify([{ ...base, rpcUrl: "http://rpc.test", tokens: {} }])),
     ).toThrow("HTTPS");
     expect(() =>
       loadNetworks(JSON.stringify([{ ...base, explorerUrl: "javascript:alert(1)", tokens: {} }])),
     ).toThrow("explorer");
-    expect(() => loadNetworks(JSON.stringify([{ ...base, tokens: {}, gasPrivateKey }]))).toThrow(
-      "must not contain gasPrivateKey",
-    );
     expect(() =>
       loadNetworks(
         JSON.stringify([
@@ -117,32 +130,17 @@ describe("payment domain", () => {
         JSON.stringify([
           {
             ...base,
-            tokens: { USDC: { address: base.treasuryAddress, decimals: 6 } },
+            tokens: { USDC: { address: base.factoryAddress, decimals: 6 } },
           },
         ]),
       ),
-    ).toThrow("treasury");
-    expect(() =>
-      loadNetworks(
-        JSON.stringify([
-          {
-            ...base,
-            treasuryAddress: privateKeyToAccount(gasPrivateKey).address,
-            tokens: {
-              USDC: { address: "0x9999999999999999999999999999999999999999", decimals: 6 },
-            },
-            gasPrivateKey,
-          },
-        ]),
-        true,
-      ),
-    ).toThrow("treasury");
+    ).toThrow("factory or relayer");
+  });
+
+  it("recovers only economically useful expired underpayments", () => {
     expect(eligibleForSweep(true, "underpaid", 49n, 100n, true, 5_000)).toBe(false);
     expect(eligibleForSweep(true, "underpaid", 50n, 100n, true, 5_000)).toBe(true);
     expect(eligibleForSweep(false, "underpaid", 1n, 100n, true, 5_000)).toBe(true);
-    expect(remainingGasFunding(100n, ["40", "30"], 30n)).toBe(0n);
-    expect(() => remainingGasFunding(100n, ["60", "40"], 1n)).toThrow("limit");
-    expect(() => remainingGasFunding(100n, ["not-a-number"])).toThrow("history");
   });
 
   it("canonicalizes nested idempotency metadata", () => {

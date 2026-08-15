@@ -8,3 +8,5 @@ node_modules/
 .cloudflare.env
 .dev.vars
 tmp/
+contracts/cache/
+contracts/out/

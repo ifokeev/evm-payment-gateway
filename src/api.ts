@@ -3,9 +3,6 @@ import { renderSVG } from "uqr";
 import {
   type Address,
   createPublicClient,
-  decodeFunctionData,
-  encodeFunctionData,
-  erc20Abi,
   getAddress,
   type Hex,
   http,
@@ -15,21 +12,21 @@ import {
   recoverTransactionAddress,
   type TransactionSerialized,
 } from "viem";
+import { collectionCall, counterfactualAddress, newIntentSalt } from "./create2";
 import {
   formatUnits,
   intSetting,
   loadNetworks,
   parseAmount,
   paymentUri,
-  remainingGasFunding,
   stableStringify,
 } from "./domain";
 import { all, errorText, randomId, runScheduled, safeErrorText, unixNow } from "./monitor";
-import { allocateTurnkeyAddress } from "./turnkey";
 import type {
   ApiEnv,
   IntentRow,
   NetworkConfig,
+  PaymentStatus,
   PaymentTransactionRow,
   SweepJob,
   SweepOutcome,
@@ -37,8 +34,7 @@ import type {
 } from "./types";
 
 const API_ROOT = "/api/payments/v1";
-const MAX_NATIVE_SWEEP_GAS = 1_000_000n;
-const MAX_TOKEN_SWEEP_GAS = 500_000n;
+const MAX_COLLECTION_GAS = 1_000_000n;
 
 export default {
   async fetch(request: Request, env: ApiEnv): Promise<Response> {
@@ -67,6 +63,8 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
 
   if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`)
     return createIntent(request, env);
+  if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics/summary`)
+    return json(await analyticsSummary(env));
   const match = url.pathname.match(
     /^\/api\/payments\/v1\/intents\/([A-Za-z0-9_-]+)(?:\/(transactions|sweep))?$/,
   );
@@ -98,6 +96,134 @@ async function health(env: ApiEnv): Promise<Response> {
       [...networks.keys()].map((name) => [name, { lastScannedBlock: scanned.get(name) ?? null }]),
     ),
   });
+}
+
+async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
+  type Bucket = {
+    chain: string;
+    asset: string;
+    intents: number;
+    statuses: Record<string, number>;
+    requested: bigint;
+    received: bigint;
+    confirmed: bigint;
+    collected: bigint;
+    overpaid: number;
+    expired: number;
+  };
+  const buckets = new Map<string, Bucket>();
+  const bucket = (chain: string, asset: string): Bucket => {
+    const key = `${chain}\0${asset}`;
+    let value = buckets.get(key);
+    if (!value) {
+      value = {
+        chain,
+        asset,
+        intents: 0,
+        statuses: {},
+        requested: 0n,
+        received: 0n,
+        confirmed: 0n,
+        collected: 0n,
+        overpaid: 0,
+        expired: 0,
+      };
+      buckets.set(key, value);
+    }
+    return value;
+  };
+  let cursor = "";
+  for (;;) {
+    const rows = await all<{
+      id: string;
+      chain: string;
+      asset: string;
+      status: string;
+      expected_units: string;
+      received_units: string;
+      confirmed_units: string;
+      expires_at: number;
+    }>(
+      env.DB,
+      `SELECT id, chain, asset, status, expected_units, received_units, confirmed_units, expires_at
+      FROM payment_intents WHERE id > ? ORDER BY id LIMIT 1000`,
+      cursor,
+    );
+    for (const row of rows) {
+      const value = bucket(row.chain, row.asset);
+      const requested = BigInt(row.expected_units);
+      const received = BigInt(row.received_units);
+      value.intents++;
+      value.statuses[row.status] = (value.statuses[row.status] ?? 0) + 1;
+      value.requested += requested;
+      value.received += received;
+      value.confirmed += BigInt(row.confirmed_units);
+      if (received > requested) value.overpaid++;
+      if (row.expires_at < unixNow()) value.expired++;
+    }
+    if (rows.length < 1000) break;
+    cursor = rows[rows.length - 1].id;
+  }
+
+  cursor = "";
+  for (;;) {
+    const rows = await all<{
+      id: string;
+      chain: string;
+      asset: string;
+      collected_units: string;
+    }>(
+      env.DB,
+      `SELECT j.id, i.chain, i.asset, j.collected_units FROM sweep_jobs j
+      JOIN payment_intents i ON i.id = j.payment_intent WHERE j.id > ? ORDER BY j.id LIMIT 1000`,
+      cursor,
+    );
+    for (const row of rows) bucket(row.chain, row.asset).collected += BigInt(row.collected_units);
+    if (rows.length < 1000) break;
+    cursor = rows[rows.length - 1].id;
+  }
+
+  const feesByChain: Record<string, bigint> = {};
+  cursor = "";
+  for (;;) {
+    const rows = await all<{ id: string; chain: string; fee_wei: string }>(
+      env.DB,
+      "SELECT id, chain, fee_wei FROM sweep_transactions WHERE id > ? ORDER BY id LIMIT 1000",
+      cursor,
+    );
+    for (const row of rows)
+      feesByChain[row.chain] = (feesByChain[row.chain] ?? 0n) + BigInt(row.fee_wei);
+    if (rows.length < 1000) break;
+    cursor = rows[rows.length - 1].id;
+  }
+
+  const webhookRows = await all<{ type: string; status: string; count: number }>(
+    env.DB,
+    "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    assets: [...buckets.values()]
+      .sort((left, right) =>
+        `${left.chain}/${left.asset}`.localeCompare(`${right.chain}/${right.asset}`),
+      )
+      .map((value) => ({
+        chain: value.chain,
+        asset: value.asset,
+        intents: value.intents,
+        statuses: value.statuses,
+        requestedUnits: value.requested.toString(),
+        receivedUnits: value.received.toString(),
+        confirmedUnits: value.confirmed.toString(),
+        collectedUnits: value.collected.toString(),
+        overpaidIntents: value.overpaid,
+        expiredIntents: value.expired,
+      })),
+    collectionFeesWei: Object.fromEntries(
+      Object.entries(feesByChain).map(([chain, amount]) => [chain, amount.toString()]),
+    ),
+    webhooks: webhookRows,
+  };
 }
 
 async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
@@ -186,23 +312,25 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 15_000 }) });
   let latest: bigint;
   try {
-    const [chainId, block] = await Promise.all([client.getChainId(), client.getBlockNumber()]);
+    const [chainId, block, factoryCode] = await Promise.all([
+      client.getChainId(),
+      client.getBlockNumber(),
+      client.getCode({ address: network.factoryAddress }),
+    ]);
     if (chainId !== network.chainId) throw new Error("RPC chain ID mismatch");
+    if (!factoryCode || keccak256(factoryCode).toLowerCase() !== network.factoryCodeHash)
+      throw new Error("factory code hash mismatch");
     latest = block;
   } catch {
-    throw new HttpError(503, "network RPC unavailable");
+    throw new HttpError(503, "network RPC or factory unavailable");
   }
-  const counter =
-    await env.DB.prepare(`UPDATE gateway_state SET value = value + 1 WHERE key = 'next_derivation_index'
-    RETURNING value - 1 AS derivation_index`).first<{ derivation_index: number }>();
-  if (!counter) throw new Error("derivation counter is missing");
-  let depositAddress: Address;
-  try {
-    depositAddress = await allocateTurnkeyAddress(env, counter.derivation_index);
-  } catch (error) {
-    console.error("Turnkey address allocation failed", safeErrorText(error));
-    throw new HttpError(503, "deposit signer unavailable");
-  }
+  const intentSalt = newIntentSalt();
+  const { address: depositAddress, initCodeHash } = counterfactualAddress(
+    network.factoryAddress,
+    intentSalt,
+    network.treasuryAddress,
+    token?.address ?? "",
+  );
   const now = unixNow();
   const intent: IntentRow = {
     id: randomId("pi"),
@@ -220,7 +348,9 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     received_units: "0",
     confirmed_units: "0",
     deposit_address: depositAddress,
-    derivation_index: counter.derivation_index,
+    intent_salt: intentSalt,
+    factory_address: network.factoryAddress,
+    forwarder_init_code_hash: initCodeHash,
     start_block: Number(latest),
     confirmations: network.confirmations,
     status: "pending",
@@ -232,9 +362,10 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   try {
     await env.DB.prepare(`INSERT INTO payment_intents
       (id, idempotency_key, request_hash, kind, external_id, chain, chain_id, asset, token_address, decimals,
-       expected_amount, expected_units, received_units, confirmed_units, deposit_address, derivation_index,
+       expected_amount, expected_units, received_units, confirmed_units, deposit_address, intent_salt,
+       factory_address, forwarder_init_code_hash,
        start_block, confirmations, status, expires_at, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
       .bind(
         intent.id,
         idempotencyKey,
@@ -249,7 +380,9 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
         intent.expected_amount,
         intent.expected_units,
         depositAddress,
-        intent.derivation_index,
+        intent.intent_salt,
+        intent.factory_address,
+        intent.forwarder_init_code_hash,
         intent.start_block,
         intent.confirmations,
         intent.expires_at,
@@ -378,6 +511,7 @@ async function publicSweepResponse(
       id: string;
       status: string;
       observed_units: string;
+      collected_units: string;
       remaining_units: string;
       last_error: string;
       completed_at: number | null;
@@ -387,6 +521,7 @@ async function publicSweepResponse(
   return {
     status: job.status,
     observedUnits: job.observed_units,
+    collectedUnits: job.collected_units,
     remainingUnits: job.remaining_units,
     lastError: job.last_error,
     completedAt: job.completed_at ? new Date(job.completed_at * 1_000).toISOString() : null,
@@ -425,7 +560,11 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       asset: intent.asset,
       tokenAddress: intent.token_address,
       depositAddress: intent.deposit_address,
-      derivationIndex: intent.derivation_index,
+      intentSalt: intent.intent_salt,
+      factoryAddress: intent.factory_address,
+      factoryCodeHash: network.factoryCodeHash,
+      forwarderInitCodeHash: intent.forwarder_init_code_hash,
+      relayerAddress: network.relayerAddress,
       treasuryAddress: network.treasuryAddress,
       confirmations: network.confirmations,
       maxGasPriceWei: network.maxGasPriceWei.toString(),
@@ -439,11 +578,12 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
   async registerSweepTransaction(
     jobId: string,
     owner: string,
-    kind: "gas" | "sweep",
+    kind: "deploy_collect" | "collect",
     rawTransaction: Hex,
   ): Promise<SweepTransaction> {
     validateLeaseInput(jobId, owner);
-    if (kind !== "gas" && kind !== "sweep") throw new Error("kind must be gas or sweep");
+    if (kind !== "deploy_collect" && kind !== "collect")
+      throw new Error("invalid collection transaction kind");
     if (!/^0x[0-9a-fA-F]+$/.test(rawTransaction) || rawTransaction.length > 262_146)
       throw new Error("invalid raw transaction");
     const locked = await this.lockedJob(jobId, owner);
@@ -479,71 +619,29 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     });
     const data = transaction.data ?? "0x";
     const value = transaction.value ?? 0n;
-    let amount: bigint;
-    if (kind === "gas") {
-      const maxFunding = BigInt(this.env.SWEEPER_MAX_GAS_FUNDING_WEI);
-      if (
-        !locked.token_address ||
-        !isAddressEqual(transaction.to, locked.deposit_address) ||
-        data !== "0x" ||
-        transaction.gas !== 21_000n ||
-        value <= 0n ||
-        value > maxFunding
-      ) {
-        throw new Error("invalid gas funding transaction");
-      }
-      const prior = await all<{ amount_units: string }>(
-        this.env.DB,
-        "SELECT amount_units FROM sweep_transactions WHERE sweep_job = ? AND kind = 'gas' AND status != 'failed'",
-        jobId,
-      );
-      remainingGasFunding(
-        maxFunding,
-        prior.map((item) => item.amount_units),
-        value,
-      );
-      amount = value;
-    } else {
-      if (!isAddressEqual(from, locked.deposit_address))
-        throw new Error("sweep must be signed by the deposit address");
-      if (!locked.token_address) {
-        if (
-          !isAddressEqual(transaction.to, network.treasuryAddress) ||
-          data !== "0x" ||
-          transaction.gas < 21_000n ||
-          transaction.gas > MAX_NATIVE_SWEEP_GAS ||
-          value <= 0n
-        ) {
-          throw new Error("invalid native sweep transaction");
-        }
-        amount = value;
-      } else {
-        let decoded: ReturnType<typeof decodeFunctionData>;
-        try {
-          decoded = decodeFunctionData({ abi: erc20Abi, data });
-        } catch {
-          throw new Error("invalid token sweep transaction");
-        }
-        if (decoded.functionName !== "transfer" || decoded.args.length !== 2)
-          throw new Error("invalid token sweep transaction");
-        const [recipient, tokenAmount] = decoded.args as readonly [Address, bigint];
-        const canonicalData = encodeFunctionData({
-          abi: erc20Abi,
-          functionName: "transfer",
-          args: [recipient, tokenAmount],
-        });
-        if (
-          !isAddressEqual(transaction.to, locked.token_address) ||
-          value !== 0n ||
-          transaction.gas < 21_000n ||
-          transaction.gas > MAX_TOKEN_SWEEP_GAS ||
-          data.toLowerCase() !== canonicalData.toLowerCase() ||
-          !isAddressEqual(recipient, network.treasuryAddress) ||
-          tokenAmount <= 0n
-        )
-          throw new Error("invalid token sweep transaction");
-        amount = tokenAmount;
-      }
+    const expected = counterfactualAddress(
+      network.factoryAddress,
+      locked.intent_salt,
+      network.treasuryAddress,
+      locked.token_address,
+    );
+    const canonicalData = collectionCall(
+      locked.intent_salt,
+      network.treasuryAddress,
+      locked.token_address,
+    );
+    if (
+      !isAddressEqual(from, network.relayerAddress) ||
+      !isAddressEqual(transaction.to, network.factoryAddress) ||
+      !isAddressEqual(expected.address, locked.deposit_address) ||
+      expected.initCodeHash.toLowerCase() !== locked.forwarder_init_code_hash.toLowerCase() ||
+      locked.factory_address.toLowerCase() !== network.factoryAddress.toLowerCase() ||
+      value !== 0n ||
+      transaction.gas < 21_000n ||
+      transaction.gas > MAX_COLLECTION_GAS ||
+      data.toLowerCase() !== canonicalData.toLowerCase()
+    ) {
+      throw new Error("invalid collection transaction");
     }
     const now = unixNow();
     const row: SweepTransactionRow = {
@@ -555,7 +653,8 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       raw_tx: rawTransaction,
       from_address: from,
       to_address: getAddress(transaction.to),
-      amount_units: amount.toString(),
+      amount_units: "0",
+      fee_wei: "0",
       nonce: transaction.nonce,
       status: "prepared",
       block_number: null,
@@ -590,6 +689,8 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     status: "submitted" | "confirmed" | "failed",
     blockNumber: number,
     error: string,
+    amountUnits: string,
+    feeWei: string,
   ): Promise<void> {
     if (!id || id.length > 80 || !owner || owner.length > 80)
       throw new Error("invalid transaction lease");
@@ -599,6 +700,21 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       !["submitted", "confirmed", "failed"].includes(status)
     )
       throw new Error("invalid transaction result");
+    let amount: bigint;
+    try {
+      amount = BigInt(amountUnits);
+    } catch {
+      throw new Error("invalid collected amount");
+    }
+    if (amount < 0n || (status !== "confirmed" && amount !== 0n))
+      throw new Error("invalid collected amount");
+    let fee: bigint;
+    try {
+      fee = BigInt(feeWei);
+    } catch {
+      throw new Error("invalid transaction fee");
+    }
+    if (fee < 0n || (blockNumber === 0 && fee !== 0n)) throw new Error("invalid transaction fee");
     const row = await this.env.DB.prepare(
       "SELECT sweep_job, status FROM sweep_transactions WHERE id = ?",
     )
@@ -609,9 +725,17 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     if (row.status === "confirmed" && status !== "confirmed")
       throw new Error("confirmed transaction cannot be downgraded");
     await this.env.DB.prepare(
-      "UPDATE sweep_transactions SET status = ?, block_number = ?, last_error = ?, updated_at = ? WHERE id = ?",
+      "UPDATE sweep_transactions SET status = ?, block_number = ?, amount_units = ?, fee_wei = ?, last_error = ?, updated_at = ? WHERE id = ?",
     )
-      .bind(status, blockNumber || null, error.slice(0, 1_000), unixNow(), id)
+      .bind(
+        status,
+        blockNumber || null,
+        amount.toString(),
+        fee.toString(),
+        error.slice(0, 1_000),
+        unixNow(),
+        id,
+      )
       .run();
   }
 
@@ -632,9 +756,28 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     }
     if (remaining < 0n) throw new Error("remainingUnits must be a non-negative integer");
     const now = unixNow();
-    const job = await this.env.DB.prepare("SELECT attempts FROM sweep_jobs WHERE id = ?")
-      .bind(jobId)
-      .first<{ attempts: number }>();
+    const job =
+      await this.env.DB.prepare(`SELECT j.attempts, j.payment_intent, j.observed_units, j.collected_units,
+      i.external_id, i.kind, i.chain, i.chain_id, i.asset, i.expected_amount, i.expected_units,
+      i.deposit_address, i.status AS payment_status, i.expires_at
+      FROM sweep_jobs j JOIN payment_intents i ON i.id = j.payment_intent WHERE j.id = ?`)
+        .bind(jobId)
+        .first<{
+          attempts: number;
+          payment_intent: string;
+          observed_units: string;
+          collected_units: string;
+          external_id: string;
+          kind: IntentRow["kind"];
+          chain: string;
+          chain_id: number;
+          asset: string;
+          expected_amount: string;
+          expected_units: string;
+          deposit_address: Address;
+          payment_status: PaymentStatus;
+          expires_at: number;
+        }>();
     if (!job) throw new Error("sweep job not found");
     const attempts = outcome.error ? job.attempts + 1 : job.attempts;
     const delay =
@@ -643,22 +786,88 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
           ? Math.min(300, 2 ** Math.min(attempts, 8))
           : Math.max(1, Math.min(outcome.delaySeconds, 300))
         : 0;
-    const result =
-      await this.env.DB.prepare(`UPDATE sweep_jobs SET status = ?, remaining_units = ?, attempts = ?, next_attempt_at = ?,
-      last_error = ?, lock_owner = '', locked_until = 0, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'processing' AND lock_owner = ?`)
-        .bind(
-          outcome.status,
-          remaining.toString(),
-          attempts,
-          now + delay,
-          outcome.error.slice(0, 1_000),
-          outcome.status === "queued" ? null : now,
+    const oldCollected = BigInt(job.collected_units);
+    const observed = BigInt(job.observed_units);
+    let collected = oldCollected;
+    if (outcome.status !== "queued") {
+      const rows = await all<{ amount_units: string }>(
+        this.env.DB,
+        "SELECT amount_units FROM sweep_transactions WHERE sweep_job = ? AND status = 'confirmed'",
+        jobId,
+      );
+      const reported = rows.reduce((total, row) => total + BigInt(row.amount_units), 0n);
+      const inferred = observed > remaining ? observed - remaining : 0n;
+      collected = [oldCollected, reported, inferred].reduce((largest, value) =>
+        value > largest ? value : largest,
+      );
+    }
+    const update =
+      this.env.DB.prepare(`UPDATE sweep_jobs SET status = ?, collected_units = ?, remaining_units = ?, attempts = ?, next_attempt_at = ?,
+      last_error = ?, lock_owner = '', locked_until = 0, completed_at = ?, updated_at = ? WHERE id = ? AND status = 'processing' AND lock_owner = ?`).bind(
+        outcome.status,
+        collected.toString(),
+        remaining.toString(),
+        attempts,
+        now + delay,
+        outcome.error.slice(0, 1_000),
+        outcome.status === "queued" ? null : now,
+        now,
+        jobId,
+        owner,
+      );
+    const statements: D1PreparedStatement[] = [];
+    const grace = intSetting(this.env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
+    if (
+      collected > oldCollected &&
+      (job.payment_status === "underpaid" || job.payment_status === "expired") &&
+      now > job.expires_at + grace
+    ) {
+      const eventId = randomId("evt");
+      const expected = BigInt(job.expected_units);
+      const missing = expected > observed ? expected - observed : 0n;
+      const body = JSON.stringify({
+        id: eventId,
+        type: "payment.recovered",
+        createdAt: new Date(now * 1_000).toISOString(),
+        data: {
+          paymentIntent: {
+            id: job.payment_intent,
+            externalId: job.external_id,
+            kind: job.kind,
+            chain: job.chain,
+            chainId: job.chain_id,
+            asset: job.asset,
+            expectedAmount: job.expected_amount,
+            requestedUnits: job.expected_units,
+            receivedUnits: observed.toString(),
+            missingUnits: missing.toString(),
+            collectedUnits: collected.toString(),
+            collectedDeltaUnits: (collected - oldCollected).toString(),
+            depositAddress: job.deposit_address,
+            paymentStatus: job.payment_status,
+            settlementStatus: "expired_underpaid_collected",
+          },
+        },
+      });
+      statements.push(
+        this.env.DB.prepare(`INSERT INTO webhook_events
+        (event_id, type, payment_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
+        SELECT ?, 'payment.recovered', ?, ?, 'pending', 0, ?, ?, ? FROM sweep_jobs
+        WHERE id = ? AND status = 'processing' AND lock_owner = ?`).bind(
+          eventId,
+          job.payment_intent,
+          body,
+          now,
+          now,
           now,
           jobId,
           owner,
-        )
-        .run();
-    if (!result.meta.changes) throw new Error("sweep lease is not held");
+        ),
+      );
+    }
+    statements.push(update);
+    const result = (await this.env.DB.batch(statements)).at(-1);
+    if (!result?.meta.changes) throw new Error("sweep lease is not held");
     return { delaySeconds: delay };
   }
 
@@ -671,9 +880,13 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     payment_intent: string;
     token_address: Address | "";
     deposit_address: Address;
+    intent_salt: Hex;
+    factory_address: Address;
+    forwarder_init_code_hash: Hex;
   }> {
     const row =
-      await this.env.DB.prepare(`SELECT j.id, j.chain, j.payment_intent, i.token_address, i.deposit_address
+      await this.env.DB.prepare(`SELECT j.id, j.chain, j.payment_intent, i.token_address, i.deposit_address,
+        i.intent_salt, i.factory_address, i.forwarder_init_code_hash
       FROM sweep_jobs j JOIN payment_intents i ON i.id = j.payment_intent
       WHERE j.id = ? AND j.status = 'processing' AND j.lock_owner = ? AND j.locked_until >= ?`)
         .bind(jobId, owner, unixNow())
@@ -683,6 +896,9 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
           payment_intent: string;
           token_address: Address | "";
           deposit_address: Address;
+          intent_salt: Hex;
+          factory_address: Address;
+          forwarder_init_code_hash: Hex;
         }>();
     if (!row) throw new Error("sweep lease is not held");
     return row;
@@ -693,12 +909,13 @@ type SweepTransactionRow = {
   id: string;
   sweep_job: string;
   chain: string;
-  kind: "gas" | "sweep";
+  kind: "deploy_collect" | "collect";
   tx_hash: Hex;
   raw_tx: Hex;
   from_address: Address;
   to_address: Address;
   amount_units: string;
+  fee_wei: string;
   nonce: number;
   status: "prepared" | "submitted" | "confirmed" | "failed";
   block_number: number | null;
@@ -734,6 +951,7 @@ function sweepTransactionResponse(
     from: row.from_address,
     to: row.to_address,
     amountUnits: row.amount_units,
+    feeWei: row.fee_wei,
     nonce: row.nonce,
     status: row.status,
     ...(row.block_number ? { blockNumber: row.block_number } : {}),

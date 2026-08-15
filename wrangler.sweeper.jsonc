@@ -27,18 +27,12 @@
   },
   "vars": {
     "SWEEPER_GAS_BUFFER_BPS": "12000",
-    "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
     "SWEEPER_RETRY_SECONDS": "15"
   },
   "env": {
     "testnet": {
       "secrets": {
-        "required": [
-          "TURNKEY_ORGANIZATION_ID",
-          "TURNKEY_API_PUBLIC_KEY",
-          "TURNKEY_API_PRIVATE_KEY",
-          "SWEEPER_NETWORKS_JSON"
-        ]
+        "required": ["SWEEPER_NETWORKS_JSON"]
       },
       "services": [
         {
@@ -62,18 +56,12 @@
       },
       "vars": {
         "SWEEPER_GAS_BUFFER_BPS": "12000",
-        "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
         "SWEEPER_RETRY_SECONDS": "15"
       }
     },
     "mainnet": {
       "secrets": {
-        "required": [
-          "TURNKEY_ORGANIZATION_ID",
-          "TURNKEY_API_PUBLIC_KEY",
-          "TURNKEY_API_PRIVATE_KEY",
-          "SWEEPER_NETWORKS_JSON"
-        ]
+        "required": ["SWEEPER_NETWORKS_JSON"]
       },
       "services": [
         {
@@ -102,7 +90,6 @@
       },
       "vars": {
         "SWEEPER_GAS_BUFFER_BPS": "12000",
-        "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
         "SWEEPER_RETRY_SECONDS": "15"
       }
     }

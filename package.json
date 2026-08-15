@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "npm run quality && npm run typecheck && npm test && npm run deploy:dry-run",
+    "check": "npm run contracts:check && npm run quality && npm run typecheck && npm test && npm run deploy:dry-run",
     "check:staged": "biome check --staged",
+    "contracts:artifacts": "node scripts/generate-contract-artifacts.mjs",
+    "contracts:build": "forge build && npm run contracts:artifacts",
+    "contracts:check": "forge fmt --check && forge lint && forge test && node scripts/generate-contract-artifacts.mjs --check",
     "deploy": "node scripts/deploy.mjs",
+    "deploy:factory": "node scripts/deploy-factory.mjs",
     "deploy:demo": "wrangler deploy --env testnet --config wrangler.demo.jsonc --secrets-file .demo.secrets",
     "deploy:dry-run": "wrangler deploy --dry-run --env testnet --config wrangler.api.jsonc --secrets-file .api.secrets.example && wrangler deploy --dry-run --env testnet --config wrangler.sweeper.jsonc --secrets-file .sweeper.secrets.example && wrangler deploy --dry-run --env mainnet --config wrangler.api.jsonc --secrets-file .api.secrets.example && wrangler deploy --dry-run --env mainnet --config wrangler.sweeper.jsonc --secrets-file .sweeper.secrets.example && wrangler deploy --dry-run --env testnet --config wrangler.demo.jsonc --secrets-file .demo.secrets.example",
     "dev": "wrangler dev --env testnet --config wrangler.api.jsonc",
@@ -19,7 +23,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@turnkey/api-key-stamper": "0.6.11",
     "uqr": "0.1.3",
     "viem": "2.55.16"
   },
@@ -39,18 +42,6 @@
     "bindings": {
       "PAYMENT_API_KEY": {
         "description": "Random server-to-server API key with at least 24 characters."
-      },
-      "TURNKEY_ORGANIZATION_ID": {
-        "description": "Turnkey organization that owns the deposit wallet."
-      },
-      "TURNKEY_WALLET_ID": {
-        "description": "Turnkey HD wallet used to allocate per-intent deposit addresses."
-      },
-      "TURNKEY_API_PUBLIC_KEY": {
-        "description": "Public half of the address-allocator-only Turnkey API credential."
-      },
-      "TURNKEY_API_PRIVATE_KEY": {
-        "description": "Private half of the address-allocator-only Turnkey API credential."
       },
       "NETWORKS_JSON": {
         "description": "JSON array of enabled EVM networks; see .dev.vars.example."

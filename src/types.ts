@@ -7,25 +7,18 @@ export type NetworkConfig = {
   chainId: number;
   rpcUrl: string;
   treasuryAddress: Address;
+  factoryAddress: Address;
+  factoryCodeHash: Hex;
+  relayerAddress: Address;
   confirmations: number;
   maxGasPriceWei: bigint;
   nativeAsset: string;
   explorerUrl: string;
   tokens: Record<string, TokenConfig>;
-  gasPrivateKey?: Hex;
+  relayerPrivateKey?: Hex;
 };
 
-export interface TurnkeyEnv {
-  TURNKEY_ORGANIZATION_ID: string;
-  TURNKEY_API_PUBLIC_KEY: string;
-  TURNKEY_API_PRIVATE_KEY: string;
-}
-
-export interface TurnkeyAddressEnv extends TurnkeyEnv {
-  TURNKEY_WALLET_ID: string;
-}
-
-export interface ApiEnv extends TurnkeyAddressEnv {
+export interface ApiEnv {
   DB: D1Database;
   SWEEP_QUEUE: Queue<SweepMessage>;
   PAYMENT_API_KEY: string;
@@ -36,16 +29,14 @@ export interface ApiEnv extends TurnkeyAddressEnv {
   MAX_EXPIRY_SECONDS: string;
   PAYMENT_GRACE_SECONDS: string;
   REORG_HISTORY_BLOCKS: string;
-  SWEEPER_MAX_GAS_FUNDING_WEI: string;
   SWEEPER_MIN_TOKEN_PAYMENT_BPS: string;
 }
 
-export interface SweeperEnv extends TurnkeyEnv {
+export interface SweeperEnv {
   GATEWAY: SweepCoordinatorService;
   SWEEP_QUEUE: Queue<SweepMessage>;
   SWEEPER_NETWORKS_JSON: string;
   SWEEPER_GAS_BUFFER_BPS: string;
-  SWEEPER_MAX_GAS_FUNDING_WEI: string;
   SWEEPER_RETRY_SECONDS: string;
 }
 
@@ -67,7 +58,9 @@ export type IntentRow = {
   received_units: string;
   confirmed_units: string;
   deposit_address: Address;
-  derivation_index: number;
+  intent_salt: Hex;
+  factory_address: Address;
+  forwarder_init_code_hash: Hex;
   start_block: number;
   confirmations: number;
   status: PaymentStatus;
@@ -99,12 +92,13 @@ export type PaymentStatus = "pending" | "underpaid" | "confirming" | "paid" | "e
 
 export type SweepTransaction = {
   id: string;
-  kind: "gas" | "sweep";
+  kind: "deploy_collect" | "collect";
   hash: Hex;
   rawTransaction: Hex;
   from: Address;
   to: Address;
   amountUnits: string;
+  feeWei: string;
   nonce: number;
   status: "prepared" | "submitted" | "confirmed" | "failed";
   blockNumber?: number;
@@ -120,7 +114,11 @@ export type SweepJob = {
   asset: string;
   tokenAddress: Address | "";
   depositAddress: Address;
-  derivationIndex: number;
+  intentSalt: Hex;
+  factoryAddress: Address;
+  factoryCodeHash: Hex;
+  forwarderInitCodeHash: Hex;
+  relayerAddress: Address;
   treasuryAddress: Address;
   confirmations: number;
   maxGasPriceWei: string;
@@ -135,7 +133,7 @@ export interface SweepCoordinatorService extends Fetcher {
   registerSweepTransaction(
     jobId: string,
     owner: string,
-    kind: "gas" | "sweep",
+    kind: "deploy_collect" | "collect",
     rawTransaction: Hex,
   ): Promise<SweepTransaction>;
   reportSweepTransaction(
@@ -144,6 +142,8 @@ export interface SweepCoordinatorService extends Fetcher {
     status: "submitted" | "confirmed" | "failed",
     blockNumber: number,
     error: string,
+    amountUnits: string,
+    feeWei: string,
   ): Promise<void>;
   releaseSweep(
     jobId: string,

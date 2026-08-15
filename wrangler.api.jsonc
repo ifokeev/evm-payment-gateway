@@ -23,7 +23,6 @@
     "MAX_EXPIRY_SECONDS": "86400",
     "PAYMENT_GRACE_SECONDS": "60",
     "REORG_HISTORY_BLOCKS": "256",
-    "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
     "SWEEPER_MIN_TOKEN_PAYMENT_BPS": "5000"
   },
   "env": {
@@ -31,10 +30,6 @@
       "secrets": {
         "required": [
           "PAYMENT_API_KEY",
-          "TURNKEY_ORGANIZATION_ID",
-          "TURNKEY_WALLET_ID",
-          "TURNKEY_API_PUBLIC_KEY",
-          "TURNKEY_API_PRIVATE_KEY",
           "NETWORKS_JSON",
           "PAYMENT_WEBHOOK_URL",
           "PAYMENT_WEBHOOK_SECRET"
@@ -55,7 +50,6 @@
         "MAX_EXPIRY_SECONDS": "86400",
         "PAYMENT_GRACE_SECONDS": "60",
         "REORG_HISTORY_BLOCKS": "256",
-        "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
         "SWEEPER_MIN_TOKEN_PAYMENT_BPS": "5000"
       }
     },
@@ -63,10 +57,6 @@
       "secrets": {
         "required": [
           "PAYMENT_API_KEY",
-          "TURNKEY_ORGANIZATION_ID",
-          "TURNKEY_WALLET_ID",
-          "TURNKEY_API_PUBLIC_KEY",
-          "TURNKEY_API_PRIVATE_KEY",
           "NETWORKS_JSON",
           "PAYMENT_WEBHOOK_URL",
           "PAYMENT_WEBHOOK_SECRET"
@@ -92,7 +82,6 @@
         "MAX_EXPIRY_SECONDS": "86400",
         "PAYMENT_GRACE_SECONDS": "60",
         "REORG_HISTORY_BLOCKS": "256",
-        "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
         "SWEEPER_MIN_TOKEN_PAYMENT_BPS": "5000"
       }
     }

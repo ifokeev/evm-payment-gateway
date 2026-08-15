@@ -7,6 +7,14 @@ if (!new Set(["testnet", "mainnet"]).has(environment)) {
   process.exit(1);
 }
 
+if (environment === "mainnet") {
+  run("npm", ["run", "check"]);
+  if (process.env.ALLOW_UNAUDITED_MAINNET !== "true") {
+    console.error("Mainnet is unaudited; set ALLOW_UNAUDITED_MAINNET=true to accept the risk.");
+    process.exit(1);
+  }
+}
+
 const apiSecrets = process.argv[3] ?? `.api.${environment}.secrets`;
 const sweeperSecrets = process.argv[4] ?? `.sweeper.${environment}.secrets`;
 for (const file of [apiSecrets, sweeperSecrets]) {

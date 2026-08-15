@@ -316,7 +316,7 @@ function renderSweep(sweep) {
   container.replaceChildren();
   if (!sweep || sweep.status === "not_queued") {
     setActivityState("#sweep-activity", "#sweep-badge", "idle", "Queued");
-    container.append(paragraph("Sweep to treasury wallet", "muted"));
+    container.append(paragraph("Collection to treasury wallet", "muted"));
     return;
   }
   const completed = ["complete", "external"].includes(sweep.status);
