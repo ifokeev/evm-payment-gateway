@@ -15,12 +15,22 @@ export interface DemoEnv {
   DEMO_SESSION_SECRET: string;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET_KEY: string;
-  DEMO_CHAIN: string;
-  DEMO_ASSET: string;
-  DEMO_ASSET_DECIMALS: string;
-  DEMO_MIN_AMOUNT: string;
-  DEMO_MAX_AMOUNT: string;
+  DEMO_OPTIONS_JSON: string;
   DEMO_EXPIRY_SECONDS: string;
+}
+
+interface DemoOption {
+  chain: string;
+  chainLabel: string;
+  chainId: number;
+  asset: string;
+  decimals: number;
+  minimumAmount: string;
+  maximumAmount: string;
+  defaultAmount: string;
+  nativeAsset: string;
+  walletRpcUrl: string;
+  explorerUrl: string;
 }
 
 export default {
@@ -38,12 +48,8 @@ export default {
 async function route(request: Request, env: DemoEnv): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === `${API_ROOT}/config`) {
-    const amount = amountConfig(env);
     return json({
-      chain: env.DEMO_CHAIN,
-      asset: env.DEMO_ASSET,
-      minimumAmount: amount.minimum.amount,
-      maximumAmount: amount.maximum.amount,
+      options: demoOptions(env),
       turnstileSiteKey: requiredSetting(env.TURNSTILE_SITE_KEY, "TURNSTILE_SITE_KEY"),
     });
   }
@@ -75,7 +81,16 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
   }
 
   const body = await readObject(request, 8_192);
-  rejectUnknownFields(body, ["amount", "purpose", "idempotencyKey", "turnstileToken"]);
+  rejectUnknownFields(body, [
+    "chain",
+    "asset",
+    "amount",
+    "purpose",
+    "idempotencyKey",
+    "turnstileToken",
+  ]);
+  const chain = stringField(body, "chain");
+  const asset = stringField(body, "asset");
   const amount = stringField(body, "amount");
   const purpose = stringField(body, "purpose");
   const idempotencyKey = stringField(body, "idempotencyKey");
@@ -92,7 +107,8 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
     throw new DemoError(400, "complete the security check");
   }
 
-  const configured = amountConfig(env);
+  const option = demoOption(env, chain, asset);
+  const configured = amountConfig(option);
   let parsed: ReturnType<typeof parseAmount>;
   try {
     parsed = parseAmount(amount, configured.decimals);
@@ -127,8 +143,8 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
       body: JSON.stringify({
         kind: "payment",
         externalId: `demo_${idempotencyKey}`,
-        chain: requiredSetting(env.DEMO_CHAIN, "DEMO_CHAIN"),
-        asset: requiredSetting(env.DEMO_ASSET, "DEMO_ASSET"),
+        chain: option.chain,
+        asset: option.asset,
         amount: parsed.amount,
         expiresInSeconds: integerSetting(
           env.DEMO_EXPIRY_SECONDS,
@@ -296,22 +312,21 @@ async function verifyTurnstile(
   return result.action === "create_intent" && result.hostname === hostname;
 }
 
-function amountConfig(env: DemoEnv): {
+function amountConfig(option: DemoOption): {
   decimals: number;
   minimum: ReturnType<typeof parseAmount>;
   maximum: ReturnType<typeof parseAmount>;
 } {
-  const decimals = integerSetting(env.DEMO_ASSET_DECIMALS, "DEMO_ASSET_DECIMALS", 0, 255);
   let minimum: ReturnType<typeof parseAmount>;
   let maximum: ReturnType<typeof parseAmount>;
   try {
-    minimum = parseAmount(env.DEMO_MIN_AMOUNT, decimals);
-    maximum = parseAmount(env.DEMO_MAX_AMOUNT, decimals);
+    minimum = parseAmount(option.minimumAmount, option.decimals);
+    maximum = parseAmount(option.maximumAmount, option.decimals);
   } catch {
     throw new Error("demo amount configuration is invalid");
   }
   if (minimum.units > maximum.units) throw new Error("demo amount configuration is invalid");
-  return { decimals, minimum, maximum };
+  return { decimals: option.decimals, minimum, maximum };
 }
 
 function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
@@ -352,38 +367,130 @@ function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
 
 function publicAnalytics(value: Record<string, unknown>, env: DemoEnv): Record<string, unknown> {
   if (!Array.isArray(value.assets)) throw new DemoError(502, "gateway returned invalid analytics");
-  const chain = requiredSetting(env.DEMO_CHAIN, "DEMO_CHAIN");
-  const asset = requiredSetting(env.DEMO_ASSET, "DEMO_ASSET");
-  const row = value.assets.find(
-    (item) => isObject(item) && item.chain === chain && item.asset === asset,
-  );
-  if (!row) {
-    return {
-      chain,
-      asset,
-      intents: 0,
-      paidIntents: 0,
-      confirmedAmount: "0",
-      collectedAmount: "0",
-      generatedAt: new Date().toISOString(),
-    };
-  }
-  if (!isObject(row) || !isObject(row.statuses)) {
-    throw new DemoError(502, "gateway returned invalid analytics");
-  }
-  const decimals = amountConfig(env).decimals;
+  const assets = value.assets;
   return {
-    chain,
-    asset,
-    intents: analyticsInteger(row.intents),
-    paidIntents: analyticsInteger(row.statuses.paid ?? 0),
-    confirmedAmount: formatUnits(analyticsUnits(row.confirmedUnits), decimals),
-    collectedAmount: formatUnits(analyticsUnits(row.collectedUnits), decimals),
+    assets: demoOptions(env).map((option) => {
+      const row = assets.find(
+        (item) => isObject(item) && item.chain === option.chain && item.asset === option.asset,
+      );
+      if (!row) {
+        return {
+          chain: option.chain,
+          asset: option.asset,
+          intents: 0,
+          paidIntents: 0,
+          confirmedAmount: "0",
+          collectedAmount: "0",
+        };
+      }
+      if (!isObject(row) || !isObject(row.statuses)) {
+        throw new DemoError(502, "gateway returned invalid analytics");
+      }
+      return {
+        chain: option.chain,
+        asset: option.asset,
+        intents: analyticsInteger(row.intents),
+        paidIntents: analyticsInteger(row.statuses.paid ?? 0),
+        confirmedAmount: formatUnits(analyticsUnits(row.confirmedUnits), option.decimals),
+        collectedAmount: formatUnits(analyticsUnits(row.collectedUnits), option.decimals),
+      };
+    }),
     generatedAt:
       typeof value.generatedAt === "string" && Number.isFinite(Date.parse(value.generatedAt))
         ? value.generatedAt
         : new Date().toISOString(),
   };
+}
+
+function demoOption(env: DemoEnv, chain: string, asset: string): DemoOption {
+  const option = demoOptions(env).find((item) => item.chain === chain && item.asset === asset);
+  if (!option) throw new DemoError(400, "unsupported demo network or asset");
+  return option;
+}
+
+function demoOptions(env: DemoEnv): DemoOption[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(requiredSetting(env.DEMO_OPTIONS_JSON, "DEMO_OPTIONS_JSON"));
+  } catch {
+    throw new Error("DEMO_OPTIONS_JSON is invalid");
+  }
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) {
+    throw new Error("DEMO_OPTIONS_JSON is invalid");
+  }
+  const seen = new Set<string>();
+  const networks = new Map<string, string>();
+  return value.map((item) => {
+    if (!isObject(item)) throw new Error("DEMO_OPTIONS_JSON is invalid");
+    const option = {
+      chain: configString(item, "chain", /^[a-z0-9-]{1,40}$/),
+      chainLabel: configString(item, "chainLabel", /^.{1,60}$/),
+      chainId: configInteger(item, "chainId", 1, Number.MAX_SAFE_INTEGER),
+      asset: configString(item, "asset", /^[A-Z0-9]{2,12}$/),
+      decimals: configInteger(item, "decimals", 0, 255),
+      minimumAmount: configString(item, "minimumAmount", /^\d+(?:\.\d+)?$/),
+      maximumAmount: configString(item, "maximumAmount", /^\d+(?:\.\d+)?$/),
+      defaultAmount: configString(item, "defaultAmount", /^\d+(?:\.\d+)?$/),
+      nativeAsset: configString(item, "nativeAsset", /^[A-Z0-9]{2,12}$/),
+      walletRpcUrl: configUrl(item, "walletRpcUrl"),
+      explorerUrl: configUrl(item, "explorerUrl"),
+    };
+    const key = `${option.chain}:${option.asset}`;
+    if (seen.has(key)) throw new Error("DEMO_OPTIONS_JSON contains duplicates");
+    seen.add(key);
+    const network = JSON.stringify([
+      option.chainLabel,
+      option.chainId,
+      option.nativeAsset,
+      option.walletRpcUrl,
+      option.explorerUrl,
+    ]);
+    if (networks.has(option.chain) && networks.get(option.chain) !== network) {
+      throw new Error("DEMO_OPTIONS_JSON contains inconsistent network settings");
+    }
+    networks.set(option.chain, network);
+    const amounts = amountConfig(option);
+    const defaultAmount = parseAmount(option.defaultAmount, option.decimals);
+    if (
+      defaultAmount.units < amounts.minimum.units ||
+      defaultAmount.units > amounts.maximum.units
+    ) {
+      throw new Error("demo amount configuration is invalid");
+    }
+    return option;
+  });
+}
+
+function configString(value: Record<string, unknown>, key: string, pattern: RegExp): string {
+  const field = value[key];
+  if (typeof field !== "string" || !pattern.test(field)) {
+    throw new Error(`DEMO_OPTIONS_JSON ${key} is invalid`);
+  }
+  return field;
+}
+
+function configInteger(
+  value: Record<string, unknown>,
+  key: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const field = value[key];
+  if (!Number.isSafeInteger(field) || (field as number) < minimum || (field as number) > maximum) {
+    throw new Error(`DEMO_OPTIONS_JSON ${key} is invalid`);
+  }
+  return field as number;
+}
+
+function configUrl(value: Record<string, unknown>, key: string): string {
+  const field = configString(value, key, /^https:\/\/.{1,200}$/);
+  try {
+    const parsed = new URL(field);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error();
+  } catch {
+    throw new Error(`DEMO_OPTIONS_JSON ${key} is invalid`);
+  }
+  return field;
 }
 
 function analyticsInteger(value: unknown): number {

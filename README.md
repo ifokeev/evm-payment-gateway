@@ -49,9 +49,11 @@ Networks and assets are configuration, not hard-coded product behavior.
 | --- | --- | --- | --- | --- |
 | Ethereum | Ethereum | Sepolia | ETH | USDC, USDT |
 | Base | Base | Base Sepolia | ETH | USDC |
-| BNB Chain | BNB Chain | BNB Testnet | BNB / TBNB | USDT on mainnet |
+| BNB Chain | BNB Chain | BNB Testnet | BNB / TBNB | Binance-Peg BSC-USD on mainnet |
 
 Verify every production token address and decimal count with its issuer.
+The included BNB token example has contract symbol `USDT`, but it is the
+18-decimal Binance-Peg BSC-USD token rather than issuer-native Tether USDt.
 
 ## How it works
 
@@ -257,9 +259,9 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 ## Demo
 
-The optional demo Worker shows a real testnet checkout, polling, signed webhook
-receipt, and treasury collection. A private service binding keeps the API key
-out of browser code.
+The optional demo Worker shows real Base Sepolia, Ethereum Sepolia, and BNB
+Testnet payments with polling, signed webhook receipt, and treasury collection.
+A private service binding keeps the API key out of browser code.
 
 ```bash
 cp .demo.secrets.example .demo.secrets
@@ -317,6 +319,11 @@ Before mainnet, complete testnet payments for every enabled native/token pair,
 verify treasury receipt and signed webhooks, exercise RPC failure recovery, and
 review every configured address. Mainnet commands require
 `ALLOW_UNAUDITED_MAINNET=true`.
+
+For the included networks, test Base Sepolia ETH/USDC, Ethereum Sepolia
+ETH/USDC, and BNB Testnet TBNB. There is no issuer-native Tether test token in
+this matrix, so fork-test the exact Ethereum USDT and BNB BSC-USD contracts and
+run a minimum-value mainnet canary before enabling either token publicly.
 
 ## Contributing
 

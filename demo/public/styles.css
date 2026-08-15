@@ -224,6 +224,12 @@ h1 span {
   gap: 24px;
 }
 
+.network-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr);
+  gap: 12px;
+}
+
 .field {
   display: grid;
   gap: 8px;
@@ -231,6 +237,10 @@ h1 span {
 
 .field + .field {
   margin-top: 16px;
+}
+
+.network-fields .field + .field {
+  margin-top: 0;
 }
 
 .field label {
@@ -1082,7 +1092,29 @@ button:disabled {
 
 @media (min-width: 861px) and (max-height: 900px) {
   .intro {
-    padding-block: 58px;
+    padding-block: 36px;
+  }
+
+  .payment-form {
+    margin-top: 28px;
+    gap: 16px;
+  }
+
+  .field + .field {
+    margin-top: 0;
+  }
+
+  input,
+  select {
+    min-height: 56px;
+  }
+
+  .primary-button {
+    min-height: 60px;
+  }
+
+  .testnet-note {
+    margin-top: 20px;
   }
 }
 
@@ -1175,6 +1207,10 @@ button:disabled {
 
   .payment-form {
     margin-top: 48px;
+  }
+
+  .network-fields {
+    grid-template-columns: 1fr;
   }
 
   .testnet-note {

@@ -1,6 +1,8 @@
 import { paymentAction, walletPayment } from "./wallet.js";
 
 const form = document.querySelector("#payment-form");
+const network = document.querySelector("#network");
+const asset = document.querySelector("#asset");
 const purpose = document.querySelector("#purpose");
 const purposeHelp = document.querySelector("#purpose-help");
 const amount = document.querySelector("#amount");
@@ -19,6 +21,7 @@ const analyticsPanel = document.querySelector("#analytics-panel");
 const analyticsGrid = document.querySelector("#analytics-grid");
 
 let config;
+let analytics;
 let turnstileToken = "";
 let turnstileWidget;
 let submitting = false;
@@ -29,6 +32,13 @@ let walletPaymentUri = "";
 let currentIntentId = sessionStorage.getItem("demo:intentId") ?? "";
 let accessToken = sessionStorage.getItem("demo:accessToken") ?? "";
 let idempotencyKey = sessionStorage.getItem("demo:idempotencyKey") ?? crypto.randomUUID();
+
+network.addEventListener("change", () => {
+  populateAssets();
+  updateSelection();
+});
+
+asset.addEventListener("change", updateSelection);
 
 purpose.addEventListener("change", () => {
   purposeHelp.textContent =
@@ -100,6 +110,8 @@ form.addEventListener("submit", async (event) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        chain: network.value,
+        asset: asset.value,
         amount: amount.value,
         purpose: purpose.value,
         idempotencyKey,
@@ -136,8 +148,11 @@ async function initialize() {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Demo configuration is unavailable");
     config = body;
-    assetLabel.textContent = config.asset;
-    amountHelp.textContent = `${config.minimumAmount} to ${config.maximumAmount} ${config.asset}`;
+    populateNetworks();
+    populateAssets();
+    updateSelection();
+    network.disabled = false;
+    asset.disabled = false;
     amount.disabled = false;
     void loadAnalytics();
     await loadTurnstile(config.turnstileSiteKey);
@@ -154,12 +169,8 @@ async function loadAnalytics() {
     const response = await fetch("/api/analytics");
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Live totals are unavailable");
-    text("#analytics-intents", new Intl.NumberFormat().format(body.intents));
-    text("#analytics-paid", new Intl.NumberFormat().format(body.paidIntents));
-    text("#analytics-confirmed", body.confirmedAmount);
-    text("#analytics-collected", body.collectedAmount);
-    for (const element of document.querySelectorAll("#analytics-grid dd small"))
-      element.textContent = body.asset;
+    analytics = body;
+    renderAnalytics();
     text("#analytics-updated", formatAnalyticsTime(body.generatedAt));
     analyticsPanel.dataset.state = "ready";
   } catch {
@@ -168,6 +179,63 @@ async function loadAnalytics() {
   } finally {
     analyticsGrid.setAttribute("aria-busy", "false");
   }
+}
+
+function populateNetworks() {
+  network.replaceChildren();
+  const seen = new Set();
+  for (const option of config.options) {
+    if (seen.has(option.chain)) continue;
+    seen.add(option.chain);
+    const item = document.createElement("option");
+    item.value = option.chain;
+    item.textContent = option.chainLabel;
+    network.append(item);
+  }
+}
+
+function populateAssets() {
+  const previous = asset.value;
+  asset.replaceChildren();
+  for (const option of config.options.filter((item) => item.chain === network.value)) {
+    const item = document.createElement("option");
+    item.value = option.asset;
+    item.textContent = option.asset;
+    item.selected = option.asset === previous;
+    asset.append(item);
+  }
+}
+
+function updateSelection() {
+  const option = selectedOption();
+  if (!option) return;
+  amount.value = option.defaultAmount;
+  amount.placeholder = option.defaultAmount;
+  assetLabel.textContent = option.asset;
+  amountHelp.textContent = `${option.minimumAmount} to ${option.maximumAmount} ${option.asset}`;
+  text("#header-context", `Live ${option.chainLabel} demo`);
+  text("#analytics-context", `${option.chainLabel} ${option.asset} activity in this deployment.`);
+  renderAnalytics();
+}
+
+function selectedOption() {
+  return config?.options.find(
+    (option) => option.chain === network.value && option.asset === asset.value,
+  );
+}
+
+function renderAnalytics() {
+  const option = selectedOption();
+  const row = analytics?.assets?.find(
+    (item) => item.chain === option?.chain && item.asset === option?.asset,
+  );
+  if (!option || !row) return;
+  text("#analytics-intents", new Intl.NumberFormat().format(row.intents));
+  text("#analytics-paid", new Intl.NumberFormat().format(row.paidIntents));
+  text("#analytics-confirmed", row.confirmedAmount);
+  text("#analytics-collected", row.collectedAmount);
+  for (const element of document.querySelectorAll("#analytics-grid dd small"))
+    element.textContent = option.asset;
 }
 
 function loadTurnstile(siteKey) {
@@ -295,16 +363,17 @@ async function switchWalletNetwork(provider, chainId) {
   try {
     await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId }] });
   } catch (error) {
-    if (walletErrorCode(error) !== 4902 || chainId !== "0x14a34") throw error;
+    const option = config?.options.find((item) => `0x${item.chainId.toString(16)}` === chainId);
+    if (walletErrorCode(error) !== 4902 || !option) throw error;
     await provider.request({
       method: "wallet_addEthereumChain",
       params: [
         {
           chainId,
-          chainName: "Base Sepolia",
-          nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-          rpcUrls: ["https://sepolia.base.org"],
-          blockExplorerUrls: ["https://sepolia.basescan.org"],
+          chainName: option.chainLabel,
+          nativeCurrency: { name: option.nativeAsset, symbol: option.nativeAsset, decimals: 18 },
+          rpcUrls: [option.walletRpcUrl],
+          blockExplorerUrls: [option.explorerUrl],
         },
       ],
     });

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Create and complete a real Base Sepolia payment through EVM Payment Gateway."
+      content="Create and complete testnet payments on Base, Ethereum, and BNB Chain."
     />
     <title>EVM Payment Gateway - Live demo</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -18,7 +18,7 @@
         <span>EVM Payment Gateway</span>
       </a>
       <span class="header-divider" aria-hidden="true"></span>
-      <p class="header-context">Live Base Sepolia demo</p>
+      <p id="header-context" class="header-context">Live multichain demo</p>
       <nav class="header-actions" aria-label="Demo links">
         <span class="environment-label">Testnet</span>
         <a
@@ -37,12 +37,28 @@
           <div>
             <h1 id="page-title"><span>Pay crypto.</span><span>See each step.</span></h1>
             <p class="intro-copy">
-              Create an exact Base Sepolia payment and follow it from wallet transfer to treasury
-              collection.
+              Create an exact testnet payment on Base, Ethereum, or BNB Chain and follow it to
+              treasury collection.
             </p>
           </div>
 
           <form id="payment-form" class="payment-form" novalidate>
+            <div class="network-fields">
+              <div class="field">
+                <label for="network">Network</label>
+                <div class="select-control">
+                  <select id="network" name="network" disabled></select>
+                </div>
+              </div>
+
+              <div class="field">
+                <label for="asset">Asset</label>
+                <div class="select-control">
+                  <select id="asset" name="asset" disabled></select>
+                </div>
+              </div>
+            </div>
+
             <div class="field">
               <label for="purpose">Use case</label>
               <div class="select-control">
@@ -103,7 +119,7 @@
           <header class="analytics-heading">
             <div>
               <h2 id="analytics-title">Live testnet totals</h2>
-              <p>Aggregate activity for this Base Sepolia deployment.</p>
+              <p id="analytics-context">Aggregate activity for this deployment.</p>
             </div>
             <p id="analytics-updated" role="status">Loading totals...</p>
           </header>
