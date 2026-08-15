@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "evm-payment-gateway-demo",
+  "name": "evm-payment-gateway-showcase",
   "main": "demo/worker.ts",
   "compatibility_date": "2026-08-14",
   "workers_dev": true,
@@ -9,15 +9,6 @@
     "directory": "./demo/public",
     "binding": "ASSETS",
     "run_worker_first": ["/api/*", "/webhooks/*"]
-  },
-  "secrets": {
-    "required": [
-      "PAYMENT_API_KEY",
-      "PAYMENT_WEBHOOK_SECRET",
-      "DEMO_SESSION_SECRET",
-      "TURNSTILE_SITE_KEY",
-      "TURNSTILE_SECRET_KEY"
-    ]
   },
   "services": [
     {
@@ -40,5 +31,40 @@
     "DEMO_MIN_AMOUNT": "0.01",
     "DEMO_MAX_AMOUNT": "5",
     "DEMO_EXPIRY_SECONDS": "1800"
+  },
+  "env": {
+    "testnet": {
+      "secrets": {
+        "required": [
+          "PAYMENT_API_KEY",
+          "PAYMENT_WEBHOOK_SECRET",
+          "DEMO_SESSION_SECRET",
+          "TURNSTILE_SITE_KEY",
+          "TURNSTILE_SECRET_KEY"
+        ]
+      },
+      "services": [
+        {
+          "binding": "GATEWAY",
+          "service": "evm-payment-gateway-api-testnet"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "DEMO_EVENTS" }],
+      "ratelimits": [
+        {
+          "name": "DEMO_RATE_LIMITER",
+          "namespace_id": "1001",
+          "simple": { "limit": 3, "period": 60 }
+        }
+      ],
+      "vars": {
+        "DEMO_CHAIN": "base-sepolia",
+        "DEMO_ASSET": "USDC",
+        "DEMO_ASSET_DECIMALS": "6",
+        "DEMO_MIN_AMOUNT": "0.01",
+        "DEMO_MAX_AMOUNT": "5",
+        "DEMO_EXPIRY_SECONDS": "1800"
+      }
+    }
   }
 }

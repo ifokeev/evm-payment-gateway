@@ -22,6 +22,7 @@ Worker a Safe owner key.
 Use HTTPS for RPC, explorer, and webhook endpoints. The gateway does not follow
 webhook redirects, so configure the final receiver URL directly.
 
-Use Cloudflare encrypted secrets, keep `.api.secrets` and `.sweeper.secrets`
-out of version control, and test with dedicated testnet keys before enabling a
-mainnet network.
+Use Cloudflare encrypted secrets, keep `.api.<environment>.secrets` and
+`.sweeper.<environment>.secrets` out of version control, and never share
+Turnkey wallets, credentials, treasuries, RPC keys, or webhook secrets between
+testnet and mainnet.

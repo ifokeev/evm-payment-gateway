@@ -1,8 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-const apiSecrets = process.argv[2] ?? ".api.secrets";
-const sweeperSecrets = process.argv[3] ?? ".sweeper.secrets";
+const environment = process.argv[2];
+if (!new Set(["testnet", "mainnet"]).has(environment)) {
+  console.error("Usage: npm run deploy -- <testnet|mainnet> [api-secrets] [sweeper-secrets]");
+  process.exit(1);
+}
+
+const apiSecrets = process.argv[3] ?? `.api.${environment}.secrets`;
+const sweeperSecrets = process.argv[4] ?? `.sweeper.${environment}.secrets`;
 for (const file of [apiSecrets, sweeperSecrets]) {
   if (!existsSync(file)) {
     console.error(`Missing ${file}; copy and edit the matching .example file.`);
@@ -10,17 +16,35 @@ for (const file of [apiSecrets, sweeperSecrets]) {
   }
 }
 
-run("wrangler", ["deploy", "--config", "wrangler.api.jsonc", "--secrets-file", apiSecrets]);
+run("wrangler", [
+  "deploy",
+  "--env",
+  environment,
+  "--config",
+  "wrangler.api.jsonc",
+  "--secrets-file",
+  apiSecrets,
+]);
 run("wrangler", [
   "d1",
   "migrations",
   "apply",
-  "evm-payment-gateway",
+  "DB",
   "--remote",
+  "--env",
+  environment,
   "--config",
   "wrangler.api.jsonc",
 ]);
-run("wrangler", ["deploy", "--config", "wrangler.sweeper.jsonc", "--secrets-file", sweeperSecrets]);
+run("wrangler", [
+  "deploy",
+  "--env",
+  environment,
+  "--config",
+  "wrangler.sweeper.jsonc",
+  "--secrets-file",
+  sweeperSecrets,
+]);
 
 function run(command, args) {
   const result = spawnSync(command, args, {

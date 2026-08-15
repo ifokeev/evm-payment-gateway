@@ -126,10 +126,10 @@ sweep job.
 git clone https://github.com/ifokeev/evm-payment-gateway.git
 cd evm-payment-gateway
 npm ci
-cp .api.secrets.example .api.secrets
-cp .sweeper.secrets.example .sweeper.secrets
+cp .api.secrets.example .api.testnet.secrets
+cp .sweeper.secrets.example .sweeper.testnet.secrets
 npx wrangler login
-npm run deploy
+npm run deploy -- testnet
 ```
 
 Before running the last command:
@@ -141,9 +141,21 @@ Before running the last command:
 3. Configure networks and secrets in the two local secrets files. Never commit
    them.
 
-`npm run deploy` provisions and deploys the public API Worker, applies D1
-migrations, and deploys the isolated queue consumer. Re-run it to upgrade the
-same installation.
+`npm run deploy -- testnet` provisions the testnet API, D1 database, queue, and
+isolated sweeper. For mainnet, create `.api.mainnet.secrets` and
+`.sweeper.mainnet.secrets`, then run `npm run deploy -- mainnet`.
+
+The environments never share Cloudflare resources:
+
+| Resource | Testnet | Mainnet |
+| --- | --- | --- |
+| API Worker | `evm-payment-gateway-api-testnet` | `evm-payment-gateway-api-mainnet` |
+| Sweeper Worker | `evm-payment-gateway-sweeper-testnet` | `evm-payment-gateway-sweeper-mainnet` |
+| D1 database | `evm-payment-gateway-testnet` | `evm-payment-gateway-mainnet` |
+| Queue | `evm-payment-gateway-sweeps-testnet` | `evm-payment-gateway-sweeps-mainnet` |
+
+Use separate Turnkey wallets, credentials, treasuries, RPC keys, and webhook
+secrets for the two environments.
 
 > [!WARNING]
 > Start on Base Sepolia with disposable credentials and test funds. Review the
@@ -168,7 +180,7 @@ Before deploying it:
 2. Reuse the gateway's API key and webhook secret, then generate a separate
    random `DEMO_SESSION_SECRET` with at least 32 characters.
 3. Set the API Worker's `PAYMENT_WEBHOOK_URL` to
-   `https://evm-payment-gateway-demo.<your-subdomain>.workers.dev/webhooks/payment`
+   `https://evm-payment-gateway-showcase-testnet.<your-subdomain>.workers.dev/webhooks/payment`
    and redeploy the API Worker.
 4. Adjust the Base Sepolia asset and amount limits in
    [`wrangler.demo.jsonc`](wrangler.demo.jsonc) if needed.
@@ -319,7 +331,8 @@ payment and sweep suite, and dry-runs all Worker configurations.
 | `npm run typecheck` | Check TypeScript without emitting files. |
 | `npm run deploy:dry-run` | Build all Workers without deploying. |
 | `npm run check` | Run every required verification. |
-| `npm run deploy` | Deploy or upgrade both Workers. |
+| `npm run deploy -- testnet` | Deploy or upgrade the isolated testnet gateway. |
+| `npm run deploy -- mainnet` | Deploy or upgrade the isolated mainnet gateway. |
 | `npm run deploy:demo` | Deploy the optional public demo. |
 
 For a live end-to-end test, start with a small Base Sepolia native payment, then

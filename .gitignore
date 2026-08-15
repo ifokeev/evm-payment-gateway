@@ -1,6 +1,10 @@
 node_modules/
 .wrangler/
 .api.secrets
+.api.*.secrets
 .sweeper.secrets
+.sweeper.*.secrets
 .demo.secrets
+.cloudflare.env
 .dev.vars
+tmp/
