@@ -936,7 +936,12 @@ button:disabled {
 }
 
 .global-error {
-  margin-top: 16px;
+  position: fixed;
+  z-index: 10;
+  top: 80px;
+  right: 60px;
+  width: min(520px, calc(100vw - 32px));
+  margin: 0;
   padding: 14px 16px;
   border: 1px solid color-mix(in srgb, var(--error) 50%, var(--right-border));
   border-radius: var(--radius);
@@ -1031,6 +1036,11 @@ button:disabled {
 
   .header-actions {
     margin-right: 0;
+  }
+
+  .global-error {
+    top: 72px;
+    right: 16px;
   }
 
   .intro {
