@@ -15,9 +15,16 @@ import {
   rewindCollections,
   runScheduled,
   safeErrorText,
+  syncChain,
   unixNow,
 } from "../src/monitor";
-import type { ApiEnv, IntentRow, SweepCoordinatorService, SweepMessage } from "../src/types";
+import type {
+  ApiEnv,
+  IntentRow,
+  NetworkConfig,
+  SweepCoordinatorService,
+  SweepMessage,
+} from "../src/types";
 
 const bindings = env as unknown as ApiEnv;
 const workerExports = exports as unknown as {
@@ -28,6 +35,7 @@ const api = workerExports.default;
 const coordinator = workerExports.SweepCoordinator;
 const apiKey = "test-api-key-at-least-24-characters";
 let webhookResponder: ((request: Request) => Promise<Response>) | undefined;
+let batchRpcResponder: ((request: Request) => Promise<Response>) | undefined;
 let rpcFactoryCode: `0x${string}` = factoryCode;
 const testFactory = "0x3333333333333333333333333333333333333333";
 const testTreasury = "0x2222222222222222222222222222222222222222";
@@ -53,6 +61,8 @@ beforeAll(() => {
                 : null;
         return Response.json({ jsonrpc: "2.0", id: request.id, result });
       }
+      if (outgoing.url === "https://rpc.batch/" && batchRpcResponder)
+        return batchRpcResponder(outgoing);
       if (outgoing.url === "https://webhook.test/events" && webhookResponder)
         return webhookResponder(outgoing);
       throw new Error(`unmocked request: ${outgoing.url}`);
@@ -62,6 +72,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   rpcFactoryCode = factoryCode;
+  batchRpcResponder = undefined;
 });
 
 describe("payment API", () => {
@@ -423,6 +434,132 @@ describe("analytics", () => {
       expiredIntents: 1,
     });
     expect(body.collectionFeesWei.analytics).toBe("123");
+  });
+});
+
+describe("chain scanner", () => {
+  it("batches a catch-up window and requests token logs once", async () => {
+    const now = unixNow();
+    const nativeId = randomId("pi");
+    const tokenId = randomId("pi");
+    const native = intentFields("a1", "");
+    const token = intentFields("b2", testToken);
+    await bindings.DB.batch([
+      bindings.DB.prepare(`INSERT INTO payment_intents
+        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+         deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
+         VALUES (?,?,?,'payment','batch-native','batch-test',1337,'ETH','',18,'0.0000000000000001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+        nativeId,
+        randomId("idem"),
+        "d".repeat(64),
+        native.address,
+        native.salt,
+        testFactory,
+        native.initCodeHash,
+        now + 3600,
+        now,
+        now,
+      ),
+      bindings.DB.prepare(`INSERT INTO payment_intents
+        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+         deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
+         VALUES (?,?,?,'payment','batch-token','batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+        tokenId,
+        randomId("idem"),
+        "e".repeat(64),
+        testToken,
+        token.address,
+        token.salt,
+        testFactory,
+        token.initCodeHash,
+        now + 3600,
+        now,
+        now,
+      ),
+    ]);
+
+    const batchSizes: number[] = [];
+    const blockRequests: Array<{ params: unknown[] }> = [];
+    const logFilters: Array<Record<string, string>> = [];
+    let activeRpcRequests = 0;
+    let maxConcurrentRpcRequests = 0;
+    batchRpcResponder = async (request) => {
+      activeRpcRequests++;
+      maxConcurrentRpcRequests = Math.max(maxConcurrentRpcRequests, activeRpcRequests);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      const payload = JSON.parse(await request.text());
+      const requests = (Array.isArray(payload) ? payload : [payload]) as Array<{
+        jsonrpc: string;
+        id: number;
+        method: string;
+        params: unknown[];
+      }>;
+      batchSizes.push(requests.length);
+      const responses = requests.map((rpc) => {
+        let result: unknown;
+        if (rpc.method === "eth_chainId") result = "0x539";
+        else if (rpc.method === "eth_blockNumber") result = "0xc8";
+        else if (rpc.method === "eth_getLogs") {
+          logFilters.push(rpc.params[0] as Record<string, string>);
+          result = [];
+        } else if (rpc.method === "eth_getBlockByNumber") {
+          blockRequests.push(rpc);
+          const blockNumber = Number(BigInt(rpc.params[0] as string));
+          const hash = `0x${blockNumber.toString(16).padStart(64, "0")}`;
+          result = {
+            baseFeePerGas: "0x1",
+            difficulty: "0x0",
+            extraData: "0x",
+            gasLimit: "0x1c9c380",
+            gasUsed: "0x0",
+            hash,
+            logsBloom: `0x${"0".repeat(512)}`,
+            miner: "0x0000000000000000000000000000000000000000",
+            mixHash: `0x${"0".repeat(64)}`,
+            nonce: "0x0000000000000000",
+            number: rpc.params[0],
+            parentHash: `0x${Math.max(0, blockNumber - 1)
+              .toString(16)
+              .padStart(64, "0")}`,
+            receiptsRoot: `0x${"1".repeat(64)}`,
+            sha3Uncles: `0x${"2".repeat(64)}`,
+            size: "0x1",
+            stateRoot: `0x${"3".repeat(64)}`,
+            timestamp: "0x1",
+            totalDifficulty: "0x0",
+            transactions: [],
+            transactionsRoot: `0x${"4".repeat(64)}`,
+            uncles: [],
+          };
+        } else throw new Error(`unexpected RPC method: ${rpc.method}`);
+        return { jsonrpc: "2.0", id: rpc.id, result };
+      });
+      activeRpcRequests--;
+      return Response.json(Array.isArray(payload) ? responses : responses[0]);
+    };
+
+    const network = {
+      ...loadNetworks(bindings.NETWORKS_JSON).get("test")!,
+      name: "batch-test",
+      rpcUrl: "https://rpc.batch",
+    } satisfies NetworkConfig;
+    await syncChain(bindings, network);
+
+    expect(
+      await bindings.DB.prepare(
+        "SELECT last_scanned FROM chain_states WHERE chain = 'batch-test'",
+      ).first(),
+    ).toEqual({ last_scanned: 200 });
+    expect(Math.max(...batchSizes)).toBe(10);
+    expect(maxConcurrentRpcRequests).toBe(1);
+    expect(blockRequests.filter((request) => request.params[1] === true)).toHaveLength(200);
+    expect(logFilters).toEqual([expect.objectContaining({ fromBlock: "0x1", toBlock: "0xc8" })]);
+
+    await bindings.DB.batch([
+      bindings.DB.prepare("DELETE FROM payment_intents WHERE id IN (?, ?)").bind(nativeId, tokenId),
+      bindings.DB.prepare("DELETE FROM chain_blocks WHERE chain = 'batch-test'"),
+      bindings.DB.prepare("DELETE FROM chain_states WHERE chain = 'batch-test'"),
+    ]);
   });
 });
 

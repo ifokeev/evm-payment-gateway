@@ -71,7 +71,9 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
   if (!lease) return;
 
   try {
-    const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 20_000 }) });
+    const client = createPublicClient({
+      transport: http(network.rpcUrl, { batch: { batchSize: 10 }, timeout: 20_000 }),
+    });
     const remoteChainId = await client.getChainId();
     if (remoteChainId !== network.chainId)
       throw new Error(`RPC chain ID ${remoteChainId} does not match ${network.chainId}`);
@@ -81,7 +83,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       last = await rewindIfNeeded(env, network, client, last, owner, reorged, earliest);
 
     const latest = Number(await client.getBlockNumber());
-    let start = Math.max(0, earliest, last < 0 ? earliest : last);
+    const start = Math.max(0, earliest, last < 0 ? earliest : last);
     // ponytail: catch up 200 blocks per minute; add a dedicated scanner only when a real chain routinely exceeds it.
     const target = Math.min(latest, start + 199);
     const depositIntents = new Map(
@@ -100,12 +102,41 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       ),
     ];
 
-    for (; start <= target; start++) {
-      const number = BigInt(start);
-      const block = await client.getBlock({
-        blockNumber: number,
-        includeTransactions: nativeAddresses.size > 0,
-      });
+    const blockNumbers = Array.from({ length: target - start + 1 }, (_, index) => start + index);
+    const blocks = [];
+    for (let index = 0; index < blockNumbers.length; index += 10) {
+      blocks.push(
+        ...(await Promise.all(
+          blockNumbers.slice(index, index + 10).map((blockNumber) =>
+            client.getBlock({
+              blockNumber: BigInt(blockNumber),
+              includeTransactions: nativeAddresses.size > 0,
+            }),
+          ),
+        )),
+      );
+    }
+    const tokenLogs = tokenAddresses.length
+      ? await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          fromBlock: BigInt(start),
+          toBlock: BigInt(target),
+          strict: true,
+        })
+      : [];
+    const logsByBlock = new Map<number, typeof tokenLogs>();
+    for (const log of tokenLogs) {
+      if (log.blockNumber === null) continue;
+      const blockNumber = Number(log.blockNumber);
+      const logs = logsByBlock.get(blockNumber) ?? [];
+      logs.push(log);
+      logsByBlock.set(blockNumber, logs);
+    }
+
+    for (const [index, block] of blocks.entries()) {
+      const blockNumber = blockNumbers[index];
+      if (block.number !== BigInt(blockNumber)) throw new Error("RPC returned the wrong block");
       const payments: ObservedPayment[] = [];
 
       if (nativeAddresses.size) {
@@ -113,7 +144,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
           if (typeof transaction === "string" || !transaction.to || transaction.value <= 0n)
             continue;
           const intent = depositIntents.get(transaction.to.toLowerCase());
-          if (!intent || intent.token_address || intent.start_block > start) continue;
+          if (!intent || intent.token_address || intent.start_block > blockNumber) continue;
           const receipt = await client.getTransactionReceipt({ hash: transaction.hash });
           if (receipt.status !== "success" || receipt.blockHash !== block.hash) continue;
           payments.push({
@@ -125,7 +156,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
             from: transaction.from,
             to: getAddress(transaction.to),
             amountUnits: transaction.value.toString(),
-            blockNumber: start,
+            blockNumber,
             blockHash: block.hash,
             blockTimestamp: Number(block.timestamp),
           });
@@ -133,14 +164,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       }
 
       if (tokenAddresses.length) {
-        const logs = await client.getLogs({
-          address: tokenAddresses,
-          event: transferEvent,
-          fromBlock: number,
-          toBlock: number,
-          strict: true,
-        });
-        for (const log of logs) {
+        for (const log of logsByBlock.get(blockNumber) ?? []) {
           if (
             !log.args.to ||
             !log.args.from ||
@@ -153,7 +177,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
           if (
             !intent?.token_address ||
             getAddress(intent.token_address) !== getAddress(log.address) ||
-            intent.start_block > start
+            intent.start_block > blockNumber
           )
             continue;
           payments.push({
@@ -165,7 +189,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
             from: log.args.from,
             to: log.args.to,
             amountUnits: log.args.value.toString(),
-            blockNumber: start,
+            blockNumber,
             blockHash: block.hash,
             blockTimestamp: Number(block.timestamp),
           });
