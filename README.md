@@ -2,10 +2,11 @@
 
 # EVM Payment Gateway
 
-**Serverless crypto payments in your own Cloudflare account.**
+**Serverless CREATE2 crypto payments in your own Cloudflare account.**
 
-Create exact payment intents, confirm EVM transfers, send signed webhooks, and
-collect funds in your treasury without operating servers or deposit keys.
+Create exact payment intents with deterministic keyless addresses, confirm EVM
+transfers, send signed webhooks, and collect funds in your treasury without
+operating servers or managing deposit keys.
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
 [Demo](#demo) · [Security](#security) · [Integration guide](INTEGRATION.md)
@@ -32,7 +33,7 @@ collect funds in your treasury without operating servers or deposit keys.
 
 | Capability | Behavior |
 | --- | --- |
-| Exact checkout | Unique address, decimal amount, EIP-681 wallet link, and SVG QR code per intent. |
+| Exact checkout | Unique CREATE2 address, decimal amount, EIP-681 wallet link, and SVG QR code per intent. |
 | Payment state | Polling, expiry, partial payments, remaining-amount top-ups, confirmations, overpayments, and transaction history. |
 | Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting before retrying. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |

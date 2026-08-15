@@ -84,6 +84,10 @@ Use one stable `Idempotency-Key` for all retries of the same checkout. The first
 request returns `201`; an identical replay returns `200`. Reusing the key with a
 different body returns `409`.
 
+The request body is limited to 64 KiB. `metadata` must be a JSON object with no
+more than 32 nested levels; keep it small and store sensitive application data
+in your own database.
+
 Use `payment` for a one-time charge and `invoice` for a payable invoice. The
 gateway processes both identically; your application decides what is being
 sold.

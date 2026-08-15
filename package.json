@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "npm run contracts:check && npm run quality && npm run typecheck && npm test && npm run deploy:dry-run",
-    "check:staged": "biome check --staged",
+    "check:staged": "biome check --staged --no-errors-on-unmatched",
     "contracts:artifacts": "node scripts/generate-contract-artifacts.mjs",
     "contracts:build": "forge build && npm run contracts:artifacts",
     "contracts:check": "forge fmt --check && forge lint && forge test && node scripts/generate-contract-artifacts.mjs --check",
