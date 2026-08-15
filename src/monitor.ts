@@ -82,18 +82,23 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
     if (last >= 0)
       last = await rewindIfNeeded(env, network, client, last, owner, reorged, earliest);
 
-    const latest = Number(await client.getBlockNumber());
-    const start = Math.max(0, earliest, last < 0 ? earliest : last);
-    // ponytail: catch up 200 blocks per minute; add a dedicated scanner only when a real chain routinely exceeds it.
-    const target = Math.min(latest, start + 199);
     const depositIntents = new Map(
       intents.map((intent) => [intent.deposit_address.toLowerCase(), intent]),
     );
-    const nativeAddresses = new Set(
-      intents
-        .filter((intent) => !intent.token_address)
-        .map((intent) => intent.deposit_address.toLowerCase()),
-    );
+    const latest = Number(await client.getBlockNumber());
+    const nativeAddresses = new Set<string>();
+    for (const intent of intents.filter((candidate) => !candidate.token_address)) {
+      if (!["paid", "expired"].includes(intent.status) && intent.expires_at >= now) {
+        nativeAddresses.add(intent.deposit_address.toLowerCase());
+      } else if (
+        (await client.getBalance({
+          address: getAddress(intent.deposit_address),
+          blockNumber: BigInt(latest),
+        })) > 0n
+      ) {
+        nativeAddresses.add(intent.deposit_address.toLowerCase());
+      }
+    }
     const tokenAddresses = [
       ...new Set(
         intents
@@ -101,25 +106,18 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
           .map((intent) => getAddress(intent.token_address)),
       ),
     ];
+    const tokenDepositAddresses = intents
+      .filter((intent) => intent.token_address)
+      .map((intent) => getAddress(intent.deposit_address));
+    const start = Math.max(0, earliest, last < 0 ? earliest : last);
+    // ponytail: native blocks are CPU-heavy; token logs can safely cover a much larger gap.
+    const target = Math.min(latest, start + (nativeAddresses.size ? 39 : 4_999));
 
-    const blockNumbers = Array.from({ length: target - start + 1 }, (_, index) => start + index);
-    const blocks = [];
-    for (let index = 0; index < blockNumbers.length; index += 10) {
-      blocks.push(
-        ...(await Promise.all(
-          blockNumbers.slice(index, index + 10).map((blockNumber) =>
-            client.getBlock({
-              blockNumber: BigInt(blockNumber),
-              includeTransactions: nativeAddresses.size > 0,
-            }),
-          ),
-        )),
-      );
-    }
     const tokenLogs = tokenAddresses.length
       ? await client.getLogs({
           address: tokenAddresses,
           event: transferEvent,
+          args: { to: tokenDepositAddresses },
           fromBlock: BigInt(start),
           toBlock: BigInt(target),
           strict: true,
@@ -132,6 +130,22 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       const logs = logsByBlock.get(blockNumber) ?? [];
       logs.push(log);
       logsByBlock.set(blockNumber, logs);
+    }
+    const blockNumbers = nativeAddresses.size
+      ? Array.from({ length: target - start + 1 }, (_, index) => start + index)
+      : [...new Set([target, ...logsByBlock.keys()])].sort((a, b) => a - b);
+    const blocks = [];
+    for (let index = 0; index < blockNumbers.length; index += 10) {
+      blocks.push(
+        ...(await Promise.all(
+          blockNumbers.slice(index, index + 10).map((blockNumber) =>
+            client.getBlock({
+              blockNumber: BigInt(blockNumber),
+              includeTransactions: nativeAddresses.size > 0,
+            }),
+          ),
+        )),
+      );
     }
 
     for (const [index, block] of blocks.entries()) {

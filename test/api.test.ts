@@ -438,7 +438,7 @@ describe("analytics", () => {
 });
 
 describe("chain scanner", () => {
-  it("batches a catch-up window and requests token logs once", async () => {
+  it("bounds native scans and fast-forwards token-only catch-up", async () => {
     const now = unixNow();
     const nativeId = randomId("pi");
     const tokenId = randomId("pi");
@@ -481,6 +481,8 @@ describe("chain scanner", () => {
     const batchSizes: number[] = [];
     const blockRequests: Array<{ params: unknown[] }> = [];
     const logFilters: Array<Record<string, string>> = [];
+    const tokenTxHash = `0x${"a".repeat(64)}`;
+    let returnTokenPayment = false;
     let activeRpcRequests = 0;
     let maxConcurrentRpcRequests = 0;
     batchRpcResponder = async (request) => {
@@ -499,9 +501,28 @@ describe("chain scanner", () => {
         let result: unknown;
         if (rpc.method === "eth_chainId") result = "0x539";
         else if (rpc.method === "eth_blockNumber") result = "0xc8";
+        else if (rpc.method === "eth_getBalance") result = "0x0";
         else if (rpc.method === "eth_getLogs") {
           logFilters.push(rpc.params[0] as Record<string, string>);
-          result = [];
+          result = returnTokenPayment
+            ? [
+                {
+                  address: testToken,
+                  blockHash: `0x${(150).toString(16).padStart(64, "0")}`,
+                  blockNumber: "0x96",
+                  data: `0x${(100).toString(16).padStart(64, "0")}`,
+                  logIndex: "0x0",
+                  removed: false,
+                  topics: [
+                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    `0x${"0".repeat(24)}${"5".repeat(40)}`,
+                    `0x${"0".repeat(24)}${token.address.slice(2).toLowerCase()}`,
+                  ],
+                  transactionHash: tokenTxHash,
+                  transactionIndex: "0x0",
+                },
+              ]
+            : [];
         } else if (rpc.method === "eth_getBlockByNumber") {
           blockRequests.push(rpc);
           const blockNumber = Number(BigInt(rpc.params[0] as string));
@@ -549,11 +570,43 @@ describe("chain scanner", () => {
       await bindings.DB.prepare(
         "SELECT last_scanned FROM chain_states WHERE chain = 'batch-test'",
       ).first(),
-    ).toEqual({ last_scanned: 200 });
+    ).toEqual({ last_scanned: 40 });
     expect(Math.max(...batchSizes)).toBe(10);
     expect(maxConcurrentRpcRequests).toBe(1);
-    expect(blockRequests.filter((request) => request.params[1] === true)).toHaveLength(200);
-    expect(logFilters).toEqual([expect.objectContaining({ fromBlock: "0x1", toBlock: "0xc8" })]);
+    expect(blockRequests.filter((request) => request.params[1] === true)).toHaveLength(40);
+    expect(logFilters).toEqual([expect.objectContaining({ fromBlock: "0x1", toBlock: "0x28" })]);
+
+    await bindings.DB.prepare(
+      "UPDATE payment_intents SET status = 'expired', expires_at = ? WHERE id = ?",
+    )
+      .bind(now - 1, nativeId)
+      .run();
+    blockRequests.length = 0;
+    logFilters.length = 0;
+    returnTokenPayment = true;
+    await syncChain(bindings, network);
+
+    expect(
+      await bindings.DB.prepare(
+        "SELECT last_scanned FROM chain_states WHERE chain = 'batch-test'",
+      ).first(),
+    ).toEqual({ last_scanned: 200 });
+    expect(blockRequests.filter((request) => request.params[1] === true)).toHaveLength(0);
+    expect(blockRequests.filter((request) => request.params[0] === "0x96")).toHaveLength(1);
+    expect(blockRequests.filter((request) => request.params[0] === "0xc8")).toHaveLength(1);
+    expect(logFilters).toEqual([expect.objectContaining({ fromBlock: "0x28", toBlock: "0xc8" })]);
+    expect(
+      await bindings.DB.prepare(
+        "SELECT tx_hash, amount_units, block_number FROM payment_transactions WHERE payment_intent = ?",
+      )
+        .bind(tokenId)
+        .first(),
+    ).toEqual({ tx_hash: tokenTxHash, amount_units: "100", block_number: 150 });
+    expect(
+      await bindings.DB.prepare("SELECT status FROM payment_intents WHERE id = ?")
+        .bind(tokenId)
+        .first(),
+    ).toEqual({ status: "paid" });
 
     await bindings.DB.batch([
       bindings.DB.prepare("DELETE FROM payment_intents WHERE id IN (?, ?)").bind(nativeId, tokenId),
