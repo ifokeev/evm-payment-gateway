@@ -1,4 +1,4 @@
-import { walletPayment } from "./wallet.js";
+import { paymentAction, walletPayment } from "./wallet.js";
 
 const form = document.querySelector("#payment-form");
 const purpose = document.querySelector("#purpose");
@@ -231,27 +231,37 @@ function renderPayment(state) {
   text("#amount-due-asset", intent.asset);
   text("#deposit-address", intent.depositAddress);
 
-  const paymentUri = intent.topUpPaymentUri ?? intent.paymentUri;
-  const qrCode = intent.topUpQrCodeDataUrl ?? intent.qrCodeDataUrl;
+  const action = paymentAction(intent);
+  const paymentContent = document.querySelector("#payment-content");
+  const paymentClosed = document.querySelector("#payment-closed");
   const paymentQr = document.querySelector("#payment-qr");
-  if (!intent.expired && typeof paymentUri === "string" && paymentUri.startsWith("ethereum:")) {
-    walletPaymentUri = paymentUri;
-    walletLink.href = paymentUri;
+  paymentContent.hidden = !action.uri;
+  paymentClosed.hidden = Boolean(action.uri);
+  if (action.uri) {
+    walletPaymentUri = action.uri;
+    walletLink.href = action.uri;
     walletLink.removeAttribute("aria-disabled");
+    if (
+      typeof intent.topUpQrCodeDataUrl === "string" &&
+      intent.topUpQrCodeDataUrl.startsWith("data:image/svg+xml;base64,")
+    ) {
+      paymentQr.src = intent.topUpQrCodeDataUrl;
+    }
   } else {
     walletPaymentUri = "";
-    walletLink.removeAttribute("href");
+    walletLink.href = "#intent-state";
     walletLink.setAttribute("aria-disabled", "true");
-  }
-  if (typeof qrCode === "string" && qrCode.startsWith("data:image/svg+xml;base64,")) {
-    paymentQr.src = qrCode;
+    paymentQr.removeAttribute("src");
+    text("#payment-closed-title", action.title);
+    text("#payment-closed-detail", action.detail);
   }
 
   const transactions = Array.isArray(intent.transactions) ? intent.transactions : [];
+  const unpaidExpired = Boolean(intent.expired) && transactions.length === 0;
   renderConfirmation(intent, transactions);
   renderTransactions(transactions, status, intent.chain);
-  renderDelivery(webhookEvent);
-  renderSweep(sweep);
+  renderDelivery(webhookEvent, unpaidExpired);
+  renderSweep(sweep, unpaidExpired);
 }
 
 async function switchWalletNetwork(provider, chainId) {
@@ -316,8 +326,14 @@ function renderTransactions(transactions, status, chain) {
   const container = document.querySelector("#transactions");
   container.replaceChildren();
   if (!transactions.length) {
-    setActivityState("#chain-activity", "#chain-status", "idle", "Waiting");
-    container.append(paragraph("No transaction detected yet.", "muted"));
+    const expired = status === "expired";
+    setActivityState("#chain-activity", "#chain-status", "idle", expired ? "Expired" : "Waiting");
+    container.append(
+      paragraph(
+        expired ? "No payment was received before expiry." : "No transaction detected yet.",
+        "muted",
+      ),
+    );
     return;
   }
   if (status === "paid")
@@ -351,12 +367,24 @@ function renderTransactions(transactions, status, chain) {
   }
 }
 
-function renderDelivery(event) {
+function renderDelivery(event, unpaidExpired) {
   const container = document.querySelector("#delivery-status");
   container.replaceChildren();
   if (!event) {
-    setActivityState("#delivery-activity", "#delivery-badge", "active", "Waiting");
-    container.append(paragraph("Secure webhook delivery to your endpoint", "muted"));
+    setActivityState(
+      "#delivery-activity",
+      "#delivery-badge",
+      unpaidExpired ? "idle" : "active",
+      unpaidExpired ? "Not sent" : "Waiting",
+    );
+    container.append(
+      paragraph(
+        unpaidExpired
+          ? "No success webhook was created."
+          : "Secure webhook delivery to your endpoint",
+        "muted",
+      ),
+    );
     return;
   }
   const reorged = event.type === "payment.reorged";
@@ -373,12 +401,19 @@ function renderDelivery(event) {
   container.append(id);
 }
 
-function renderSweep(sweep) {
+function renderSweep(sweep, unpaidExpired) {
   const container = document.querySelector("#sweep-status");
   container.replaceChildren();
   if (!sweep || sweep.status === "not_queued") {
-    setActivityState("#sweep-activity", "#sweep-badge", "idle", "Queued");
-    container.append(paragraph("Collection to treasury wallet", "muted"));
+    setActivityState(
+      "#sweep-activity",
+      "#sweep-badge",
+      "idle",
+      unpaidExpired ? "Not needed" : "Queued",
+    );
+    container.append(
+      paragraph(unpaidExpired ? "No funds to collect." : "Collection to treasury wallet", "muted"),
+    );
     return;
   }
   const completed = ["complete", "external"].includes(sweep.status);

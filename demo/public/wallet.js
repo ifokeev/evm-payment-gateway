@@ -1,6 +1,31 @@
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
 const UINT256_MAX = (1n << 256n) - 1n;
 
+export function paymentAction(intent) {
+  if (
+    !intent.expired &&
+    typeof intent.topUpPaymentUri === "string" &&
+    intent.topUpPaymentUri.startsWith("ethereum:")
+  ) {
+    return { uri: intent.topUpPaymentUri, title: "", detail: "" };
+  }
+  const messages = {
+    confirming: [
+      "Transfer detected",
+      "No additional payment is needed while confirmations complete.",
+    ],
+    paid: ["Payment complete", "No additional payment is needed."],
+    expired: ["Payment link expired", "Create a new payment intent to continue."],
+    reorged: ["Payment unavailable", "Create a new payment intent or contact the merchant."],
+  };
+  const state = intent.status === "paid" ? "paid" : intent.expired ? "expired" : intent.status;
+  const [title, detail] = messages[state] ?? [
+    "Payment link unavailable",
+    "Create a new payment intent to continue.",
+  ];
+  return { uri: "", title, detail };
+}
+
 export function walletPayment(paymentUri, from) {
   if (!ADDRESS.test(from)) throw new Error("wallet returned an invalid account");
 

@@ -128,7 +128,7 @@
               </div>
             </div>
 
-            <div class="payment-content">
+            <div id="payment-content" class="payment-content">
               <div class="qr-panel">
                 <img id="payment-qr" alt="Payment QR code" width="280" height="280" />
               </div>
@@ -157,6 +157,11 @@
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div id="payment-closed" class="payment-closed" hidden>
+              <strong id="payment-closed-title">Payment link unavailable</strong>
+              <p id="payment-closed-detail">Create a new payment intent to continue.</p>
             </div>
           </div>
 
