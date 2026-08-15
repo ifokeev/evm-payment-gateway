@@ -5,14 +5,6 @@
   "compatibility_date": "2026-08-14",
   "workers_dev": false,
   "observability": { "enabled": true },
-  "secrets": {
-    "required": [
-      "TURNKEY_ORGANIZATION_ID",
-      "TURNKEY_API_PUBLIC_KEY",
-      "TURNKEY_API_PRIVATE_KEY",
-      "SWEEPER_NETWORKS_JSON"
-    ]
-  },
   "services": [
     {
       "binding": "GATEWAY",
@@ -35,7 +27,71 @@
   },
   "vars": {
     "SWEEPER_GAS_BUFFER_BPS": "12000",
-    "SWEEPER_MAX_GAS_FUNDING_WEI": "10000000000000000",
     "SWEEPER_RETRY_SECONDS": "15"
+  },
+  "env": {
+    "testnet": {
+      "secrets": {
+        "required": ["SWEEPER_NETWORKS_JSON"]
+      },
+      "services": [
+        {
+          "binding": "GATEWAY",
+          "service": "evm-payment-gateway-api-testnet",
+          "entrypoint": "SweepCoordinator"
+        }
+      ],
+      "queues": {
+        "producers": [{ "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps-testnet" }],
+        "consumers": [
+          {
+            "queue": "evm-payment-gateway-sweeps-testnet",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_concurrency": 1,
+            "max_retries": 20,
+            "retry_delay": 15
+          }
+        ]
+      },
+      "vars": {
+        "SWEEPER_GAS_BUFFER_BPS": "12000",
+        "SWEEPER_RETRY_SECONDS": "15"
+      }
+    },
+    "mainnet": {
+      "secrets": {
+        "required": ["SWEEPER_NETWORKS_JSON"]
+      },
+      "services": [
+        {
+          "binding": "GATEWAY",
+          "service": "evm-payment-gateway-api-mainnet",
+          "entrypoint": "SweepCoordinator"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "SWEEP_QUEUE",
+            "queue": "evm-payment-gateway-sweeps-mainnet"
+          }
+        ],
+        "consumers": [
+          {
+            "queue": "evm-payment-gateway-sweeps-mainnet",
+            "max_batch_size": 1,
+            "max_batch_timeout": 1,
+            "max_concurrency": 1,
+            "max_retries": 20,
+            "retry_delay": 15
+          }
+        ]
+      },
+      "vars": {
+        "SWEEPER_GAS_BUFFER_BPS": "12000",
+        "SWEEPER_RETRY_SECONDS": "15"
+      }
+    }
   }
 }

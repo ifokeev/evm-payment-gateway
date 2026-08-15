@@ -1,22 +1,22 @@
 import {
-  type Address,
   createPublicClient,
-  encodeFunctionData,
+  decodeEventLog,
   erc20Abi,
-  getAddress,
   type Hex,
   http,
   isAddressEqual,
-  type LocalAccount,
+  keccak256,
   parseAbi,
+  parseAbiItem,
   serializeTransaction,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
+  zeroAddress,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { intSetting, loadNetworks, remainingGasFunding } from "./domain";
+import { collectionCall, counterfactualAddress } from "./create2";
+import { intSetting, loadNetworks } from "./domain";
 import { errorText, safeErrorText } from "./monitor";
-import { signTurnkeyTransaction } from "./turnkey";
 import type {
   NetworkConfig,
   SweeperEnv,
@@ -30,18 +30,20 @@ const baseGasOracle = "0x420000000000000000000000000000000000000F";
 const baseGasOracleAbi = parseAbi([
   "function getL1FeeUpperBound(uint256 unsignedTxSize) view returns (uint256)",
 ]);
-const MAX_NATIVE_SWEEP_GAS = 1_000_000n;
-const MAX_TOKEN_SWEEP_GAS = 500_000n;
+const fundsCollectedEvent = parseAbiItem(
+  "event FundsCollected(address indexed asset, uint256 amount)",
+);
+const MAX_COLLECTION_GAS = 1_000_000n;
 
 export default {
   async queue(batch: MessageBatch<SweepMessage>, env: SweeperEnv): Promise<void> {
-    // ponytail: one queue consumer serializes gas-wallet nonces; split by chain only when throughput proves it necessary.
+    // ponytail: one queue consumer serializes relayer nonces; split by chain only when throughput proves it necessary.
     for (const message of batch.messages) {
       try {
         await processMessage(message.body.jobId, env);
         message.ack();
       } catch (error) {
-        console.error("sweep message failed", message.body.jobId, safeErrorText(error));
+        console.error("collection message failed", message.body.jobId, safeErrorText(error));
         message.retry({ delaySeconds: retrySeconds(env) });
       }
     }
@@ -54,7 +56,7 @@ async function processMessage(jobId: string, env: SweeperEnv): Promise<void> {
   if (!job) return;
   let outcome: SweepOutcome;
   try {
-    outcome = await processSweep(job, owner, env);
+    outcome = await processCollection(job, owner, env);
   } catch (error) {
     outcome = {
       status: "queued",
@@ -69,161 +71,100 @@ async function processMessage(jobId: string, env: SweeperEnv): Promise<void> {
   }
 }
 
-async function processSweep(job: SweepJob, owner: string, env: SweeperEnv): Promise<SweepOutcome> {
+async function processCollection(
+  job: SweepJob,
+  owner: string,
+  env: SweeperEnv,
+): Promise<SweepOutcome> {
   const networks = loadNetworks(env.SWEEPER_NETWORKS_JSON, true);
   const network = networks.get(job.chain);
   if (!network) throw new Error(`network ${job.chain} is not configured in the sweeper`);
   validateJobNetwork(job, network);
   const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 30_000 }) });
-  if ((await client.getChainId()) !== network.chainId)
-    throw new Error("sweeper RPC chain ID mismatch");
+  const [chainId, factoryCode] = await Promise.all([
+    client.getChainId(),
+    client.getCode({ address: network.factoryAddress }),
+  ]);
+  if (chainId !== network.chainId) throw new Error("sweeper RPC chain ID mismatch");
+  if (!factoryCode || keccak256(factoryCode).toLowerCase() !== network.factoryCodeHash)
+    throw new Error("factory code hash mismatch");
 
-  let confirmedSweep = false;
+  let confirmedCollection = false;
   for (const transaction of job.transactions) {
-    if (transaction.kind === "sweep" && transaction.status === "confirmed") confirmedSweep = true;
+    if (transaction.status === "confirmed") confirmedCollection = true;
     if (transaction.status !== "prepared" && transaction.status !== "submitted") continue;
     const result = await reconcile(job, transaction, owner, env, client);
-    if (result.confirmed && transaction.kind === "sweep") confirmedSweep = true;
+    if (result.confirmed) confirmedCollection = true;
     if (result.waiting) return queued(retrySeconds(env));
   }
 
-  return job.tokenAddress
-    ? processToken(job, owner, env, network, client, job.depositAddress, confirmedSweep)
-    : processNative(job, owner, env, network, client, job.depositAddress, confirmedSweep);
-}
-
-async function processNative(
-  job: SweepJob,
-  owner: string,
-  env: SweeperEnv,
-  network: NetworkConfig,
-  client: ReturnType<typeof createPublicClient>,
-  address: Address,
-  confirmedSweep: boolean,
-): Promise<SweepOutcome> {
-  const balance = await client.getBalance({ address });
-  if (balance === 0n) return confirmedSweep ? complete("0") : external("0");
-  const gasPrice = await client.getGasPrice();
-  validateGasPrice(gasPrice, network);
-  const nonce = await client.getTransactionCount({ address, blockTag: "pending" });
-  const estimated = await client.estimateGas({
-    account: address,
-    to: network.treasuryAddress,
-    value: 1n,
-  });
-  const gas = buffered(estimated, bufferBps(env));
-  if (gas < 21_000n || gas > MAX_NATIVE_SWEEP_GAS)
-    throw new Error(`native treasury gas estimate ${gas} is outside the allowed range`);
-  const executionFee = gas * gasPrice;
-  if (balance <= executionFee)
-    return confirmedSweep
-      ? complete(balance.toString())
-      : queued(retrySeconds(env), balance.toString());
-  const preliminary = unsignedLegacy(
-    network.chainId,
-    nonce,
-    network.treasuryAddress,
-    balance - executionFee,
-    gas,
-    gasPrice,
-  );
-  const l1Fee = await l1FeeUpperBound(client, network.chainId, preliminary);
-  if (balance <= executionFee + l1Fee)
-    return confirmedSweep
-      ? complete(balance.toString())
-      : queued(retrySeconds(env), balance.toString());
-  const unsigned = unsignedLegacy(
-    network.chainId,
-    nonce,
-    network.treasuryAddress,
-    balance - executionFee - l1Fee,
-    gas,
-    gasPrice,
-  );
-  const raw = await signTurnkeyTransaction(env, address, unsigned);
-  await prepareAndBroadcast(job.id, owner, "sweep", raw, env, client);
-  return queued(retrySeconds(env), balance.toString());
-}
-
-async function processToken(
-  job: SweepJob,
-  owner: string,
-  env: SweeperEnv,
-  network: NetworkConfig,
-  client: ReturnType<typeof createPublicClient>,
-  address: Address,
-  confirmedSweep: boolean,
-): Promise<SweepOutcome> {
-  const token = getAddress(job.tokenAddress);
-  const balance = await client.readContract({
-    abi: erc20Abi,
-    address: token,
-    functionName: "balanceOf",
-    args: [address],
-  });
+  const [balance, forwarderCode] = await Promise.all([
+    collectionBalance(client, job),
+    client.getCode({ address: job.depositAddress }),
+  ]);
   if (balance === 0n) {
-    if (!confirmedSweep) return external("0");
-    const nativeBalance = await client.getBalance({ address });
-    return complete(nativeBalance.toString());
+    if (confirmedCollection) return complete("0");
+    if (forwarderCode) return external("0");
+    return queued(retrySeconds(env));
   }
-  const data = encodeFunctionData({
-    abi: erc20Abi,
-    functionName: "transfer",
-    args: [network.treasuryAddress, balance],
-  });
-  const gas = buffered(
-    await client.estimateGas({ account: address, to: token, data }),
-    bufferBps(env),
-  );
-  if (gas < 21_000n || gas > MAX_TOKEN_SWEEP_GAS)
-    throw new Error(`token sweep gas estimate ${gas} is outside the allowed range`);
-  const gasPrice = await client.getGasPrice();
-  validateGasPrice(gasPrice, network);
-  const nonce = await client.getTransactionCount({ address, blockTag: "pending" });
-  const unsigned = unsignedLegacy(network.chainId, nonce, token, 0n, gas, gasPrice, data);
-  const required = gas * gasPrice + (await l1FeeUpperBound(client, network.chainId, unsigned));
-  const nativeBalance = await client.getBalance({ address });
-  if (nativeBalance < required) {
-    const shortfall = required - nativeBalance;
-    const history = job.transactions
-      .filter((transaction) => transaction.kind === "gas" && transaction.status !== "failed")
-      .map((transaction) => transaction.amountUnits);
-    const remaining = remainingGasFunding(maxGasFunding(env), history);
-    if (shortfall <= 0n || shortfall > remaining)
-      throw new Error(
-        `required gas funding ${shortfall} exceeds remaining sweep allowance ${remaining}`,
-      );
-    await fundGas(job, owner, env, network, client, address, shortfall);
-    return queued(retrySeconds(env), balance.toString());
-  }
-  const raw = await signTurnkeyTransaction(env, address, unsigned);
-  await prepareAndBroadcast(job.id, owner, "sweep", raw, env, client);
-  return queued(retrySeconds(env), balance.toString());
-}
 
-async function fundGas(
-  job: SweepJob,
-  owner: string,
-  env: SweeperEnv,
-  network: NetworkConfig,
-  client: ReturnType<typeof createPublicClient>,
-  deposit: Address,
-  amount: bigint,
-): Promise<void> {
-  if (!network.gasPrivateKey) throw new Error(`gas wallet is not configured for ${network.name}`);
-  const account = privateKeyToAccount(network.gasPrivateKey);
-  const [nonce, gasPrice] = await Promise.all([
-    client.getTransactionCount({ address: account.address, blockTag: "pending" }),
+  if (!network.relayerPrivateKey) throw new Error("relayer private key is missing");
+  const account = privateKeyToAccount(network.relayerPrivateKey);
+  const data = collectionCall(job.intentSalt, network.treasuryAddress, job.tokenAddress);
+  const [gasPrice, nonce, estimated] = await Promise.all([
     client.getGasPrice(),
+    client.getTransactionCount({ address: account.address, blockTag: "pending" }),
+    client.estimateGas({ account: account.address, to: network.factoryAddress, data }),
   ]);
   validateGasPrice(gasPrice, network);
-  const unsigned = unsignedLegacy(network.chainId, nonce, deposit, amount, 21_000n, gasPrice);
-  const required =
-    amount + 21_000n * gasPrice + (await l1FeeUpperBound(client, network.chainId, unsigned));
+  const gas = buffered(estimated, bufferBps(env));
+  if (gas < 21_000n || gas > MAX_COLLECTION_GAS)
+    throw new Error(`collection gas estimate ${gas} is outside the allowed range`);
+  const unsigned = serializeTransaction({
+    type: "legacy",
+    chainId: network.chainId,
+    nonce,
+    to: network.factoryAddress,
+    value: 0n,
+    gas,
+    gasPrice,
+    data,
+  });
+  const required = gas * gasPrice + (await l1FeeUpperBound(client, network.chainId, unsigned));
   if ((await client.getBalance({ address: account.address })) < required)
-    throw new Error(`gas wallet ${account.address} has insufficient balance`);
-  const raw = await signLegacy(account, network.chainId, nonce, deposit, amount, 21_000n, gasPrice);
-  await prepareAndBroadcast(job.id, owner, "gas", raw, env, client);
+    throw new Error(`relayer ${account.address} has insufficient balance`);
+  const raw = await account.signTransaction({
+    type: "legacy",
+    chainId: network.chainId,
+    nonce,
+    to: network.factoryAddress,
+    value: 0n,
+    gas,
+    gasPrice,
+    data,
+  });
+  await prepareAndBroadcast(
+    job.id,
+    owner,
+    forwarderCode ? "collect" : "deploy_collect",
+    raw,
+    env,
+    client,
+  );
+  return queued(retrySeconds(env), balance.toString());
+}
+
+async function collectionBalance(
+  client: ReturnType<typeof createPublicClient>,
+  job: SweepJob,
+): Promise<bigint> {
+  if (!job.tokenAddress) return client.getBalance({ address: job.depositAddress });
+  return client.readContract({
+    abi: erc20Abi,
+    address: job.tokenAddress,
+    functionName: "balanceOf",
+    args: [job.depositAddress],
+  });
 }
 
 async function reconcile(
@@ -242,19 +183,22 @@ async function reconcile(
         "failed",
         Number(receipt.blockNumber),
         "transaction reverted",
+        "0",
+        (receipt.gasUsed * receipt.effectiveGasPrice).toString(),
       );
       return { confirmed: false, waiting: false };
     }
     const head = await client.getBlockNumber();
-    const required = transaction.kind === "sweep" ? BigInt(job.confirmations) : 1n;
     const confirmations = head >= receipt.blockNumber ? head - receipt.blockNumber + 1n : 0n;
-    if (confirmations < required) {
+    if (confirmations < BigInt(job.confirmations)) {
       await env.GATEWAY.reportSweepTransaction(
         transaction.id,
         owner,
         "submitted",
         Number(receipt.blockNumber),
         "",
+        "0",
+        "0",
       );
       return { confirmed: false, waiting: true };
     }
@@ -264,6 +208,8 @@ async function reconcile(
       "confirmed",
       Number(receipt.blockNumber),
       "",
+      collectedAmount(receipt.logs, job).toString(),
+      (receipt.gasUsed * receipt.effectiveGasPrice).toString(),
     );
     return { confirmed: true, waiting: false };
   } catch (error) {
@@ -272,7 +218,7 @@ async function reconcile(
 
   try {
     await client.getTransaction({ hash: transaction.hash });
-    await env.GATEWAY.reportSweepTransaction(transaction.id, owner, "submitted", 0, "");
+    await env.GATEWAY.reportSweepTransaction(transaction.id, owner, "submitted", 0, "", "0", "0");
     return { confirmed: false, waiting: true };
   } catch (error) {
     if (!(error instanceof TransactionNotFoundError)) throw error;
@@ -282,14 +228,39 @@ async function reconcile(
   } catch (error) {
     if (!knownTransactionError(error)) throw error;
   }
-  await env.GATEWAY.reportSweepTransaction(transaction.id, owner, "submitted", 0, "");
+  await env.GATEWAY.reportSweepTransaction(transaction.id, owner, "submitted", 0, "", "0", "0");
   return { confirmed: false, waiting: true };
+}
+
+function collectedAmount(
+  logs: readonly { address: `0x${string}`; data: Hex; topics: readonly Hex[] }[],
+  job: SweepJob,
+): bigint {
+  let total = 0n;
+  for (const log of logs) {
+    if (!isAddressEqual(log.address, job.depositAddress)) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: [fundsCollectedEvent],
+        data: log.data,
+        topics: log.topics as [Hex, ...Hex[]],
+        strict: true,
+      });
+      const expectedAsset = job.tokenAddress || zeroAddress;
+      if (!isAddressEqual(decoded.args.asset, expectedAsset))
+        throw new Error("collection event asset mismatch");
+      total += decoded.args.amount;
+    } catch (error) {
+      if (errorText(error).includes("asset mismatch")) throw error;
+    }
+  }
+  return total;
 }
 
 async function prepareAndBroadcast(
   jobId: string,
   owner: string,
-  kind: "gas" | "sweep",
+  kind: "deploy_collect" | "collect",
   raw: Hex,
   env: SweeperEnv,
   client: ReturnType<typeof createPublicClient>,
@@ -300,41 +271,7 @@ async function prepareAndBroadcast(
   } catch (error) {
     if (!knownTransactionError(error)) throw error;
   }
-  await env.GATEWAY.reportSweepTransaction(record.id, owner, "submitted", 0, "");
-}
-
-async function signLegacy(
-  account: LocalAccount,
-  chainId: number,
-  nonce: number,
-  to: Address,
-  value: bigint,
-  gas: bigint,
-  gasPrice: bigint,
-  data: Hex = "0x",
-): Promise<Hex> {
-  return account.signTransaction({
-    type: "legacy",
-    chainId,
-    nonce,
-    to,
-    value,
-    gas,
-    gasPrice,
-    data,
-  });
-}
-
-function unsignedLegacy(
-  chainId: number,
-  nonce: number,
-  to: Address,
-  value: bigint,
-  gas: bigint,
-  gasPrice: bigint,
-  data: Hex = "0x",
-): Hex {
-  return serializeTransaction({ type: "legacy", chainId, nonce, to, value, gas, gasPrice, data });
+  await env.GATEWAY.reportSweepTransaction(record.id, owner, "submitted", 0, "", "0", "0");
 }
 
 async function l1FeeUpperBound(
@@ -343,19 +280,29 @@ async function l1FeeUpperBound(
   raw: Hex,
 ): Promise<bigint> {
   if (chainId !== 8453 && chainId !== 84532) return 0n;
-  const size = BigInt((raw.length - 2) / 2);
   return client.readContract({
     address: baseGasOracle,
     abi: baseGasOracleAbi,
     functionName: "getL1FeeUpperBound",
-    args: [size],
+    args: [BigInt((raw.length - 2) / 2)],
   });
 }
 
 function validateJobNetwork(job: SweepJob, network: NetworkConfig): void {
+  const expected = counterfactualAddress(
+    network.factoryAddress,
+    job.intentSalt,
+    network.treasuryAddress,
+    job.tokenAddress,
+  );
   if (
     job.chainId !== network.chainId ||
     !isAddressEqual(job.treasuryAddress, network.treasuryAddress) ||
+    !isAddressEqual(job.factoryAddress, network.factoryAddress) ||
+    job.factoryCodeHash.toLowerCase() !== network.factoryCodeHash ||
+    !isAddressEqual(job.relayerAddress, network.relayerAddress) ||
+    !isAddressEqual(job.depositAddress, expected.address) ||
+    job.forwarderInitCodeHash.toLowerCase() !== expected.initCodeHash.toLowerCase() ||
     job.confirmations !== network.confirmations ||
     job.maxGasPriceWei !== network.maxGasPriceWei.toString()
   ) {
@@ -371,9 +318,8 @@ function validateJobNetwork(job: SweepJob, network: NetworkConfig): void {
 }
 
 function validateGasPrice(gasPrice: bigint, network: NetworkConfig): void {
-  if (gasPrice <= 0n || gasPrice > network.maxGasPriceWei) {
+  if (gasPrice <= 0n || gasPrice > network.maxGasPriceWei)
     throw new Error(`gas price exceeds the configured limit for ${network.name}`);
-  }
 }
 
 function buffered(value: bigint, bps: number): bigint {
@@ -386,17 +332,6 @@ function bufferBps(env: SweeperEnv): number {
 
 function retrySeconds(env: SweeperEnv): number {
   return intSetting(env.SWEEPER_RETRY_SECONDS, "SWEEPER_RETRY_SECONDS", 1, 300);
-}
-
-function maxGasFunding(env: SweeperEnv): bigint {
-  let value: bigint;
-  try {
-    value = BigInt(env.SWEEPER_MAX_GAS_FUNDING_WEI);
-  } catch {
-    throw new Error("SWEEPER_MAX_GAS_FUNDING_WEI is invalid");
-  }
-  if (value <= 0n) throw new Error("SWEEPER_MAX_GAS_FUNDING_WEI is invalid");
-  return value;
 }
 
 function knownTransactionError(error: unknown): boolean {

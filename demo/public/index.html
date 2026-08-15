@@ -38,7 +38,7 @@
             <h1 id="page-title"><span>Pay crypto.</span><span>See each step.</span></h1>
             <p class="intro-copy">
               Create an exact Base Sepolia payment and follow it from wallet transfer to treasury
-              sweep.
+              collection.
             </p>
           </div>
 
@@ -128,7 +128,7 @@
               </div>
             </div>
 
-            <div class="payment-content">
+            <div id="payment-content" class="payment-content">
               <div class="qr-panel">
                 <img id="payment-qr" alt="Payment QR code" width="280" height="280" />
               </div>
@@ -153,10 +153,15 @@
                       <code id="deposit-address"></code>
                       <span id="copy-label">Copy</span>
                     </button>
-                    <a id="wallet-link" class="secondary-button" href="/">Open wallet</a>
+                    <a id="wallet-link" class="secondary-button" href="#intent-state" aria-disabled="true">Open wallet</a>
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div id="payment-closed" class="payment-closed" hidden>
+              <strong id="payment-closed-title">Payment link unavailable</strong>
+              <p id="payment-closed-detail">Create a new payment intent to continue.</p>
             </div>
           </div>
 
@@ -199,7 +204,7 @@
                   </div>
                 </div>
                 <div id="sweep-status" class="activity-content">
-                  <p class="muted">Sweep starts after payment confirmation.</p>
+                  <p class="muted">Collection starts after payment confirmation.</p>
                 </div>
               </div>
             </section>

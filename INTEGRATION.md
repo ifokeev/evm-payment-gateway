@@ -21,7 +21,7 @@ flowchart LR
     Customer -->|"Payment"| Chain
     Gateway -->|"Scan and confirm"| Chain
     Gateway -->|"Signed webhook"| App
-    Gateway -->|"Asynchronous sweep"| Treasury
+    Gateway -->|"Asynchronous collection"| Treasury
 ```
 
 Your application remains the system of record for orders and entitlements. The
@@ -37,6 +37,7 @@ All payment endpoints use the `/api/payments/v1` prefix and require
 | `GET` | `/intents/{id}` | Poll status and the included transaction history. |
 | `GET` | `/intents/{id}/transactions` | Read payment transactions only. |
 | `GET` | `/intents/{id}/sweep` | Inspect treasury collection progress. |
+| `GET` | `/analytics/summary` | Read aggregate payment and collection metrics. |
 
 Errors use `{ "error": "message" }`. There is no lookup by `externalId`, so
 store every returned intent ID in your application database.
@@ -82,6 +83,10 @@ export async function createCryptoCheckout(order: {
 Use one stable `Idempotency-Key` for all retries of the same checkout. The first
 request returns `201`; an identical replay returns `200`. Reusing the key with a
 different body returns `409`.
+
+The request body is limited to 64 KiB. `metadata` must be a JSON object with no
+more than 32 nested levels; keep it small and store sensitive application data
+in your own database.
 
 Use `payment` for a one-time charge and `invoice` for a payable invoice. The
 gateway processes both identically; your application decides what is being
@@ -147,8 +152,8 @@ Use the separate `expired` boolean to close the payment UI. An underpaid intent
 can keep the `underpaid` status after expiry to describe the funds already seen;
 do not encourage a top-up once `expired` is true. Both top-up fields become
 `null` when the intent expires, becomes paid, or otherwise should not receive
-another payment. The original payment fields remain unchanged for audit and
-backward compatibility.
+another payment. The original payment fields remain unchanged for transaction
+traceability.
 
 ```mermaid
 sequenceDiagram
@@ -174,7 +179,7 @@ sequenceDiagram
     Gateway->>Chain: Wait for configured confirmations
     Gateway->>App: Signed payment.succeeded webhook
     App->>App: Verify, deduplicate, and fulfill
-    Gateway->>Treasury: Sweep funds asynchronously
+    Gateway->>Treasury: Collect funds asynchronously
 ```
 
 ### Payment statuses
@@ -202,9 +207,9 @@ stateDiagram-v2
 | `reorged` | Mark the payment for review or reverse reversible fulfillment. |
 
 A transaction mined after the configured expiry grace period does not make the
-intent paid, although the gateway may still sweep recoverable funds. Handle that
-case through support; never fulfill solely because funds appear in transaction
-history.
+intent paid, although the gateway may still collect recoverable funds. Handle
+that case through support; never fulfill solely because funds appear in
+transaction or collection history.
 
 An overpayment still represents the one server-priced order identified by
 `externalId`. Do not grant additional product by converting `receivedUnits`
@@ -255,9 +260,9 @@ an accidental overpayment into extra balance automatically.
 
 ## 3. Verify and process webhooks
 
-The gateway sends `payment.succeeded` and `payment.reorged`. It retries non-2xx
-responses with exponential backoff and keeps the same `Webhook-Id` and body.
-Each delivery includes:
+The gateway sends `payment.succeeded`, `payment.reorged`, and informational
+`payment.recovered` events. It retries non-2xx responses with exponential
+backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
 
 ```text
 Webhook-Id: evt_...
@@ -334,6 +339,13 @@ Model reversible fulfillment as a state transition on the existing business
 order or invoice. If the same intent becomes paid again after a reorg, reactivate
 that entitlement instead of appending a second grant.
 
+`payment.recovered` means the gateway collected some or all funds from an
+expired or underpaid intent. It includes `requestedUnits`, `receivedUnits`,
+`missingUnits`, `collectedUnits`, and `collectedDeltaUnits`; it does not change
+the intent to `paid`. Use it for support, refund, or manual account-credit
+workflows. Do not fulfill the original order automatically from this event, and
+deduplicate each event because later deposits may produce another recovery.
+
 ## 4. Reconcile missed events
 
 Webhooks are at-least-once notifications, so run a small reconciliation job for
@@ -347,9 +359,20 @@ GET /api/payments/v1/intents/{id}/sweep
 ```
 
 The transactions endpoint explains underpayments, confirmation counts, late
-payments, and non-canonical transactions. The sweep endpoint is operational
-history only. Do not wait for a treasury sweep before fulfilling a `paid`
-intent.
+payments, and non-canonical transactions. The collection endpoint retains the
+`/sweep` route name and is operational history only. Do not wait for treasury
+collection before fulfilling a `paid` intent.
+
+The authenticated analytics endpoint returns base-unit strings rather than
+floating-point totals:
+
+```http
+GET /api/payments/v1/analytics/summary
+```
+
+It groups requested, received, confirmed, and collected units by chain and
+asset, plus collection fees and webhook counts. Convert units using your
+configured token decimals only at the display boundary.
 
 ## Recurring billing
 
@@ -369,4 +392,6 @@ allowance or withdraws from the customer's wallet automatically.
   database constraints.
 - Use polling for display and recovery; use verified status for fulfillment.
 - Handle `payment.reorged` according to the reversibility of your product.
-- Never make fulfillment depend on the asynchronous treasury sweep.
+- Route `payment.recovered` to reconciliation; never treat it as payment
+  success.
+- Never make fulfillment depend on asynchronous treasury collection.

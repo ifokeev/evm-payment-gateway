@@ -1,5 +1,6 @@
 import { type Address, getAddress, isAddress, isAddressEqual, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH } from "./contracts.generated";
 import type { NetworkConfig, PaymentStatus, TokenConfig } from "./types";
 
 const UINT256_MAX = (1n << 256n) - 1n;
@@ -50,7 +51,7 @@ export function paymentUri(
     : `ethereum:${depositAddress}@${network.chainId}?value=${units}`;
 }
 
-export function loadNetworks(raw: string, requireGasKeys = false): Map<string, NetworkConfig> {
+export function loadNetworks(raw: string, requireRelayerKeys = false): Map<string, NetworkConfig> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -90,6 +91,28 @@ export function loadNetworks(raw: string, requireGasKeys = false): Map<string, N
       stringField(item, "treasuryAddress"),
       `treasury address for ${name}`,
     );
+    const factoryAddress = checkedAddress(
+      stringField(item, "factoryAddress"),
+      `factory address for ${name}`,
+    );
+    const relayerAddress = checkedAddress(
+      stringField(item, "relayerAddress"),
+      `relayer address for ${name}`,
+    );
+    const factoryCodeHash = stringField(item, "factoryCodeHash") as `0x${string}`;
+    if (
+      !/^0x[0-9a-fA-F]{64}$/.test(factoryCodeHash) ||
+      factoryCodeHash.toLowerCase() !== PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH.toLowerCase()
+    ) {
+      throw new Error(`invalid factory code hash for ${name}`);
+    }
+    if (
+      isAddressEqual(factoryAddress, treasuryAddress) ||
+      isAddressEqual(relayerAddress, treasuryAddress) ||
+      isAddressEqual(relayerAddress, factoryAddress)
+    ) {
+      throw new Error(`factory, relayer, and treasury must differ for ${name}`);
+    }
     if (result.has(name) || chainIds.has(chainId))
       throw new Error(`duplicate network name or chain ID: ${name}`);
     const tokens: Record<string, TokenConfig> = {};
@@ -107,38 +130,40 @@ export function loadNetworks(raw: string, requireGasKeys = false): Map<string, N
       );
       if (isAddressEqual(address, treasuryAddress))
         throw new Error(`token address must not match treasury for ${name}/${symbol}`);
+      if (isAddressEqual(address, factoryAddress) || isAddressEqual(address, relayerAddress))
+        throw new Error(`token address must not match factory or relayer for ${name}/${symbol}`);
       tokens[symbol] = {
         address,
         decimals: integerField(rawToken, "decimals", 0, 255),
       };
     }
-    const gasPrivateKey = optionalString(item, "gasPrivateKey") as `0x${string}` | "";
-    if (gasPrivateKey && !/^0x[0-9a-fA-F]{64}$/.test(gasPrivateKey))
-      throw new Error(`invalid gasPrivateKey for ${name}`);
-    if (!requireGasKeys && gasPrivateKey)
-      throw new Error(`API network ${name} must not contain gasPrivateKey`);
-    if (requireGasKeys && Object.keys(tokens).length && !gasPrivateKey) {
-      throw new Error(`gasPrivateKey is required for token network ${name}`);
-    }
-    if (requireGasKeys && !Object.keys(tokens).length && gasPrivateKey)
-      throw new Error(`gasPrivateKey is not allowed for native-only network ${name}`);
+    const relayerPrivateKey = optionalString(item, "relayerPrivateKey") as `0x${string}` | "";
+    if (relayerPrivateKey && !/^0x[0-9a-fA-F]{64}$/.test(relayerPrivateKey))
+      throw new Error(`invalid relayerPrivateKey for ${name}`);
+    if (!requireRelayerKeys && relayerPrivateKey)
+      throw new Error(`API network ${name} must not contain relayerPrivateKey`);
+    if (requireRelayerKeys && !relayerPrivateKey)
+      throw new Error(`relayerPrivateKey is required for ${name}`);
     if (
-      gasPrivateKey &&
-      isAddressEqual(privateKeyToAccount(gasPrivateKey).address, treasuryAddress)
+      relayerPrivateKey &&
+      !isAddressEqual(privateKeyToAccount(relayerPrivateKey).address, relayerAddress)
     ) {
-      throw new Error(`gas wallet must not be the treasury for ${name}`);
+      throw new Error(`relayerPrivateKey does not match relayerAddress for ${name}`);
     }
     result.set(name, {
       name,
       chainId,
       rpcUrl,
       treasuryAddress,
+      factoryAddress,
+      factoryCodeHash: factoryCodeHash.toLowerCase() as `0x${string}`,
+      relayerAddress,
       confirmations,
       maxGasPriceWei,
       nativeAsset,
       explorerUrl,
       tokens,
-      ...(gasPrivateKey ? { gasPrivateKey } : {}),
+      ...(relayerPrivateKey ? { relayerPrivateKey } : {}),
     });
     chainIds.add(chainId);
   }
@@ -168,24 +193,6 @@ export function eligibleForSweep(
   if (!expiredWithGrace) return false;
   if (!isToken) return true;
   return confirmed >= (expected * BigInt(minTokenBps) + 9_999n) / 10_000n;
-}
-
-export function remainingGasFunding(maximum: bigint, history: string[], requested = 0n): bigint {
-  if (maximum <= 0n || requested < 0n) throw new Error("gas funding limit is invalid");
-  let used = 0n;
-  for (const raw of history) {
-    let amount: bigint;
-    try {
-      amount = BigInt(raw);
-    } catch {
-      throw new Error("gas funding history is invalid");
-    }
-    if (amount <= 0n) throw new Error("gas funding history is invalid");
-    used += amount;
-  }
-  const remaining = maximum > used ? maximum - used : 0n;
-  if (requested > remaining) throw new Error("gas funding exceeds the sweep job limit");
-  return remaining - requested;
 }
 
 export function intSetting(raw: string, name: string, minimum: number, maximum: number): number {

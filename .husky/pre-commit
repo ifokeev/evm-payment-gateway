@@ -1,1 +1,2 @@
 npm run check:staged
+PATH="$HOME/.foundry/bin:$PATH" npm run contracts:check

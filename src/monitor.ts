@@ -51,7 +51,7 @@ export async function runScheduled(env: ApiEnv): Promise<void> {
 export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<void> {
   const intents = await all<IntentRow>(
     env.DB,
-    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY derivation_index",
+    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY created_at, id",
     network.name,
   );
   if (!intents.length) return;
@@ -71,7 +71,9 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
   if (!lease) return;
 
   try {
-    const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 20_000 }) });
+    const client = createPublicClient({
+      transport: http(network.rpcUrl, { batch: { batchSize: 10 }, timeout: 20_000 }),
+    });
     const remoteChainId = await client.getChainId();
     if (remoteChainId !== network.chainId)
       throw new Error(`RPC chain ID ${remoteChainId} does not match ${network.chainId}`);
@@ -80,18 +82,23 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
     if (last >= 0)
       last = await rewindIfNeeded(env, network, client, last, owner, reorged, earliest);
 
-    const latest = Number(await client.getBlockNumber());
-    let start = Math.max(0, earliest, last < 0 ? earliest : last);
-    // ponytail: catch up 200 blocks per minute; add a dedicated scanner only when a real chain routinely exceeds it.
-    const target = Math.min(latest, start + 199);
     const depositIntents = new Map(
       intents.map((intent) => [intent.deposit_address.toLowerCase(), intent]),
     );
-    const nativeAddresses = new Set(
-      intents
-        .filter((intent) => !intent.token_address)
-        .map((intent) => intent.deposit_address.toLowerCase()),
-    );
+    const latest = Number(await client.getBlockNumber());
+    const nativeAddresses = new Set<string>();
+    for (const intent of intents.filter((candidate) => !candidate.token_address)) {
+      if (!["paid", "expired"].includes(intent.status) && intent.expires_at >= now) {
+        nativeAddresses.add(intent.deposit_address.toLowerCase());
+      } else if (
+        (await client.getBalance({
+          address: getAddress(intent.deposit_address),
+          blockNumber: BigInt(latest),
+        })) > 0n
+      ) {
+        nativeAddresses.add(intent.deposit_address.toLowerCase());
+      }
+    }
     const tokenAddresses = [
       ...new Set(
         intents
@@ -99,13 +106,62 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
           .map((intent) => getAddress(intent.token_address)),
       ),
     ];
+    const tokenDepositAddresses = intents
+      .filter((intent) => intent.token_address)
+      .map((intent) => getAddress(intent.deposit_address));
+    const start = Math.max(0, earliest, last < 0 ? earliest : last);
+    // ponytail: native blocks are CPU-heavy; token logs can safely cover a much larger gap.
+    const target = Math.min(latest, start + (nativeAddresses.size ? 39 : 4_999));
 
-    for (; start <= target; start++) {
-      const number = BigInt(start);
-      const block = await client.getBlock({
-        blockNumber: number,
-        includeTransactions: nativeAddresses.size > 0,
-      });
+    const tokenLogs = tokenAddresses.length
+      ? await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          args: { to: tokenDepositAddresses.slice(0, 100) },
+          fromBlock: BigInt(start),
+          toBlock: BigInt(target),
+          strict: true,
+        })
+      : [];
+    for (let offset = 100; offset < tokenDepositAddresses.length; offset += 100)
+      tokenLogs.push(
+        ...(await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          args: { to: tokenDepositAddresses.slice(offset, offset + 100) },
+          fromBlock: BigInt(start),
+          toBlock: BigInt(target),
+          strict: true,
+        })),
+      );
+    const logsByBlock = new Map<number, typeof tokenLogs>();
+    for (const log of tokenLogs) {
+      if (log.blockNumber === null) continue;
+      const blockNumber = Number(log.blockNumber);
+      const logs = logsByBlock.get(blockNumber) ?? [];
+      logs.push(log);
+      logsByBlock.set(blockNumber, logs);
+    }
+    const blockNumbers = nativeAddresses.size
+      ? Array.from({ length: target - start + 1 }, (_, index) => start + index)
+      : [...new Set([target, ...logsByBlock.keys()])].sort((a, b) => a - b);
+    const blocks = [];
+    for (let index = 0; index < blockNumbers.length; index += 10) {
+      blocks.push(
+        ...(await Promise.all(
+          blockNumbers.slice(index, index + 10).map((blockNumber) =>
+            client.getBlock({
+              blockNumber: BigInt(blockNumber),
+              includeTransactions: nativeAddresses.size > 0,
+            }),
+          ),
+        )),
+      );
+    }
+
+    for (const [index, block] of blocks.entries()) {
+      const blockNumber = blockNumbers[index];
+      if (block.number !== BigInt(blockNumber)) throw new Error("RPC returned the wrong block");
       const payments: ObservedPayment[] = [];
 
       if (nativeAddresses.size) {
@@ -113,7 +169,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
           if (typeof transaction === "string" || !transaction.to || transaction.value <= 0n)
             continue;
           const intent = depositIntents.get(transaction.to.toLowerCase());
-          if (!intent || intent.token_address || intent.start_block > start) continue;
+          if (!intent || intent.token_address || intent.start_block > blockNumber) continue;
           const receipt = await client.getTransactionReceipt({ hash: transaction.hash });
           if (receipt.status !== "success" || receipt.blockHash !== block.hash) continue;
           payments.push({
@@ -125,7 +181,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
             from: transaction.from,
             to: getAddress(transaction.to),
             amountUnits: transaction.value.toString(),
-            blockNumber: start,
+            blockNumber,
             blockHash: block.hash,
             blockTimestamp: Number(block.timestamp),
           });
@@ -133,18 +189,12 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       }
 
       if (tokenAddresses.length) {
-        const logs = await client.getLogs({
-          address: tokenAddresses,
-          event: transferEvent,
-          fromBlock: number,
-          toBlock: number,
-          strict: true,
-        });
-        for (const log of logs) {
+        for (const log of logsByBlock.get(blockNumber) ?? []) {
           if (
             !log.args.to ||
             !log.args.from ||
             log.args.value === undefined ||
+            log.args.value <= 0n ||
             log.blockHash !== block.hash ||
             log.blockNumber === null
           )
@@ -153,7 +203,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
           if (
             !intent?.token_address ||
             getAddress(intent.token_address) !== getAddress(log.address) ||
-            intent.start_block > start
+            intent.start_block > blockNumber
           )
             continue;
           payments.push({
@@ -165,7 +215,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
             from: log.args.from,
             to: log.args.to,
             amountUnits: log.args.value.toString(),
-            blockNumber: start,
+            blockNumber,
             blockHash: block.hash,
             blockTimestamp: Number(block.timestamp),
           });
@@ -235,14 +285,8 @@ async function rewindIfNeeded(
     fromBlock,
   );
   for (const row of affected) reorged.add(row.id);
+  await rewindCollections(env.DB, network.name, fromBlock);
   await env.DB.batch([
-    env.DB.prepare(`UPDATE sweep_jobs SET status = 'queued', next_attempt_at = ?, completed_at = NULL, updated_at = ?
-      WHERE status IN ('complete', 'external') AND id IN (
-        SELECT sweep_job FROM sweep_transactions WHERE chain = ? AND block_number >= ? AND status = 'confirmed'
-      )`).bind(unixNow(), unixNow(), network.name, fromBlock),
-    env.DB.prepare(
-      "UPDATE sweep_transactions SET status = 'submitted', block_number = NULL, updated_at = ? WHERE chain = ? AND block_number >= ? AND status = 'confirmed'",
-    ).bind(unixNow(), network.name, fromBlock),
     env.DB.prepare(
       "UPDATE payment_transactions SET canonical = 0, updated_at = ? WHERE chain = ? AND block_number >= ? AND canonical = 1",
     ).bind(unixNow(), network.name, fromBlock),
@@ -255,6 +299,55 @@ async function rewindIfNeeded(
     ).bind(ancestor, unixNow(), network.name, owner),
   ]);
   return ancestor;
+}
+
+export async function rewindCollections(
+  db: D1Database,
+  chain: string,
+  fromBlock: number,
+): Promise<void> {
+  const rows = await all<{
+    sweep_job: string;
+    amount_units: string;
+    collected_units: string;
+  }>(
+    db,
+    `SELECT t.sweep_job, t.amount_units, j.collected_units
+     FROM sweep_transactions t JOIN sweep_jobs j ON j.id = t.sweep_job
+     WHERE t.chain = ? AND t.block_number >= ? AND t.status = 'confirmed'`,
+    chain,
+    fromBlock,
+  );
+  if (!rows.length) return;
+  const removed = new Map<string, { collected: bigint; amount: bigint }>();
+  for (const row of rows) {
+    const value = removed.get(row.sweep_job) ?? {
+      collected: BigInt(row.collected_units),
+      amount: 0n,
+    };
+    value.amount += BigInt(row.amount_units);
+    removed.set(row.sweep_job, value);
+  }
+  const now = unixNow();
+  await db.batch([
+    ...[...removed].map(([jobId, value]) =>
+      db
+        .prepare(`UPDATE sweep_jobs SET status = CASE WHEN status = 'paused' THEN status ELSE 'queued' END,
+          collected_units = ?, next_attempt_at = ?, completed_at = NULL, lock_owner = '', locked_until = 0, updated_at = ?
+          WHERE id = ?`)
+        .bind(
+          (value.collected > value.amount ? value.collected - value.amount : 0n).toString(),
+          now,
+          now,
+          jobId,
+        ),
+    ),
+    db
+      .prepare(`UPDATE sweep_transactions SET status = 'submitted', block_number = NULL,
+        amount_units = '0', fee_wei = '0', updated_at = ?
+        WHERE chain = ? AND block_number >= ? AND status = 'confirmed'`)
+      .bind(now, chain, fromBlock),
+  ]);
 }
 
 async function saveBlock(
@@ -325,6 +418,17 @@ export async function recalculateChain(
     list.push(transaction);
     byIntent.set(transaction.payment_intent, list);
   }
+  const jobs = await all<{
+    id: string;
+    payment_intent: string;
+    observed_units: string;
+    status: string;
+  }>(
+    env.DB,
+    "SELECT id, payment_intent, observed_units, status FROM sweep_jobs WHERE chain = ?",
+    network.name,
+  );
+  const jobsByIntent = new Map(jobs.map((job) => [job.payment_intent, job]));
   const grace = intSetting(env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
   const minTokenBps = intSetting(
     env.SWEEPER_MIN_TOKEN_PAYMENT_BPS,
@@ -380,6 +484,7 @@ export async function recalculateChain(
       status,
       hashes,
       eligible,
+      jobsByIntent.get(intent.id),
     );
     intent.received_units = received.toString();
     intent.confirmed_units = confirmed.toString();
@@ -406,6 +511,7 @@ async function updatePayment(
   status: IntentRow["status"],
   hashes: Hex[],
   sweepEligible: boolean,
+  job?: { id: string; observed_units: string; status: string },
 ): Promise<void> {
   const now = unixNow();
   const changed =
@@ -422,10 +528,6 @@ async function updatePayment(
         .bind(received.toString(), confirmed.toString(), status, now, intent.id),
     );
 
-  const job = await db
-    .prepare("SELECT id, observed_units, status FROM sweep_jobs WHERE payment_intent = ?")
-    .bind(intent.id)
-    .first<{ id: string; observed_units: string; status: string }>();
   if (!job && sweepEligible) {
     statements.push(
       db
