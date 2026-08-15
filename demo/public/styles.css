@@ -569,12 +569,29 @@ button:disabled {
 }
 
 .status-orbit {
+  position: relative;
   width: 34px;
   height: 34px;
   border: 3px dotted var(--accent);
   border-radius: 50%;
   display: block;
   flex: none;
+}
+
+.intent-header[data-status="paid"] .status-orbit {
+  border: 2px solid var(--success);
+}
+
+.intent-header[data-status="paid"] .status-orbit::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 11px;
+  width: 7px;
+  height: 12px;
+  border-right: 2px solid var(--success);
+  border-bottom: 2px solid var(--success);
+  transform: rotate(45deg);
 }
 
 .payment-panel {

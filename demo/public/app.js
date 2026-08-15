@@ -216,6 +216,7 @@ function renderPayment(state) {
     expired: "Create a new payment intent to try again.",
     reorged: "A confirmed transaction is no longer canonical.",
   };
+  document.querySelector(".intent-header").dataset.status = status;
   text("#status-title", titles[status] ?? "Payment status updated");
   text("#status-detail", details[status] ?? "Payment state updated.");
   text("#metadata-network", humanize(intent.chain));
@@ -431,6 +432,17 @@ function renderSweep(sweep, unpaidExpired) {
         "muted",
       ),
     );
+    for (const transaction of sweep.transactions) {
+      const reference = document.createElement(transaction.explorerUrl ? "a" : "span");
+      reference.className = "transaction-hash";
+      reference.textContent = transaction.hash ? `Treasury tx: ${transaction.hash}` : "Treasury tx";
+      if (transaction.explorerUrl) {
+        reference.href = transaction.explorerUrl;
+        reference.target = "_blank";
+        reference.rel = "noreferrer";
+      }
+      container.append(reference);
+    }
   }
 }
 
