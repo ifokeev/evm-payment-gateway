@@ -5,7 +5,7 @@ export type TokenConfig = { address: Address; decimals: number };
 export type NetworkConfig = {
   name: string;
   chainId: number;
-  rpcUrl: string;
+  rpcUrls: string[];
   treasuryAddress: Address;
   factoryAddress: Address;
   factoryCodeHash: Hex;

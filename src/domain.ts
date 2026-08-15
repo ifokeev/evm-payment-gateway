@@ -65,7 +65,20 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
   for (const item of parsed) {
     if (!isObject(item)) throw new Error("each network must be an object");
     const name = stringField(item, "name").trim();
-    const rpcUrl = stringField(item, "rpcUrl").trim();
+    const legacyRpcUrl = optionalString(item, "rpcUrl").trim();
+    if (legacyRpcUrl && item.rpcUrls !== undefined)
+      throw new Error(`configure rpcUrls instead of both RPC fields for ${name}`);
+    const rpcUrls = legacyRpcUrl ? [legacyRpcUrl] : item.rpcUrls;
+    if (
+      !Array.isArray(rpcUrls) ||
+      rpcUrls.length === 0 ||
+      rpcUrls.some((url) => typeof url !== "string" || url.trim() === "")
+    ) {
+      throw new Error(`rpcUrls must be a non-empty string array for ${name}`);
+    }
+    const normalizedRpcUrls = rpcUrls.map((url) => (url as string).trim());
+    if (new Set(normalizedRpcUrls).size !== normalizedRpcUrls.length)
+      throw new Error(`rpcUrls must be unique for ${name}`);
     const nativeAsset = stringField(item, "nativeAsset").trim().toUpperCase();
     const explorerUrl = optionalString(item, "explorerUrl").trim().replace(/\/$/, "");
     const chainId = integerField(item, "chainId", 1, Number.MAX_SAFE_INTEGER);
@@ -73,13 +86,13 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
     const maxGasPriceWei = positiveBigIntField(item, "maxGasPriceWei");
     if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(name) || !/^[A-Z0-9]{2,20}$/.test(nativeAsset))
       throw new Error(`invalid network name or native asset: ${name}`);
-    let url: URL;
-    try {
-      url = new URL(rpcUrl);
-    } catch {
-      throw new Error(`invalid RPC URL for ${name}`);
+    for (const rpcUrl of normalizedRpcUrls) {
+      try {
+        if (new URL(rpcUrl).protocol !== "https:") throw new Error();
+      } catch {
+        throw new Error(`RPC URL for ${name} must be a valid HTTPS URL`);
+      }
     }
-    if (url.protocol !== "https:") throw new Error(`RPC URL for ${name} must use HTTPS`);
     if (explorerUrl) {
       try {
         if (new URL(explorerUrl).protocol !== "https:") throw new Error();
@@ -153,7 +166,7 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
     result.set(name, {
       name,
       chainId,
-      rpcUrl,
+      rpcUrls: normalizedRpcUrls,
       treasuryAddress,
       factoryAddress,
       factoryCodeHash: factoryCodeHash.toLowerCase() as `0x${string}`,

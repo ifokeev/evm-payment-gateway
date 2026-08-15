@@ -183,7 +183,7 @@ relayer key; it never receives the payment API key or webhook secret.
 {
   "name": "base-sepolia",
   "chainId": 84532,
-  "rpcUrl": "https://your-rpc.example",
+  "rpcUrls": ["https://your-primary-rpc.example", "https://your-fallback-rpc.example"],
   "treasuryAddress": "0xYourTreasury",
   "factoryAddress": "0xDeployedFactory",
   "factoryCodeHash": "0xRuntimeCodeHash",
@@ -203,9 +203,11 @@ relayer key; it never receives the payment API key or webhook secret.
 
 Copy only the networks you enable from
 [`networks.example.json`](networks.example.json). The
-`SWEEPER_NETWORKS_JSON` copy adds `relayerPrivateKey`; the API rejects that
-field. All URLs must use HTTPS, all configured addresses must be distinct, and
-the private key must match `relayerAddress`.
+`rpcUrls` is an ordered failover list. Keep separate lists in the testnet and
+mainnet Cloudflare secrets; do not commit provider credentials.
+`SWEEPER_NETWORKS_JSON` copies the same list and adds `relayerPrivateKey`; the
+API rejects that field. All URLs must use HTTPS, all configured addresses must
+be distinct, and the private key must match `relayerAddress`.
 
 | Setting | Purpose |
 | --- | --- |

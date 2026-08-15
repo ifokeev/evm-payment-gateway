@@ -10,7 +10,7 @@ const network = JSON.stringify([
   {
     name: "test",
     chainId: 1337,
-    rpcUrl: "https://rpc.test",
+    rpcUrls: ["https://rpc.test"],
     treasuryAddress: "0x2222222222222222222222222222222222222222",
     factoryAddress: "0x3333333333333333333333333333333333333333",
     factoryCodeHash,

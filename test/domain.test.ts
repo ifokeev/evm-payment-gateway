@@ -1,3 +1,4 @@
+import { createPublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH } from "../src/contracts.generated";
@@ -10,13 +11,14 @@ import {
   paymentUri,
   stableStringify,
 } from "../src/domain";
+import { rpcTransport } from "../src/rpc";
 
 const relayerPrivateKey = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const relayerAddress = privateKeyToAccount(relayerPrivateKey).address;
 const base = {
   name: "test",
   chainId: 1337,
-  rpcUrl: "https://rpc.test",
+  rpcUrls: ["https://rpc.test"],
   treasuryAddress: "0x2222222222222222222222222222222222222222",
   factoryAddress: "0x3333333333333333333333333333333333333333",
   factoryCodeHash: PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH,
@@ -107,8 +109,18 @@ describe("payment domain", () => {
       loadNetworks(JSON.stringify([{ ...base, maxGasPriceWei: "0", tokens: {} }])),
     ).toThrow("maxGasPriceWei");
     expect(() =>
-      loadNetworks(JSON.stringify([{ ...base, rpcUrl: "http://rpc.test", tokens: {} }])),
+      loadNetworks(JSON.stringify([{ ...base, rpcUrls: ["http://rpc.test"], tokens: {} }])),
     ).toThrow("HTTPS");
+    expect(() => loadNetworks(JSON.stringify([{ ...base, rpcUrls: [], tokens: {} }]))).toThrow(
+      "non-empty",
+    );
+    expect(() =>
+      loadNetworks(
+        JSON.stringify([
+          { ...base, rpcUrls: ["https://rpc.test", "https://rpc.test"], tokens: {} },
+        ]),
+      ),
+    ).toThrow("unique");
     expect(() =>
       loadNetworks(JSON.stringify([{ ...base, explorerUrl: "javascript:alert(1)", tokens: {} }])),
     ).toThrow("explorer");
@@ -135,6 +147,29 @@ describe("payment domain", () => {
         ]),
       ),
     ).toThrow("factory or relayer");
+  });
+
+  it("falls back to the next RPC endpoint", async () => {
+    const requests: string[] = [];
+    const client = createPublicClient({
+      transport: rpcTransport(["https://primary.test", "https://fallback.test"], {
+        fetchFn: async (request, init) => {
+          const url =
+            typeof request === "string"
+              ? request
+              : request instanceof URL
+                ? request.href
+                : request.url;
+          requests.push(url);
+          if (url === "https://primary.test/") return new Response("unavailable", { status: 503 });
+          const payload = JSON.parse(init?.body as string) as { id: number };
+          return Response.json({ jsonrpc: "2.0", id: payload.id, result: "0x539" });
+        },
+      }),
+    });
+
+    expect(await client.getChainId()).toBe(1337);
+    expect(requests).toEqual(["https://primary.test/", "https://fallback.test/"]);
   });
 
   it("recovers only economically useful expired underpayments", () => {
