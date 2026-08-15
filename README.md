@@ -7,7 +7,7 @@
 Create exact payment intents, confirm EVM transfers, deliver signed webhooks,
 and sweep funds into your treasury—without operating servers.
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
+[Quick start](#quick-start) · [Demo](#demo) · [How it works](#how-it-works) · [API](#api) ·
 [Security](#security) · [Integration guide](INTEGRATION.md)
 
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
@@ -149,6 +149,34 @@ same installation.
 > Start on Base Sepolia with disposable credentials and test funds. Review the
 > [security model](#security) before enabling any mainnet network.
 
+## Demo
+
+The optional demo Worker provides a real testnet checkout, user-chosen account
+top-ups, payment polling, webhook delivery, and treasury sweep status. It uses a
+private [service binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/),
+so the gateway API key never reaches the browser.
+
+```bash
+cp .demo.secrets.example .demo.secrets
+npm run deploy:demo
+```
+
+Before deploying it:
+
+1. Create a Turnstile widget for the demo hostname and add its site and secret
+   keys to `.demo.secrets`.
+2. Reuse the gateway's API key and webhook secret, then generate a separate
+   random `DEMO_SESSION_SECRET` with at least 32 characters.
+3. Set the API Worker's `PAYMENT_WEBHOOK_URL` to
+   `https://evm-payment-gateway-demo.<your-subdomain>.workers.dev/webhooks/payment`
+   and redeploy the API Worker.
+4. Adjust the Base Sepolia asset and amount limits in
+   [`wrangler.demo.jsonc`](wrangler.demo.jsonc) if needed.
+
+Cloudflare creates the demo KV namespace on first deployment. Use real Turnstile
+keys for any public deployment; Cloudflare's dummy keys are only for local and
+automated tests.
+
 ## Configuration
 
 The Workers intentionally receive separate secret sets:
@@ -278,19 +306,21 @@ npm run check
 
 Tests execute in Cloudflare's `workerd` runtime against a real local D1
 database. `npm run check` runs Biome, TypeScript checking, the deterministic
-payment and sweep suite, and dry-runs both Worker deployments.
+payment and sweep suite, and dry-runs all Worker configurations.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the API Worker locally. |
+| `npm run dev:demo` | Start the optional demo Worker locally. |
 | `npm run format` | Format supported files with Biome. |
 | `npm run lint` | Lint the codebase with Biome. |
 | `npm run quality` | Check formatting, imports, and lint rules. |
 | `npm test` | Run the Worker and D1 tests. |
 | `npm run typecheck` | Check TypeScript without emitting files. |
-| `npm run deploy:dry-run` | Build both Workers without deploying. |
+| `npm run deploy:dry-run` | Build all Workers without deploying. |
 | `npm run check` | Run every required verification. |
 | `npm run deploy` | Deploy or upgrade both Workers. |
+| `npm run deploy:demo` | Deploy the optional public demo. |
 
 For a live end-to-end test, start with a small Base Sepolia native payment, then
 repeat with USDC to exercise automatic gas funding. Test reorg behavior locally;

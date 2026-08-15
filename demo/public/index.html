@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Create and complete a real Base Sepolia payment through EVM Payment Gateway."
+    />
+    <title>EVM Payment Gateway - Live demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="EVM Payment Gateway demo home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>EVM Payment Gateway</span>
+      </a>
+      <span class="header-divider" aria-hidden="true"></span>
+      <p class="header-context">Live Base Sepolia demo</p>
+      <nav class="header-actions" aria-label="Demo links">
+        <span class="environment-label">Testnet</span>
+        <a
+          class="header-link"
+          href="https://github.com/ifokeev/evm-payment-gateway"
+          rel="noreferrer"
+        >
+          Self-hosted
+        </a>
+      </nav>
+    </header>
+
+    <main class="page-shell">
+      <section class="intro" aria-labelledby="page-title">
+        <div class="intro-content">
+          <div>
+            <h1 id="page-title"><span>Pay crypto.</span><span>See each step.</span></h1>
+            <p class="intro-copy">
+              Create an exact Base Sepolia payment and follow it from wallet transfer to treasury
+              sweep.
+            </p>
+          </div>
+
+          <form id="payment-form" class="payment-form" novalidate>
+            <div class="field">
+              <label for="purpose">Use case</label>
+              <div class="select-control">
+                <select id="purpose" name="purpose">
+                  <option value="checkout">Checkout payment</option>
+                  <option value="account_top_up" selected>Account top-up</option>
+                </select>
+              </div>
+              <p id="purpose-help" class="field-help">
+                The user chooses the amount before the app creates an exact payment intent.
+              </p>
+            </div>
+
+            <div class="field">
+              <label for="amount">Amount</label>
+              <div class="amount-control">
+                <input
+                  id="amount"
+                  name="amount"
+                  type="text"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  value="0.50"
+                  placeholder="0.50"
+                  aria-describedby="amount-help amount-error"
+                  disabled
+                />
+                <span id="asset-label">USDC</span>
+              </div>
+              <p id="amount-help" class="field-help">Loading demo limits...</p>
+              <p id="amount-error" class="field-error" role="alert"></p>
+            </div>
+
+            <fieldset
+              id="turnstile-widget"
+              class="turnstile-slot"
+              aria-label="Security check"
+            ></fieldset>
+            <button id="create-button" class="primary-button" type="submit" disabled>
+              Create payment
+            </button>
+          </form>
+
+          <div class="testnet-note">
+            <span class="note-icon" aria-hidden="true">i</span>
+            <p>Testnet assets have no monetary value</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="payment-stage" aria-label="Payment status">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-heading">
+            <p class="status-label">Demo ready</p>
+            <h2>Payment activity will appear here.</h2>
+            <p>Create an intent to receive a unique address, QR code, and wallet link.</p>
+          </div>
+          <div class="empty-flow">
+            <div><strong>On-chain activity</strong><span>Waiting for payment</span></div>
+            <div><strong>Signed webhook</strong><span>Waiting for confirmation</span></div>
+            <div><strong>Treasury collection</strong><span>Waiting for settlement</span></div>
+          </div>
+        </div>
+
+        <div id="loading-state" class="loading-state" hidden aria-live="polite">
+          <div class="loading-heading"></div>
+          <div class="loading-payment">
+            <div class="loading-qr"></div>
+            <div class="loading-copy">
+              <span></span><strong></strong><span></span><span></span>
+            </div>
+          </div>
+          <p>Allocating a dedicated payment address...</p>
+        </div>
+
+        <div id="intent-state" hidden>
+          <div class="payment-panel">
+            <div class="intent-header">
+              <span class="status-orbit" aria-hidden="true"></span>
+              <div>
+                <h2 id="status-title" class="status-label">Payment pending</h2>
+                <p id="status-detail" class="status-detail">Waiting for an on-chain transfer.</p>
+              </div>
+            </div>
+
+            <div class="payment-content">
+              <div class="qr-panel">
+                <img id="payment-qr" alt="Payment QR code" width="280" height="280" />
+              </div>
+
+              <div class="payment-details">
+                <div>
+                  <span id="send-label" class="detail-label">Send exactly</span>
+                  <p class="amount-due">
+                    <strong id="amount-due">0</strong> <span id="amount-due-asset">USDC</span>
+                  </p>
+                </div>
+
+                <div class="confirmation-block">
+                  <div id="confirmation-track" class="confirmation-track" aria-hidden="true"></div>
+                  <p id="confirmation-summary">0 of 3 confirmations</p>
+                </div>
+
+                <div class="address-block">
+                  <span class="detail-label">Deposit address</span>
+                  <div class="address-actions">
+                    <button id="copy-address" class="address-value" type="button">
+                      <code id="deposit-address"></code>
+                      <span id="copy-label">Copy</span>
+                    </button>
+                    <a id="wallet-link" class="secondary-button" href="/">Open wallet</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="activity-list">
+            <section id="chain-activity" class="activity-section" aria-labelledby="transactions-title">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-heading">
+                  <div class="activity-title">
+                    <h3 id="transactions-title">On-chain activity</h3>
+                    <span id="chain-status" class="activity-status">Waiting</span>
+                  </div>
+                </div>
+                <div id="transactions" class="activity-content">
+                  <p class="muted">No transaction detected yet.</p>
+                </div>
+              </div>
+            </section>
+            <section id="delivery-activity" class="activity-section" aria-labelledby="delivery-title">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-heading">
+                  <div class="activity-title">
+                    <h3 id="delivery-title">Signed webhook</h3>
+                    <span id="delivery-badge" class="activity-status">Waiting</span>
+                  </div>
+                </div>
+                <div id="delivery-status" class="activity-content">
+                  <p class="muted">Waiting for payment confirmation.</p>
+                </div>
+              </div>
+            </section>
+            <section id="sweep-activity" class="activity-section" aria-labelledby="sweep-title">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-heading">
+                  <div class="activity-title">
+                    <h3 id="sweep-title">Treasury collection</h3>
+                    <span id="sweep-badge" class="activity-status">Waiting</span>
+                  </div>
+                </div>
+                <div id="sweep-status" class="activity-content">
+                  <p class="muted">Sweep starts after payment confirmation.</p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <dl class="intent-meta">
+            <div><dt>Network</dt><dd id="metadata-network">Base Sepolia</dd></div>
+            <div><dt>Payment ID</dt><dd id="intent-id"></dd></div>
+            <div><dt>Created</dt><dd id="created-time"></dd></div>
+            <div><dt>Expires in</dt><dd id="expiry-time"></dd></div>
+          </dl>
+        </div>
+
+        <div id="global-error" class="global-error" role="alert" hidden></div>
+      </section>
+    </main>
+  </body>
+</html>

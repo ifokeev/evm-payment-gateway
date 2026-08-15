@@ -210,6 +210,49 @@ An overpayment still represents the one server-priced order identified by
 `externalId`. Do not grant additional product by converting `receivedUnits`
 into a quantity; handle excess funds through your support or refund policy.
 
+### User-chosen payments
+
+For donations, stored-value deposits, or account top-ups, let the user choose
+an amount in your UI, then validate the allowed range, chain, and asset on your
+backend. Create the same generic `payment` intent and describe the application
+purpose in metadata. A separate intent kind is unnecessary because settlement
+behavior is identical.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Application UI
+    participant App as Application backend
+    participant Gateway as Payment gateway
+
+    User->>UI: Choose amount
+    UI->>App: Request top-up
+    App->>App: Validate amount and account
+    App->>Gateway: Create payment intent
+    Gateway-->>App: Exact amount, address, QR and URI
+    App-->>UI: Safe payment fields
+    Gateway->>App: Signed payment.succeeded
+    App->>App: Credit requested amount exactly once
+```
+
+```json
+{
+  "kind": "payment",
+  "externalId": "topup_attempt_123",
+  "chain": "base",
+  "asset": "USDC",
+  "amount": "25",
+  "metadata": {
+    "purpose": "account_top_up",
+    "accountId": "account_123"
+  }
+}
+```
+
+Create a new intent for every attempt. After `payment.succeeded`, credit the
+validated requested amount once using your own ledger constraint; do not turn
+an accidental overpayment into extra balance automatically.
+
 ## 3. Verify and process webhooks
 
 The gateway sends `payment.succeeded` and `payment.reorged`. It retries non-2xx
