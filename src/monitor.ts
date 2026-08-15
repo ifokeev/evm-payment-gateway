@@ -117,12 +117,23 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       ? await client.getLogs({
           address: tokenAddresses,
           event: transferEvent,
-          args: { to: tokenDepositAddresses },
+          args: { to: tokenDepositAddresses.slice(0, 100) },
           fromBlock: BigInt(start),
           toBlock: BigInt(target),
           strict: true,
         })
       : [];
+    for (let offset = 100; offset < tokenDepositAddresses.length; offset += 100)
+      tokenLogs.push(
+        ...(await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          args: { to: tokenDepositAddresses.slice(offset, offset + 100) },
+          fromBlock: BigInt(start),
+          toBlock: BigInt(target),
+          strict: true,
+        })),
+      );
     const logsByBlock = new Map<number, typeof tokenLogs>();
     for (const log of tokenLogs) {
       if (log.blockNumber === null) continue;
@@ -183,6 +194,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
             !log.args.to ||
             !log.args.from ||
             log.args.value === undefined ||
+            log.args.value <= 0n ||
             log.blockHash !== block.hash ||
             log.blockNumber === null
           )
@@ -406,6 +418,17 @@ export async function recalculateChain(
     list.push(transaction);
     byIntent.set(transaction.payment_intent, list);
   }
+  const jobs = await all<{
+    id: string;
+    payment_intent: string;
+    observed_units: string;
+    status: string;
+  }>(
+    env.DB,
+    "SELECT id, payment_intent, observed_units, status FROM sweep_jobs WHERE chain = ?",
+    network.name,
+  );
+  const jobsByIntent = new Map(jobs.map((job) => [job.payment_intent, job]));
   const grace = intSetting(env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
   const minTokenBps = intSetting(
     env.SWEEPER_MIN_TOKEN_PAYMENT_BPS,
@@ -461,6 +484,7 @@ export async function recalculateChain(
       status,
       hashes,
       eligible,
+      jobsByIntent.get(intent.id),
     );
     intent.received_units = received.toString();
     intent.confirmed_units = confirmed.toString();
@@ -487,6 +511,7 @@ async function updatePayment(
   status: IntentRow["status"],
   hashes: Hex[],
   sweepEligible: boolean,
+  job?: { id: string; observed_units: string; status: string },
 ): Promise<void> {
   const now = unixNow();
   const changed =
@@ -503,10 +528,6 @@ async function updatePayment(
         .bind(received.toString(), confirmed.toString(), status, now, intent.id),
     );
 
-  const job = await db
-    .prepare("SELECT id, observed_units, status FROM sweep_jobs WHERE payment_intent = ?")
-    .bind(intent.id)
-    .first<{ id: string; observed_units: string; status: string }>();
   if (!job && sweepEligible) {
     statements.push(
       db

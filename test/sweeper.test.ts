@@ -158,6 +158,24 @@ describe("keyless collection worker", () => {
     expect(fixture.state.released).toMatchObject({ status: "complete", remainingUnits: "0" });
   });
 
+  it("waits for the existing collection instead of signing a duplicate", async () => {
+    const fixture = collectionFixture({ balance: 0n, confirmedAmount: 123n, headBlock: 10n });
+    await sweeper.queue(fixture.batch, fixture.env);
+
+    expect(fixture.state.registered).toBeUndefined();
+    expect(fixture.state.reports.at(-1)).toMatchObject({ status: "submitted", blockNumber: 10 });
+    expect(fixture.state.released).toMatchObject({ status: "queued" });
+  });
+
+  it("replaces a reverted collection transaction", async () => {
+    const fixture = collectionFixture({ balance: 100n, confirmedAmount: 0n, receiptStatus: "0x0" });
+    await sweeper.queue(fixture.batch, fixture.env);
+
+    expect(fixture.state.reports[0]).toMatchObject({ status: "failed", blockNumber: 10 });
+    expect(fixture.state.registered).toBeDefined();
+    expect(fixture.state.released).toMatchObject({ status: "queued", remainingUnits: "100" });
+  });
+
   it("rejects a collection event for a different asset", async () => {
     const fixture = collectionFixture({
       balance: 0n,
@@ -183,6 +201,8 @@ type FixtureOptions = {
   relayerBalance?: bigint;
   confirmedAmount?: bigint;
   collectedAsset?: `0x${string}`;
+  headBlock?: bigint;
+  receiptStatus?: "0x0" | "0x1";
 };
 
 function collectionFixture(options: FixtureOptions = {}): {
@@ -336,7 +356,8 @@ function collectionFixture(options: FixtureOptions = {}): {
       const address = String(body.params?.[0] ?? "").toLowerCase();
       let result: unknown = "0x0";
       if (body.method === "eth_chainId") result = "0x539";
-      else if (body.method === "eth_blockNumber") result = "0xc";
+      else if (body.method === "eth_blockNumber")
+        result = `0x${(options.headBlock ?? 12n).toString(16)}`;
       else if (
         body.method === "eth_getTransactionReceipt" &&
         options.confirmedAmount !== undefined
@@ -367,7 +388,7 @@ function collectionFixture(options: FixtureOptions = {}): {
             },
           ],
           logsBloom: `0x${"00".repeat(256)}`,
-          status: "0x1",
+          status: options.receiptStatus ?? "0x1",
           to: factoryAddress,
           transactionHash: `0x${"45".repeat(32)}`,
           transactionIndex: "0x0",

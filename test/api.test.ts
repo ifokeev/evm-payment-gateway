@@ -248,6 +248,16 @@ describe("payment API", () => {
       body: "{}",
     });
     expect((await api.fetch(jsonp)).status).toBe(415);
+
+    const depth = 5_000;
+    const deeplyNested = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
+      body: `{"kind":"payment","externalId":"deep","chain":"test","asset":"USDC","amount":"1","metadata":${'{"next":'.repeat(depth)}null${"}".repeat(depth)}}`,
+    });
+    const deepResponse = await api.fetch(deeplyNested);
+    expect(deepResponse.status).toBe(400);
+    expect(await deepResponse.json()).toEqual({ error: "metadata is too deeply nested" });
   });
 
   it("accepts only generic payment and invoice kinds", async () => {
@@ -542,12 +552,38 @@ describe("chain scanner", () => {
         now,
       ),
     ]);
+    const extraTokenIds = Array.from({ length: 99 }, () => randomId("pi"));
+    await bindings.DB.batch(
+      extraTokenIds.map((id, index) => {
+        const salt = `0x${(index + 1).toString(16).padStart(64, "0")}` as `0x${string}`;
+        const fields = counterfactualAddress(testFactory, salt, testTreasury, testToken);
+        return bindings.DB.prepare(`INSERT INTO payment_intents
+          (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+           deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
+           VALUES (?,?,?,'payment',?,'batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+          id,
+          randomId("idem"),
+          "1".repeat(64),
+          `batch-extra-${index}`,
+          testToken,
+          fields.address,
+          salt,
+          testFactory,
+          fields.initCodeHash,
+          now + 3600,
+          now,
+          now,
+        );
+      }),
+    );
 
     const batchSizes: number[] = [];
     const blockRequests: Array<{ params: unknown[] }> = [];
-    const logFilters: Array<Record<string, string>> = [];
+    const logFilters: Array<Record<string, unknown>> = [];
     const tokenTxHash = `0x${"a".repeat(64)}`;
     const secondTokenTxHash = `0x${"b".repeat(64)}`;
+    const partialTokenTxHash = `0x${"c".repeat(64)}`;
+    const zeroTokenTxHash = `0x${"d".repeat(64)}`;
     let returnTokenPayment = false;
     let activeRpcRequests = 0;
     let maxConcurrentRpcRequests = 0;
@@ -569,11 +605,13 @@ describe("chain scanner", () => {
         else if (rpc.method === "eth_blockNumber") result = "0xc8";
         else if (rpc.method === "eth_getBalance") result = "0x0";
         else if (rpc.method === "eth_getLogs") {
-          logFilters.push(rpc.params[0] as Record<string, string>);
+          logFilters.push(rpc.params[0] as Record<string, unknown>);
           result = returnTokenPayment
             ? [
-                tokenTransferLog(token.address, tokenTxHash, "5", 0),
-                tokenTransferLog(secondToken.address, secondTokenTxHash, "6", 1),
+                tokenTransferLog(token.address, tokenTxHash, "5", 0, 40),
+                tokenTransferLog(token.address, partialTokenTxHash, "7", 1, 60),
+                tokenTransferLog(secondToken.address, secondTokenTxHash, "6", 2, 100),
+                tokenTransferLog(secondToken.address, zeroTokenTxHash, "8", 3, 0),
               ]
             : [];
         } else if (rpc.method === "eth_getBlockByNumber") {
@@ -627,7 +665,11 @@ describe("chain scanner", () => {
     expect(Math.max(...batchSizes)).toBe(10);
     expect(maxConcurrentRpcRequests).toBe(1);
     expect(blockRequests.filter((request) => request.params[1] === true)).toHaveLength(40);
-    expect(logFilters).toEqual([expect.objectContaining({ fromBlock: "0x1", toBlock: "0x28" })]);
+    expect(logFilters).toHaveLength(2);
+    expect(logFilters).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fromBlock: "0x1", toBlock: "0x28" })]),
+    );
+    expect(logFilters.map(topicAddressCount).sort((a, b) => a - b)).toEqual([1, 100]);
 
     await bindings.DB.prepare(
       "UPDATE payment_intents SET status = 'expired', expires_at = ? WHERE id = ?",
@@ -647,14 +689,23 @@ describe("chain scanner", () => {
     expect(blockRequests.filter((request) => request.params[1] === true)).toHaveLength(0);
     expect(blockRequests.filter((request) => request.params[0] === "0x96")).toHaveLength(1);
     expect(blockRequests.filter((request) => request.params[0] === "0xc8")).toHaveLength(1);
-    expect(logFilters).toEqual([expect.objectContaining({ fromBlock: "0x28", toBlock: "0xc8" })]);
+    expect(logFilters).toHaveLength(2);
+    expect(logFilters).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fromBlock: "0x28", toBlock: "0xc8" })]),
+    );
+    expect(logFilters.map(topicAddressCount).sort((a, b) => a - b)).toEqual([1, 100]);
     expect(
-      await bindings.DB.prepare(
-        "SELECT tx_hash, amount_units, block_number FROM payment_transactions WHERE payment_intent = ?",
-      )
-        .bind(tokenId)
-        .first(),
-    ).toEqual({ tx_hash: tokenTxHash, amount_units: "100", block_number: 150 });
+      (
+        await bindings.DB.prepare(
+          "SELECT tx_hash, amount_units, block_number FROM payment_transactions WHERE payment_intent = ? ORDER BY tx_hash",
+        )
+          .bind(tokenId)
+          .all()
+      ).results,
+    ).toEqual([
+      { tx_hash: tokenTxHash, amount_units: "40", block_number: 150 },
+      { tx_hash: partialTokenTxHash, amount_units: "60", block_number: 150 },
+    ]);
     expect(
       await bindings.DB.prepare("SELECT status FROM payment_intents WHERE id = ?")
         .bind(tokenId)
@@ -672,16 +723,70 @@ describe("chain scanner", () => {
         .bind(secondTokenId)
         .first(),
     ).toEqual({ status: "paid" });
+    expect(
+      await bindings.DB.prepare(
+        "SELECT COUNT(*) AS count FROM payment_transactions WHERE tx_hash = ?",
+      )
+        .bind(zeroTokenTxHash)
+        .first(),
+    ).toEqual({ count: 0 });
 
     await bindings.DB.batch([
-      bindings.DB.prepare("DELETE FROM payment_intents WHERE id IN (?, ?, ?)").bind(
-        nativeId,
-        tokenId,
-        secondTokenId,
-      ),
+      bindings.DB.prepare("DELETE FROM payment_intents WHERE chain = 'batch-test'"),
       bindings.DB.prepare("DELETE FROM chain_blocks WHERE chain = 'batch-test'"),
       bindings.DB.prepare("DELETE FROM chain_states WHERE chain = 'batch-test'"),
     ]);
+  });
+
+  it("keeps idle reconciliation inside the free-tier D1 query budget", async () => {
+    const now = unixNow();
+    await bindings.DB.batch(
+      Array.from({ length: 60 }, (_, index) => {
+        const salt = `0x${(index + 1_000).toString(16).padStart(64, "0")}` as `0x${string}`;
+        const fields = counterfactualAddress(testFactory, salt, testTreasury, testToken);
+        return bindings.DB.prepare(`INSERT INTO payment_intents
+          (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+           deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
+           VALUES (?,?,?,'payment',?,'scale-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+          randomId("pi"),
+          randomId("idem"),
+          "2".repeat(64),
+          `scale-${index}`,
+          testToken,
+          fields.address,
+          salt,
+          testFactory,
+          fields.initCodeHash,
+          now + 3_600,
+          now,
+          now,
+        );
+      }),
+    );
+    const intents = (
+      await bindings.DB.prepare(
+        "SELECT * FROM payment_intents WHERE chain = 'scale-test'",
+      ).all<IntentRow>()
+    ).results;
+    let prepares = 0;
+    const countedDb = new Proxy(bindings.DB, {
+      get(target, property) {
+        if (property === "prepare")
+          return (sql: string) => {
+            prepares++;
+            return target.prepare(sql);
+          };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const network = {
+      ...loadNetworks(bindings.NETWORKS_JSON).get("test")!,
+      name: "scale-test",
+    } satisfies NetworkConfig;
+    await recalculateChain({ ...bindings, DB: countedDb }, network, intents, 1, new Set());
+    expect(prepares).toBeLessThanOrEqual(5);
+    await bindings.DB.prepare("DELETE FROM payment_intents WHERE chain = 'scale-test'").run();
   });
 });
 
@@ -1138,12 +1243,18 @@ function intentFields(seed: string, tokenAddress: typeof testToken | "") {
   return { salt, ...counterfactualAddress(testFactory, salt, testTreasury, tokenAddress) };
 }
 
-function tokenTransferLog(to: string, transactionHash: string, fromNibble: string, index: number) {
+function tokenTransferLog(
+  to: string,
+  transactionHash: string,
+  fromNibble: string,
+  index: number,
+  amount: number,
+) {
   return {
     address: testToken,
     blockHash: `0x${(150).toString(16).padStart(64, "0")}`,
     blockNumber: "0x96",
-    data: `0x${(100).toString(16).padStart(64, "0")}`,
+    data: `0x${amount.toString(16).padStart(64, "0")}`,
     logIndex: "0x0",
     removed: false,
     topics: [
@@ -1154,4 +1265,8 @@ function tokenTransferLog(to: string, transactionHash: string, fromNibble: strin
     transactionHash,
     transactionIndex: `0x${index.toString(16)}`,
   };
+}
+
+function topicAddressCount(filter: Record<string, unknown>): number {
+  return ((filter.topics as unknown[])[2] as unknown[]).length;
 }

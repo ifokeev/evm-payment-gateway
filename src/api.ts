@@ -287,6 +287,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   }
   const metadata = body.metadata ?? {};
   if (!isObject(metadata)) throw new HttpError(400, "metadata must be an object");
+  if (isTooDeep(metadata, 32)) throw new HttpError(400, "metadata is too deeply nested");
   const metadataJson = stableStringify(metadata);
   if (new TextEncoder().encode(metadataJson).length > 65_536)
     throw new HttpError(400, "metadata is too large");
@@ -1004,6 +1005,22 @@ function requiredString(object: Record<string, unknown>, key: string): string {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTooDeep(value: unknown, maxDepth: number): boolean {
+  const stack = [{ value, depth: 0 }];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) break;
+    if (current.depth > maxDepth) return true;
+    const children = Array.isArray(current.value)
+      ? current.value
+      : isObject(current.value)
+        ? Object.values(current.value)
+        : [];
+    for (const child of children) stack.push({ value: child, depth: current.depth + 1 });
+  }
+  return false;
 }
 
 async function sha256(value: string): Promise<string> {
