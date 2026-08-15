@@ -15,6 +15,8 @@ const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
 const copyLabel = document.querySelector("#copy-label");
 const walletLink = document.querySelector("#wallet-link");
+const analyticsPanel = document.querySelector("#analytics-panel");
+const analyticsGrid = document.querySelector("#analytics-grid");
 
 let config;
 let turnstileToken = "";
@@ -137,10 +139,34 @@ async function initialize() {
     assetLabel.textContent = config.asset;
     amountHelp.textContent = `${config.minimumAmount} to ${config.maximumAmount} ${config.asset}`;
     amount.disabled = false;
+    void loadAnalytics();
     await loadTurnstile(config.turnstileSiteKey);
     if (currentIntentId && accessToken) startPolling(true);
   } catch (error) {
     showGlobalError(error instanceof Error ? error.message : "Demo is unavailable");
+  }
+}
+
+async function loadAnalytics() {
+  analyticsPanel.dataset.state = "loading";
+  analyticsGrid.setAttribute("aria-busy", "true");
+  try {
+    const response = await fetch("/api/analytics");
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "Live totals are unavailable");
+    text("#analytics-intents", new Intl.NumberFormat().format(body.intents));
+    text("#analytics-paid", new Intl.NumberFormat().format(body.paidIntents));
+    text("#analytics-confirmed", body.confirmedAmount);
+    text("#analytics-collected", body.collectedAmount);
+    for (const element of document.querySelectorAll("#analytics-grid dd small"))
+      element.textContent = body.asset;
+    text("#analytics-updated", formatAnalyticsTime(body.generatedAt));
+    analyticsPanel.dataset.state = "ready";
+  } catch {
+    analyticsPanel.dataset.state = "error";
+    text("#analytics-updated", "Totals unavailable. Try again soon.");
+  } finally {
+    analyticsGrid.setAttribute("aria-busy", "false");
   }
 }
 
@@ -465,7 +491,10 @@ function startPolling(immediate = false) {
       const done =
         ["complete", "external"].includes(body.sweep?.status) &&
         ["payment.succeeded", "payment.reorged"].includes(body.webhookEvent?.type);
-      if (done) return;
+      if (done) {
+        await loadAnalytics();
+        return;
+      }
     } catch (error) {
       showGlobalError(error instanceof Error ? error.message : "Payment status is unavailable");
     }
@@ -504,6 +533,17 @@ function formatExpiry(value) {
   if (seconds === 0) return "Expired";
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function formatAnalyticsTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "Updated recently";
+  return `Updated ${date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  })}`;
 }
 
 function text(selector, value) {

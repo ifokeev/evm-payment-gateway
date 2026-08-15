@@ -28,6 +28,29 @@ const intent = {
   metadata: { shouldNotLeak: true },
   transactions: [],
 };
+const analytics = {
+  generatedAt: "2026-08-15T12:00:00.000Z",
+  assets: [
+    {
+      chain: "base-sepolia",
+      asset: "USDC",
+      intents: 12,
+      statuses: { pending: 3, paid: 9 },
+      confirmedUnits: "4250000",
+      collectedUnits: "3750000",
+    },
+    {
+      chain: "sepolia",
+      asset: "USDC",
+      intents: 999,
+      statuses: { paid: 999 },
+      confirmedUnits: "999000000",
+      collectedUnits: "999000000",
+    },
+  ],
+  collectionFeesWei: { "base-sepolia": "secret-operational-detail" },
+  webhooks: [{ type: "payment.succeeded", status: "delivered", count: 9 }],
+};
 
 let env: DemoEnv;
 let events: Map<string, string>;
@@ -56,6 +79,7 @@ beforeEach(() => {
         if (request.method === "POST" && path.endsWith("/intents")) {
           return Response.json(intent, { status: 201 });
         }
+        if (path.endsWith("/analytics/summary")) return Response.json(analytics);
         if (path.endsWith("/sweep")) {
           return Response.json({ status: "not_queued", transactions: [] });
         }
@@ -171,6 +195,9 @@ describe("public demo", () => {
     expect(
       (await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env)).status,
     ).toBe(429);
+    expect((await demo.fetch(new Request("https://demo.test/api/analytics"), env)).status).toBe(
+      429,
+    );
     expect(gatewayRequests).toHaveLength(0);
   });
 
@@ -285,6 +312,23 @@ describe("public demo", () => {
     });
     const asset = await demo.fetch(new Request("https://demo.test/"), env);
     expect(await asset.text()).toBe("demo asset");
+  });
+
+  it("exposes only aggregate analytics for the configured demo asset", async () => {
+    const response = await demo.fetch(new Request("https://demo.test/api/analytics"), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      chain: "base-sepolia",
+      asset: "USDC",
+      intents: 12,
+      paidIntents: 9,
+      confirmedAmount: "4.25",
+      collectedAmount: "3.75",
+      generatedAt: analytics.generatedAt,
+    });
+    expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
+      `Bearer ${env.PAYMENT_API_KEY}`,
+    );
   });
 });
 

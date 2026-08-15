@@ -420,11 +420,95 @@ button:disabled {
   color: var(--right-text);
 }
 
+.analytics-panel {
+  margin-bottom: 16px;
+  border: 1px solid var(--right-border);
+  border-radius: var(--radius);
+  background: var(--right-surface);
+}
+
+.analytics-heading {
+  min-height: 68px;
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.analytics-heading h2,
+.analytics-heading p {
+  margin: 0;
+}
+
+.analytics-heading h2 {
+  font-size: 15px;
+}
+
+.analytics-heading div p,
+#analytics-updated {
+  margin-top: 5px;
+  color: var(--right-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#analytics-updated {
+  flex: none;
+  margin-top: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-grid {
+  margin: 0;
+  border-top: 1px solid var(--right-border);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.analytics-grid > div {
+  min-width: 0;
+  padding: 13px 20px 15px;
+}
+
+.analytics-grid > div + div {
+  border-left: 1px solid var(--right-border);
+}
+
+.analytics-grid dt {
+  color: var(--right-muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.analytics-grid dd {
+  margin: 7px 0 0;
+  color: var(--right-text);
+  font-size: clamp(19px, 2vw, 26px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+.analytics-grid small {
+  margin-left: 3px;
+  color: var(--right-muted);
+  font-size: 9px;
+  font-weight: 680;
+  letter-spacing: 0;
+}
+
+.analytics-panel[data-state="error"] #analytics-updated {
+  color: var(--error);
+}
+
 .empty-state,
 .loading-state,
 #intent-state {
   width: 100%;
-  min-height: calc(100dvh - 104px);
+  min-height: calc(100dvh - 265px);
 }
 
 .empty-state {
@@ -1099,6 +1183,24 @@ button:disabled {
 
   .payment-stage {
     padding: 18px;
+  }
+
+  .analytics-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .analytics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-grid > div:nth-child(3) {
+    border-left: 0;
+  }
+
+  .analytics-grid > div:nth-child(n + 3) {
+    border-top: 1px solid var(--right-border);
   }
 
   .empty-heading {

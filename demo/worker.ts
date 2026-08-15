@@ -1,4 +1,4 @@
-import { parseAmount } from "../src/domain";
+import { formatUnits, parseAmount } from "../src/domain";
 
 const API_ROOT = "/api";
 const GATEWAY_ROOT = "/api/payments/v1";
@@ -47,6 +47,9 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
       turnstileSiteKey: requiredSetting(env.TURNSTILE_SITE_KEY, "TURNSTILE_SITE_KEY"),
     });
   }
+  if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics`) {
+    return getDemoAnalytics(request, env);
+  }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`) {
     return createDemoIntent(request, env);
   }
@@ -67,7 +70,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
   const origin = request.headers.get("Origin");
   if (origin && origin !== new URL(request.url).origin) throw new DemoError(403, "invalid origin");
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-  if (!(await env.DEMO_RATE_LIMITER.limit({ key: ip })).success) {
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `create:${ip}` })).success) {
     throw new DemoError(429, "too many demo payments; try again in a minute");
   }
 
@@ -152,6 +155,23 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
     },
     gateway.status,
   );
+}
+
+async function getDemoAnalytics(request: Request, env: DemoEnv): Promise<Response> {
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `analytics:${ip}` })).success) {
+    throw new DemoError(429, "analytics refresh limit reached; try again in a minute");
+  }
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/analytics/summary`, {
+      headers: {
+        Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
+      },
+    }),
+  );
+  const body = await responseObject(response, 2_000_000);
+  if (!response.ok) throw new DemoError(502, "gateway analytics are unavailable");
+  return json(publicAnalytics(body, env));
 }
 
 async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): Promise<Response> {
@@ -328,6 +348,56 @@ function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     fields.filter((field) => field in value).map((field) => [field, value[field]]),
   );
+}
+
+function publicAnalytics(value: Record<string, unknown>, env: DemoEnv): Record<string, unknown> {
+  if (!Array.isArray(value.assets)) throw new DemoError(502, "gateway returned invalid analytics");
+  const chain = requiredSetting(env.DEMO_CHAIN, "DEMO_CHAIN");
+  const asset = requiredSetting(env.DEMO_ASSET, "DEMO_ASSET");
+  const row = value.assets.find(
+    (item) => isObject(item) && item.chain === chain && item.asset === asset,
+  );
+  if (!row) {
+    return {
+      chain,
+      asset,
+      intents: 0,
+      paidIntents: 0,
+      confirmedAmount: "0",
+      collectedAmount: "0",
+      generatedAt: new Date().toISOString(),
+    };
+  }
+  if (!isObject(row) || !isObject(row.statuses)) {
+    throw new DemoError(502, "gateway returned invalid analytics");
+  }
+  const decimals = amountConfig(env).decimals;
+  return {
+    chain,
+    asset,
+    intents: analyticsInteger(row.intents),
+    paidIntents: analyticsInteger(row.statuses.paid ?? 0),
+    confirmedAmount: formatUnits(analyticsUnits(row.confirmedUnits), decimals),
+    collectedAmount: formatUnits(analyticsUnits(row.collectedUnits), decimals),
+    generatedAt:
+      typeof value.generatedAt === "string" && Number.isFinite(Date.parse(value.generatedAt))
+        ? value.generatedAt
+        : new Date().toISOString(),
+  };
+}
+
+function analyticsInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new DemoError(502, "gateway returned invalid analytics");
+  }
+  return value as number;
+}
+
+function analyticsUnits(value: unknown): bigint {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new DemoError(502, "gateway returned invalid analytics");
+  }
+  return BigInt(value);
 }
 
 async function issueAccessToken(

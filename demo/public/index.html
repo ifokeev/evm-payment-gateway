@@ -94,6 +94,39 @@
       </section>
 
       <section class="payment-stage" aria-label="Payment status">
+        <section
+          id="analytics-panel"
+          class="analytics-panel"
+          aria-labelledby="analytics-title"
+          data-state="loading"
+        >
+          <header class="analytics-heading">
+            <div>
+              <h2 id="analytics-title">Live testnet totals</h2>
+              <p>Aggregate activity for this Base Sepolia deployment.</p>
+            </div>
+            <p id="analytics-updated" role="status">Loading totals...</p>
+          </header>
+          <dl id="analytics-grid" class="analytics-grid" aria-busy="true">
+            <div>
+              <dt>Payment intents</dt>
+              <dd id="analytics-intents">...</dd>
+            </div>
+            <div>
+              <dt>Paid intents</dt>
+              <dd id="analytics-paid">...</dd>
+            </div>
+            <div>
+              <dt>Confirmed volume</dt>
+              <dd><span id="analytics-confirmed">...</span> <small>USDC</small></dd>
+            </div>
+            <div>
+              <dt>Treasury collected</dt>
+              <dd><span id="analytics-collected">...</span> <small>USDC</small></dd>
+            </div>
+          </dl>
+        </section>
+
         <div id="empty-state" class="empty-state">
           <div class="empty-heading">
             <p class="status-label">Demo ready</p>
