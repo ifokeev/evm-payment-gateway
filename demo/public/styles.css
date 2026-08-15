@@ -953,6 +953,12 @@ button:disabled {
   display: none;
 }
 
+@media (min-width: 861px) and (max-height: 900px) {
+  .intro {
+    padding-block: 58px;
+  }
+}
+
 @media (max-width: 1100px) {
   .page-shell {
     grid-template-columns: minmax(350px, 0.78fr) minmax(0, 1.22fr);
