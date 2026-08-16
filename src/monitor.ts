@@ -1,5 +1,6 @@
-import { type Address, createPublicClient, getAddress, type Hex, http, parseAbiItem } from "viem";
+import { type Address, createPublicClient, getAddress, type Hex, parseAbiItem } from "viem";
 import { deriveStatus, eligibleForSweep, intSetting, loadNetworks } from "./domain";
+import { rpcTransport } from "./rpc";
 import type {
   ApiEnv,
   IntentRow,
@@ -72,7 +73,10 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
 
   try {
     const client = createPublicClient({
-      transport: http(network.rpcUrl, { batch: { batchSize: 10 }, timeout: 20_000 }),
+      transport: rpcTransport(network.rpcUrls, {
+        batch: { batchSize: 10 },
+        timeout: 20_000,
+      }),
     });
     const remoteChainId = await client.getChainId();
     if (remoteChainId !== network.chainId)

@@ -2,7 +2,7 @@
   {
     "name": "ethereum",
     "chainId": 1,
-    "rpcUrl": "https://ethereum-rpc.example",
+    "rpcUrls": ["https://ethereum-primary-rpc.example", "https://ethereum-fallback-rpc.example"],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -19,7 +19,10 @@
   {
     "name": "ethereum-sepolia",
     "chainId": 11155111,
-    "rpcUrl": "https://ethereum-sepolia-rpc.example",
+    "rpcUrls": [
+      "https://ethereum-sepolia-primary-rpc.example",
+      "https://ethereum-sepolia-fallback-rpc.example"
+    ],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -35,7 +38,7 @@
   {
     "name": "base",
     "chainId": 8453,
-    "rpcUrl": "https://base-rpc.example",
+    "rpcUrls": ["https://base-primary-rpc.example", "https://base-fallback-rpc.example"],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -51,7 +54,10 @@
   {
     "name": "base-sepolia",
     "chainId": 84532,
-    "rpcUrl": "https://base-sepolia-rpc.example",
+    "rpcUrls": [
+      "https://base-sepolia-primary-rpc.example",
+      "https://base-sepolia-fallback-rpc.example"
+    ],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -67,7 +73,7 @@
   {
     "name": "bnb",
     "chainId": 56,
-    "rpcUrl": "https://bnb-rpc.example",
+    "rpcUrls": ["https://bnb-primary-rpc.example", "https://bnb-fallback-rpc.example"],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -83,7 +89,10 @@
   {
     "name": "bnb-testnet",
     "chainId": 97,
-    "rpcUrl": "https://bnb-testnet-rpc.example",
+    "rpcUrls": [
+      "https://bnb-testnet-primary-rpc.example",
+      "https://bnb-testnet-fallback-rpc.example"
+    ],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

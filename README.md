@@ -8,9 +8,11 @@ Create exact payment intents with deterministic keyless addresses, confirm EVM
 transfers, send signed webhooks, and collect funds in your treasury without
 operating servers or managing deposit keys.
 
+[Live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
 [Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
-[Demo](#demo) · [Security](#security) · [Integration guide](INTEGRATION.md)
+[Security](#security) · [Integration guide](INTEGRATION.md)
 
+[![CI](https://img.shields.io/github/actions/workflow/status/ifokeev/evm-payment-gateway/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/ifokeev/evm-payment-gateway/actions/workflows/ci.yml)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![Solidity](https://img.shields.io/badge/Solidity-363636?style=for-the-badge&logo=solidity&logoColor=white)
@@ -49,9 +51,11 @@ Networks and assets are configuration, not hard-coded product behavior.
 | --- | --- | --- | --- | --- |
 | Ethereum | Ethereum | Sepolia | ETH | USDC, USDT |
 | Base | Base | Base Sepolia | ETH | USDC |
-| BNB Chain | BNB Chain | BNB Testnet | BNB / TBNB | USDT on mainnet |
+| BNB Chain | BNB Chain | BNB Testnet | BNB / TBNB | Binance-Peg BSC-USD on mainnet |
 
 Verify every production token address and decimal count with its issuer.
+The included BNB token example has contract symbol `USDT`, but it is the
+18-decimal Binance-Peg BSC-USD token rather than issuer-native Tether USDt.
 
 ## How it works
 
@@ -181,7 +185,7 @@ relayer key; it never receives the payment API key or webhook secret.
 {
   "name": "base-sepolia",
   "chainId": 84532,
-  "rpcUrl": "https://your-rpc.example",
+  "rpcUrls": ["https://your-primary-rpc.example", "https://your-fallback-rpc.example"],
   "treasuryAddress": "0xYourTreasury",
   "factoryAddress": "0xDeployedFactory",
   "factoryCodeHash": "0xRuntimeCodeHash",
@@ -201,9 +205,11 @@ relayer key; it never receives the payment API key or webhook secret.
 
 Copy only the networks you enable from
 [`networks.example.json`](networks.example.json). The
-`SWEEPER_NETWORKS_JSON` copy adds `relayerPrivateKey`; the API rejects that
-field. All URLs must use HTTPS, all configured addresses must be distinct, and
-the private key must match `relayerAddress`.
+`rpcUrls` is an ordered failover list. Keep separate lists in the testnet and
+mainnet Cloudflare secrets; do not commit provider credentials.
+`SWEEPER_NETWORKS_JSON` copies the same list and adds `relayerPrivateKey`; the
+API rejects that field. All URLs must use HTTPS, all configured addresses must
+be distinct, and the private key must match `relayerAddress`.
 
 | Setting | Purpose |
 | --- | --- |
@@ -257,9 +263,11 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 ## Demo
 
-The optional demo Worker shows a real testnet checkout, polling, signed webhook
-receipt, and treasury collection. A private service binding keeps the API key
-out of browser code.
+The optional demo Worker shows real Base Sepolia, Ethereum Sepolia, and BNB
+Testnet payments with polling, signed webhook receipt, and treasury collection.
+A private service binding keeps the API key out of browser code.
+
+[Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev)
 
 ```bash
 cp .demo.secrets.example .demo.secrets
@@ -317,6 +325,11 @@ Before mainnet, complete testnet payments for every enabled native/token pair,
 verify treasury receipt and signed webhooks, exercise RPC failure recovery, and
 review every configured address. Mainnet commands require
 `ALLOW_UNAUDITED_MAINNET=true`.
+
+For the included networks, test Base Sepolia ETH/USDC, Ethereum Sepolia
+ETH/USDC, and BNB Testnet TBNB. There is no issuer-native Tether test token in
+this matrix, so fork-test the exact Ethereum USDT and BNB BSC-USD contracts and
+run a minimum-value mainnet canary before enabling either token publicly.
 
 ## Contributing
 

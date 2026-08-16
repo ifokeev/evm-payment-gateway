@@ -5,7 +5,6 @@ import {
   createPublicClient,
   getAddress,
   type Hex,
-  http,
   isAddressEqual,
   keccak256,
   parseTransaction,
@@ -22,6 +21,7 @@ import {
   stableStringify,
 } from "./domain";
 import { all, errorText, randomId, runScheduled, safeErrorText, unixNow } from "./monitor";
+import { rpcTransport } from "./rpc";
 import type {
   ApiEnv,
   IntentRow,
@@ -310,7 +310,9 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     return json(await intentResponse(env, existing, network));
   }
 
-  const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 15_000 }) });
+  const client = createPublicClient({
+    transport: rpcTransport(network.rpcUrls, { timeout: 15_000 }),
+  });
   let latest: bigint;
   try {
     const [chainId, block, factoryCode] = await Promise.all([

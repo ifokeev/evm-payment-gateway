@@ -653,7 +653,7 @@ describe("chain scanner", () => {
     const network = {
       ...loadNetworks(bindings.NETWORKS_JSON).get("test")!,
       name: "batch-test",
-      rpcUrl: "https://rpc.batch",
+      rpcUrls: ["https://rpc.batch"],
     } satisfies NetworkConfig;
     await syncChain(bindings, network);
 

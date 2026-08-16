@@ -40,17 +40,58 @@ const analytics = {
       collectedUnits: "3750000",
     },
     {
-      chain: "sepolia",
-      asset: "USDC",
-      intents: 999,
-      statuses: { paid: 999 },
-      confirmedUnits: "999000000",
-      collectedUnits: "999000000",
+      chain: "ethereum-sepolia",
+      asset: "ETH",
+      intents: 2,
+      statuses: { paid: 1 },
+      confirmedUnits: "1000000000000",
+      collectedUnits: "500000000000",
     },
   ],
   collectionFeesWei: { "base-sepolia": "secret-operational-detail" },
   webhooks: [{ type: "payment.succeeded", status: "delivered", count: 9 }],
 };
+const options = [
+  {
+    chain: "base-sepolia",
+    chainLabel: "Base Sepolia",
+    chainId: 84532,
+    asset: "USDC",
+    decimals: 6,
+    minimumAmount: "0.01",
+    maximumAmount: "5",
+    defaultAmount: "0.50",
+    nativeAsset: "ETH",
+    walletRpcUrl: "https://sepolia.base.org",
+    explorerUrl: "https://sepolia.basescan.org",
+  },
+  {
+    chain: "ethereum-sepolia",
+    chainLabel: "Ethereum Sepolia",
+    chainId: 11155111,
+    asset: "ETH",
+    decimals: 18,
+    minimumAmount: "0.000001",
+    maximumAmount: "0.001",
+    defaultAmount: "0.00001",
+    nativeAsset: "ETH",
+    walletRpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
+    explorerUrl: "https://sepolia.etherscan.io",
+  },
+  {
+    chain: "bnb-testnet",
+    chainLabel: "BNB Testnet",
+    chainId: 97,
+    asset: "TBNB",
+    decimals: 18,
+    minimumAmount: "0.00001",
+    maximumAmount: "0.01",
+    defaultAmount: "0.001",
+    nativeAsset: "TBNB",
+    walletRpcUrl: "https://bsc-testnet-dataseed.bnbchain.org",
+    explorerUrl: "https://testnet.bscscan.com",
+  },
+];
 
 let env: DemoEnv;
 let events: Map<string, string>;
@@ -103,11 +144,7 @@ beforeEach(() => {
     DEMO_SESSION_SECRET: "test-demo-session-secret-at-least-32-characters",
     TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
-    DEMO_CHAIN: "base-sepolia",
-    DEMO_ASSET: "USDC",
-    DEMO_ASSET_DECIMALS: "6",
-    DEMO_MIN_AMOUNT: "0.01",
-    DEMO_MAX_AMOUNT: "5",
+    DEMO_OPTIONS_JSON: JSON.stringify(options),
     DEMO_EXPIRY_SECONDS: "1800",
   };
   vi.stubGlobal(
@@ -172,6 +209,30 @@ describe("public demo", () => {
       env,
     );
     expect(unrelated.status).toBe(401);
+  });
+
+  it("allows only configured network and asset pairs", async () => {
+    const ethereum = await demo.fetch(
+      createRequest({
+        chain: "ethereum-sepolia",
+        asset: "ETH",
+        amount: "0.00001",
+        purpose: "checkout",
+      }),
+      env,
+    );
+    expect(ethereum.status).toBe(201);
+    expect(gatewayRequests[0].body).toMatchObject({
+      chain: "ethereum-sepolia",
+      asset: "ETH",
+      amount: "0.00001",
+    });
+
+    const unsupported = await demo.fetch(
+      createRequest({ chain: "bnb-testnet", asset: "USDC", amount: "1", purpose: "checkout" }),
+      env,
+    );
+    expect(unsupported.status).toBe(400);
   });
 
   it("enforces origin, amount, challenge, and rate-limit boundaries", async () => {
@@ -304,26 +365,43 @@ describe("public demo", () => {
   it("serves public configuration and delegates static assets", async () => {
     const config = await demo.fetch(new Request("https://demo.test/api/config"), env);
     expect(await config.json()).toEqual({
-      chain: "base-sepolia",
-      asset: "USDC",
-      minimumAmount: "0.01",
-      maximumAmount: "5",
+      options,
       turnstileSiteKey: "1x00000000000000000000AA",
     });
     const asset = await demo.fetch(new Request("https://demo.test/"), env);
     expect(await asset.text()).toBe("demo asset");
   });
 
-  it("exposes only aggregate analytics for the configured demo asset", async () => {
+  it("exposes only aggregate analytics for configured demo assets", async () => {
     const response = await demo.fetch(new Request("https://demo.test/api/analytics"), env);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      chain: "base-sepolia",
-      asset: "USDC",
-      intents: 12,
-      paidIntents: 9,
-      confirmedAmount: "4.25",
-      collectedAmount: "3.75",
+      assets: [
+        {
+          chain: "base-sepolia",
+          asset: "USDC",
+          intents: 12,
+          paidIntents: 9,
+          confirmedAmount: "4.25",
+          collectedAmount: "3.75",
+        },
+        {
+          chain: "ethereum-sepolia",
+          asset: "ETH",
+          intents: 2,
+          paidIntents: 1,
+          confirmedAmount: "0.000001",
+          collectedAmount: "0.0000005",
+        },
+        {
+          chain: "bnb-testnet",
+          asset: "TBNB",
+          intents: 0,
+          paidIntents: 0,
+          confirmedAmount: "0",
+          collectedAmount: "0",
+        },
+      ],
       generatedAt: analytics.generatedAt,
     });
     expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
@@ -332,7 +410,12 @@ describe("public demo", () => {
   });
 });
 
-function createRequest(input: { amount: string; purpose: string }): Request {
+function createRequest(input: {
+  chain?: string;
+  asset?: string;
+  amount: string;
+  purpose: string;
+}): Request {
   return new Request("https://demo.test/api/intents", {
     method: "POST",
     headers: {
@@ -341,6 +424,8 @@ function createRequest(input: { amount: string; purpose: string }): Request {
       "CF-Connecting-IP": "192.0.2.10",
     },
     body: JSON.stringify({
+      chain: "base-sepolia",
+      asset: "USDC",
       ...input,
       idempotencyKey: crypto.randomUUID(),
       turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",

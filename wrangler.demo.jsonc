@@ -25,11 +25,7 @@
     }
   ],
   "vars": {
-    "DEMO_CHAIN": "base-sepolia",
-    "DEMO_ASSET": "USDC",
-    "DEMO_ASSET_DECIMALS": "6",
-    "DEMO_MIN_AMOUNT": "0.01",
-    "DEMO_MAX_AMOUNT": "5",
+    "DEMO_OPTIONS_JSON": "[{\"chain\":\"base-sepolia\",\"chainLabel\":\"Base Sepolia\",\"chainId\":84532,\"asset\":\"USDC\",\"decimals\":6,\"minimumAmount\":\"0.01\",\"maximumAmount\":\"5\",\"defaultAmount\":\"0.50\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://sepolia.base.org\",\"explorerUrl\":\"https://sepolia.basescan.org\"},{\"chain\":\"base-sepolia\",\"chainLabel\":\"Base Sepolia\",\"chainId\":84532,\"asset\":\"ETH\",\"decimals\":18,\"minimumAmount\":\"0.000001\",\"maximumAmount\":\"0.001\",\"defaultAmount\":\"0.00001\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://sepolia.base.org\",\"explorerUrl\":\"https://sepolia.basescan.org\"},{\"chain\":\"ethereum-sepolia\",\"chainLabel\":\"Ethereum Sepolia\",\"chainId\":11155111,\"asset\":\"USDC\",\"decimals\":6,\"minimumAmount\":\"0.01\",\"maximumAmount\":\"5\",\"defaultAmount\":\"0.50\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://ethereum-sepolia-rpc.publicnode.com\",\"explorerUrl\":\"https://sepolia.etherscan.io\"},{\"chain\":\"ethereum-sepolia\",\"chainLabel\":\"Ethereum Sepolia\",\"chainId\":11155111,\"asset\":\"ETH\",\"decimals\":18,\"minimumAmount\":\"0.000001\",\"maximumAmount\":\"0.001\",\"defaultAmount\":\"0.00001\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://ethereum-sepolia-rpc.publicnode.com\",\"explorerUrl\":\"https://sepolia.etherscan.io\"},{\"chain\":\"bnb-testnet\",\"chainLabel\":\"BNB Testnet\",\"chainId\":97,\"asset\":\"TBNB\",\"decimals\":18,\"minimumAmount\":\"0.00001\",\"maximumAmount\":\"0.01\",\"defaultAmount\":\"0.001\",\"nativeAsset\":\"TBNB\",\"walletRpcUrl\":\"https://bsc-testnet-dataseed.bnbchain.org\",\"explorerUrl\":\"https://testnet.bscscan.com\"}]",
     "DEMO_EXPIRY_SECONDS": "1800"
   },
   "env": {
@@ -58,11 +54,7 @@
         }
       ],
       "vars": {
-        "DEMO_CHAIN": "base-sepolia",
-        "DEMO_ASSET": "USDC",
-        "DEMO_ASSET_DECIMALS": "6",
-        "DEMO_MIN_AMOUNT": "0.01",
-        "DEMO_MAX_AMOUNT": "5",
+        "DEMO_OPTIONS_JSON": "[{\"chain\":\"base-sepolia\",\"chainLabel\":\"Base Sepolia\",\"chainId\":84532,\"asset\":\"USDC\",\"decimals\":6,\"minimumAmount\":\"0.01\",\"maximumAmount\":\"5\",\"defaultAmount\":\"0.50\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://sepolia.base.org\",\"explorerUrl\":\"https://sepolia.basescan.org\"},{\"chain\":\"base-sepolia\",\"chainLabel\":\"Base Sepolia\",\"chainId\":84532,\"asset\":\"ETH\",\"decimals\":18,\"minimumAmount\":\"0.000001\",\"maximumAmount\":\"0.001\",\"defaultAmount\":\"0.00001\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://sepolia.base.org\",\"explorerUrl\":\"https://sepolia.basescan.org\"},{\"chain\":\"ethereum-sepolia\",\"chainLabel\":\"Ethereum Sepolia\",\"chainId\":11155111,\"asset\":\"USDC\",\"decimals\":6,\"minimumAmount\":\"0.01\",\"maximumAmount\":\"5\",\"defaultAmount\":\"0.50\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://ethereum-sepolia-rpc.publicnode.com\",\"explorerUrl\":\"https://sepolia.etherscan.io\"},{\"chain\":\"ethereum-sepolia\",\"chainLabel\":\"Ethereum Sepolia\",\"chainId\":11155111,\"asset\":\"ETH\",\"decimals\":18,\"minimumAmount\":\"0.000001\",\"maximumAmount\":\"0.001\",\"defaultAmount\":\"0.00001\",\"nativeAsset\":\"ETH\",\"walletRpcUrl\":\"https://ethereum-sepolia-rpc.publicnode.com\",\"explorerUrl\":\"https://sepolia.etherscan.io\"},{\"chain\":\"bnb-testnet\",\"chainLabel\":\"BNB Testnet\",\"chainId\":97,\"asset\":\"TBNB\",\"decimals\":18,\"minimumAmount\":\"0.00001\",\"maximumAmount\":\"0.01\",\"defaultAmount\":\"0.001\",\"nativeAsset\":\"TBNB\",\"walletRpcUrl\":\"https://bsc-testnet-dataseed.bnbchain.org\",\"explorerUrl\":\"https://testnet.bscscan.com\"}]",
         "DEMO_EXPIRY_SECONDS": "1800"
       }
     }

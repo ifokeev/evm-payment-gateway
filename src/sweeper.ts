@@ -3,7 +3,6 @@ import {
   decodeEventLog,
   erc20Abi,
   type Hex,
-  http,
   isAddressEqual,
   keccak256,
   parseAbi,
@@ -17,6 +16,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { collectionCall, counterfactualAddress } from "./create2";
 import { intSetting, loadNetworks } from "./domain";
 import { errorText, safeErrorText } from "./monitor";
+import { rpcTransport } from "./rpc";
 import type {
   NetworkConfig,
   SweeperEnv,
@@ -80,7 +80,9 @@ async function processCollection(
   const network = networks.get(job.chain);
   if (!network) throw new Error(`network ${job.chain} is not configured in the sweeper`);
   validateJobNetwork(job, network);
-  const client = createPublicClient({ transport: http(network.rpcUrl, { timeout: 30_000 }) });
+  const client = createPublicClient({
+    transport: rpcTransport(network.rpcUrls, { timeout: 30_000 }),
+  });
   const [chainId, factoryCode] = await Promise.all([
     client.getChainId(),
     client.getCode({ address: network.factoryAddress }),
