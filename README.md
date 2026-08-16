@@ -8,9 +8,11 @@ Create exact payment intents with deterministic keyless addresses, confirm EVM
 transfers, send signed webhooks, and collect funds in your treasury without
 operating servers or managing deposit keys.
 
+[Live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
 [Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
-[Demo](#demo) · [Security](#security) · [Integration guide](INTEGRATION.md)
+[Security](#security) · [Integration guide](INTEGRATION.md)
 
+[![CI](https://img.shields.io/github/actions/workflow/status/ifokeev/evm-payment-gateway/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/ifokeev/evm-payment-gateway/actions/workflows/ci.yml)
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![Solidity](https://img.shields.io/badge/Solidity-363636?style=for-the-badge&logo=solidity&logoColor=white)
@@ -264,6 +266,8 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 The optional demo Worker shows real Base Sepolia, Ethereum Sepolia, and BNB
 Testnet payments with polling, signed webhook receipt, and treasury collection.
 A private service binding keeps the API key out of browser code.
+
+[Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev)
 
 ```bash
 cp .demo.secrets.example .demo.secrets
