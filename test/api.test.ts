@@ -1184,7 +1184,10 @@ describe("webhook delivery", () => {
         (id,payment_intent,chain,observed_units,remaining_units,status,next_attempt_at,last_dispatched_at,created_at,updated_at)
         VALUES (?,?,'test','1','0','queued',?,0,?,?)`).bind(jobId, intentId, now, now, now),
     ]);
-    const sendBatch = vi.fn(async (_messages: MessageSendRequest<SweepMessage>[]) => undefined);
+    const sendSweeps = vi.fn(async (_messages: MessageSendRequest<SweepMessage>[]) => undefined);
+    const sendScans = vi.fn(
+      async (_messages: MessageSendRequest<{ chain: string }>[]) => undefined,
+    );
     const noIntentNetwork = JSON.stringify([
       {
         name: "empty",
@@ -1204,9 +1207,11 @@ describe("webhook delivery", () => {
       ...bindings,
       NETWORKS_JSON: noIntentNetwork,
       PAYMENT_WEBHOOK_SECRET: "short",
-      SWEEP_QUEUE: { sendBatch } as unknown as Queue<SweepMessage>,
+      SCAN_QUEUE: { sendBatch: sendScans } as unknown as Queue<{ chain: string }>,
+      SWEEP_QUEUE: { sendBatch: sendSweeps } as unknown as Queue<SweepMessage>,
     });
-    expect(sendBatch).toHaveBeenCalledWith(
+    expect(sendScans).toHaveBeenCalledWith([{ body: { chain: "empty" } }]);
+    expect(sendSweeps).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ body: { jobId } })]),
     );
   });

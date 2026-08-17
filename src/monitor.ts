@@ -29,12 +29,10 @@ type ObservedPayment = {
 
 export async function runScheduled(env: ApiEnv): Promise<void> {
   const networks = loadNetworks(env.NETWORKS_JSON);
-  const results = await Promise.allSettled(
-    [...networks.values()].map((network) => syncChain(env, network)),
-  );
-  for (const [index, result] of results.entries()) {
-    if (result.status === "rejected")
-      console.error("chain sync failed", [...networks.keys()][index], safeErrorText(result.reason));
+  try {
+    await env.SCAN_QUEUE.sendBatch([...networks.keys()].map((chain) => ({ body: { chain } })));
+  } catch (error) {
+    console.error("chain sync dispatch failed", safeErrorText(error));
   }
   for (const [name, task] of [
     ["intent expiry", () => expirePendingIntents(env.DB)],

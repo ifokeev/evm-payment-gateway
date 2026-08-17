@@ -14,7 +14,11 @@
     }
   ],
   "queues": {
-    "producers": [{ "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps" }]
+    "producers": [
+      { "binding": "SCAN_QUEUE", "queue": "evm-payment-gateway-scans" },
+      { "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps" }
+    ],
+    "consumers": [{ "queue": "evm-payment-gateway-scans", "max_batch_size": 1 }]
   },
   "triggers": {
     "crons": ["* * * * *"]
@@ -44,7 +48,11 @@
         }
       ],
       "queues": {
-        "producers": [{ "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps-testnet" }]
+        "producers": [
+          { "binding": "SCAN_QUEUE", "queue": "evm-payment-gateway-scans-testnet" },
+          { "binding": "SWEEP_QUEUE", "queue": "evm-payment-gateway-sweeps-testnet" }
+        ],
+        "consumers": [{ "queue": "evm-payment-gateway-scans-testnet", "max_batch_size": 1 }]
       },
       "vars": {
         "DEFAULT_EXPIRY_SECONDS": "1800",
@@ -73,10 +81,15 @@
       "queues": {
         "producers": [
           {
+            "binding": "SCAN_QUEUE",
+            "queue": "evm-payment-gateway-scans-mainnet"
+          },
+          {
             "binding": "SWEEP_QUEUE",
             "queue": "evm-payment-gateway-sweeps-mainnet"
           }
-        ]
+        ],
+        "consumers": [{ "queue": "evm-payment-gateway-scans-mainnet", "max_batch_size": 1 }]
       },
       "vars": {
         "DEFAULT_EXPIRY_SECONDS": "1800",
