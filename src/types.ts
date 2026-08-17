@@ -20,6 +20,7 @@ export type NetworkConfig = {
 
 export interface ApiEnv {
   DB: D1Database;
+  SCAN_QUEUE: Queue<ScanMessage>;
   SWEEP_QUEUE: Queue<SweepMessage>;
   PAYMENT_API_KEY: string;
   PAYMENT_WEBHOOK_URL: string;
@@ -41,6 +42,7 @@ export interface SweeperEnv {
 }
 
 export type SweepMessage = { jobId: string };
+export type ScanMessage = { chain: string };
 
 export type IntentRow = {
   id: string;

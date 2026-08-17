@@ -20,7 +20,15 @@ import {
   paymentUri,
   stableStringify,
 } from "./domain";
-import { all, errorText, randomId, runScheduled, safeErrorText, unixNow } from "./monitor";
+import {
+  all,
+  errorText,
+  randomId,
+  runScheduled,
+  safeErrorText,
+  syncChain,
+  unixNow,
+} from "./monitor";
 import { rpcTransport } from "./rpc";
 import type {
   ApiEnv,
@@ -52,6 +60,24 @@ export default {
     context: ExecutionContext,
   ): Promise<void> {
     context.waitUntil(runScheduled(env));
+  },
+  async queue(batch: MessageBatch<{ chain: string }>, env: ApiEnv): Promise<void> {
+    const networks = loadNetworks(env.NETWORKS_JSON);
+    for (const message of batch.messages) {
+      const network = networks.get(message.body.chain);
+      if (!network) {
+        console.error("unknown scan chain", message.body.chain);
+        message.ack();
+        continue;
+      }
+      try {
+        await syncChain(env, network);
+        message.ack();
+      } catch (error) {
+        console.error("chain sync failed", network.name, safeErrorText(error));
+        message.retry();
+      }
+    }
   },
 };
 

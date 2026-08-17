@@ -170,7 +170,8 @@ Wrangler uses isolated resource names for the two environments:
 | API Worker | `evm-payment-gateway-api-testnet` | `evm-payment-gateway-api-mainnet` |
 | Relayer Worker | `evm-payment-gateway-sweeper-testnet` | `evm-payment-gateway-sweeper-mainnet` |
 | D1 database | `evm-payment-gateway-testnet` | `evm-payment-gateway-mainnet` |
-| Queue | `evm-payment-gateway-sweeps-testnet` | `evm-payment-gateway-sweeps-mainnet` |
+| Scan queue | `evm-payment-gateway-scans-testnet` | `evm-payment-gateway-scans-mainnet` |
+| Collection queue | `evm-payment-gateway-sweeps-testnet` | `evm-payment-gateway-sweeps-mainnet` |
 
 Use separate RPC credentials, treasuries, relayer keys, API keys, and webhook
 secrets for testnet and mainnet.
