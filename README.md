@@ -222,6 +222,11 @@ be distinct, and the private key must match `relayerAddress`.
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
 | `SWEEPER_RETRY_SECONDS` | Delay before retrying collection. |
 
+The minute scanner queues only chains with open payments or confirmed payments
+still inside the configured reorg window. Chains with older history receive a
+maintenance scan every 15 minutes so late transfers remain recoverable without
+spending queue operations on idle networks.
+
 ## API
 
 All payment routes use `/api/payments/v1`. Only `GET /health` is public; every
