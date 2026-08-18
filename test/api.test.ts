@@ -1159,7 +1159,7 @@ describe("webhook delivery", () => {
     ).toBe("pending");
   });
 
-  it("dispatches due sweeps even when webhook configuration is broken", async () => {
+  it("dispatches due sweeps without scanning unused networks", async () => {
     const now = unixNow();
     const intentId = randomId("pi");
     const jobId = randomId("swp");
@@ -1210,10 +1210,71 @@ describe("webhook delivery", () => {
       SCAN_QUEUE: { sendBatch: sendScans } as unknown as Queue<{ chain: string }>,
       SWEEP_QUEUE: { sendBatch: sendSweeps } as unknown as Queue<SweepMessage>,
     });
-    expect(sendScans).toHaveBeenCalledWith([{ body: { chain: "empty" } }]);
+    expect(sendScans).not.toHaveBeenCalled();
     expect(sendSweeps).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ body: { jobId } })]),
     );
+  });
+
+  it("scans active payment chains without queueing unused networks", async () => {
+    const response = await create(randomId("scheduled"), { amount: "1", metadata: {} });
+    const intent = await response.json<{ id: string }>();
+    const sendScans = vi.fn(
+      async (_messages: MessageSendRequest<{ chain: string }>[]) => undefined,
+    );
+    const sendSweeps = vi.fn(async (_messages: MessageSendRequest<SweepMessage>[]) => undefined);
+
+    try {
+      await runScheduled({
+        ...bindings,
+        SCAN_QUEUE: { sendBatch: sendScans } as unknown as Queue<{ chain: string }>,
+        SWEEP_QUEUE: { sendBatch: sendSweeps } as unknown as Queue<SweepMessage>,
+      });
+      expect(sendScans).toHaveBeenCalledWith([{ body: { chain: "test" } }]);
+    } finally {
+      await bindings.DB.prepare("DELETE FROM payment_intents WHERE id = ?").bind(intent.id).run();
+    }
+  });
+
+  it("maintenance-scans expired payment chains every 15 minutes", async () => {
+    const response = await create(randomId("maintenance"), { amount: "1", metadata: {} });
+    const intent = await response.json<{ id: string }>();
+    const maintenanceChain = "maintenance";
+    await bindings.DB.prepare(
+      "UPDATE payment_intents SET chain = ?, chain_id = 31338, status = 'expired' WHERE id = ?",
+    )
+      .bind(maintenanceChain, intent.id)
+      .run();
+    const [network] = JSON.parse(bindings.NETWORKS_JSON) as Array<Record<string, unknown>>;
+    const maintenanceNetworks = JSON.stringify([
+      { ...network, name: maintenanceChain, chainId: 31338 },
+    ]);
+    await bindings.DB.prepare("DELETE FROM chain_states WHERE chain = ?")
+      .bind(maintenanceChain)
+      .run();
+    const sendScans = vi.fn(
+      async (_messages: MessageSendRequest<{ chain: string }>[]) => undefined,
+    );
+    const scheduledEnv = {
+      ...bindings,
+      NETWORKS_JSON: maintenanceNetworks,
+      SCAN_QUEUE: { sendBatch: sendScans } as unknown as Queue<{ chain: string }>,
+      SWEEP_QUEUE: { sendBatch: vi.fn() } as unknown as Queue<SweepMessage>,
+    };
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-18T00:14:00Z"));
+      await runScheduled(scheduledEnv);
+      expect(sendScans).not.toHaveBeenCalled();
+
+      vi.setSystemTime(new Date("2026-08-18T00:15:00Z"));
+      await runScheduled(scheduledEnv);
+      expect(sendScans).toHaveBeenCalledWith([{ body: { chain: maintenanceChain } }]);
+    } finally {
+      vi.useRealTimers();
+      await bindings.DB.prepare("DELETE FROM payment_intents WHERE id = ?").bind(intent.id).run();
+    }
   });
 });
 

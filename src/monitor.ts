@@ -12,6 +12,7 @@ import type {
 const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
+const MAINTENANCE_SCAN_MINUTES = 15;
 
 type ObservedPayment = {
   intentId: string;
@@ -30,7 +31,8 @@ type ObservedPayment = {
 export async function runScheduled(env: ApiEnv): Promise<void> {
   const networks = loadNetworks(env.NETWORKS_JSON);
   try {
-    await env.SCAN_QUEUE.sendBatch([...networks.keys()].map((chain) => ({ body: { chain } })));
+    const chains = await scheduledScanChains(env, networks);
+    if (chains.length) await env.SCAN_QUEUE.sendBatch(chains.map((chain) => ({ body: { chain } })));
   } catch (error) {
     console.error("chain sync dispatch failed", safeErrorText(error));
   }
@@ -45,6 +47,31 @@ export async function runScheduled(env: ApiEnv): Promise<void> {
       console.error(`${name} failed`, safeErrorText(error));
     }
   }
+}
+
+async function scheduledScanChains(
+  env: ApiEnv,
+  networks: Map<string, NetworkConfig>,
+): Promise<string[]> {
+  const history = intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000);
+  const maintenance = Math.floor(unixNow() / 60) % MAINTENANCE_SCAN_MINUTES === 0 ? 1 : 0;
+  const rows = await all<{ chain: string }>(
+    env.DB,
+    `SELECT DISTINCT i.chain
+       FROM payment_intents i
+       LEFT JOIN chain_states s ON s.chain = i.chain
+      WHERE ? = 1
+         OR i.status IN ('pending', 'underpaid', 'confirming', 'reorged')
+         OR (i.status = 'paid' AND EXISTS (
+              SELECT 1 FROM payment_transactions t
+               WHERE t.payment_intent = i.id AND t.canonical = 1
+                 AND (s.last_scanned IS NULL OR t.block_number >= s.last_scanned - ?)
+            ))
+      ORDER BY i.chain`,
+    maintenance,
+    history,
+  );
+  return rows.map((row) => row.chain).filter((chain) => networks.has(chain));
 }
 
 export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<void> {
