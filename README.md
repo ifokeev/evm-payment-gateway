@@ -4,9 +4,9 @@
 
 **Serverless CREATE2 crypto payments in your own Cloudflare account.**
 
-Create exact payment intents with deterministic keyless addresses, confirm EVM
-transfers, send signed webhooks, and collect funds in your treasury without
-operating servers or managing deposit keys.
+The gateway creates exact payment intents with deterministic keyless addresses.
+It waits for EVM confirmations, sends signed webhooks, and collects funds in
+your treasury. You do not operate servers or manage deposit keys.
 
 [Live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
 [Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
@@ -23,8 +23,8 @@ operating servers or managing deposit keys.
 > [!IMPORTANT]
 > The gateway detects and collects payments. Your application remains
 > responsible for orders, credits, subscriptions, donations, refunds, and every
-> other form of fulfillment. Recurring payments require a new manual invoice;
-> the gateway never withdraws from a payer's wallet.
+> other form of fulfillment. Recurring payments require a new manual invoice.
+> The gateway never withdraws from a payer's wallet.
 
 > [!WARNING]
 > The contracts have extensive automated tests but no external audit. Use
@@ -37,10 +37,10 @@ operating servers or managing deposit keys.
 | --- | --- |
 | Exact checkout | Unique CREATE2 address, decimal amount, EIP-681 wallet link, and SVG QR code per intent. |
 | Payment state | Polling, expiry, partial payments, remaining-amount top-ups, confirmations, overpayments, and transaction history. |
-| Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting before retrying. |
+| Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting. Then the scanner retries. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
 | Signed events | HMAC-SHA256 webhooks retry with stable event IDs for idempotent application handling. |
-| Serverless deployment | Cloudflare Workers, D1, Queues, Cron Triggers, and service bindings; no VM or container. |
+| Serverless deployment | Cloudflare Workers, D1, Queues, Cron Triggers, and service bindings. No VM or container is necessary. |
 | Analytics | Exact integer totals for requested, received, confirmed, collected, fees, statuses, and webhooks. |
 
 ## Supported networks
@@ -53,7 +53,7 @@ Networks and assets are configuration, not hard-coded product behavior.
 | Base | Base | Base Sepolia | ETH | USDC |
 | BNB Chain | BNB Chain | BNB Testnet | BNB / TBNB | Binance-Peg BSC-USD on mainnet |
 
-Verify every production token address and decimal count with its issuer.
+Validate every production token address and decimal count against issuer data.
 The included BNB token example has contract symbol `USDT`, but it is the
 18-decimal Binance-Peg BSC-USD token rather than issuer-native Tether USDt.
 
@@ -96,13 +96,13 @@ flowchart LR
    until the configured confirmation count is reached.
 3. The relayer pays gas to call `deployAndCollect`. The factory deploys the
    immutable forwarder at the predicted address and collects its full balance.
-4. Native payments sent after deployment forward immediately. Later ERC-20
-   payments are collected by another permissionless relayer call.
+4. Native payments sent after deployment forward immediately. Another
+   permissionless relayer call collects later ERC-20 payments.
 5. The application receives `payment.succeeded` independently of treasury
    collection, so relayer downtime never changes payment truth.
 
-Unexpected native or ERC-20 assets can also be collected permissionlessly, but
-their only possible destination remains the immutable treasury.
+Anyone can collect unexpected native or ERC-20 assets. The immutable treasury
+remains the only destination for these assets.
 
 The payer never interacts with the factory directly and never needs extra gas
 beyond the transfer itself. The deposit address never needs ETH or BNB for an
@@ -125,11 +125,13 @@ stateDiagram-v2
 
 ### Requirements
 
+Install or obtain these requirements:
+
 - Node.js 22+
 - [Foundry](https://getfoundry.sh/introduction/installation/)
 - A Cloudflare account with Workers, D1, Queues, and Cron Triggers
 - An HTTPS EVM RPC endpoint
-- A treasury address and a separate low-balance relayer account
+- A treasury address and a separate low-balance relayer account.
 
 ### Deploy to testnet
 
@@ -150,14 +152,18 @@ FACTORY_DEPLOYER_PRIVATE_KEY="0x..." \
 npm run deploy:factory -- testnet 84532
 ```
 
-The command runs the contract suite, deploys the factory, and prints its address
-and runtime code hash. Put both values into the API and relayer network JSON.
-The deployer has no special contract permissions after deployment.
+The command runs the contract suite and deploys the factory. It prints the
+factory address and runtime code hash. The deployer has no special contract
+permissions after deployment.
 
-Generate a separate relayer key with `cast wallet new`. Put its public address
-in both network configurations, put its private key only in
-`.sweeper.testnet.secrets`, and fund it with a small amount of testnet native
-token. Then replace every placeholder and deploy:
+Add the factory address and runtime code hash to the API and relayer network
+JSON.
+
+Generate a separate relayer key with `cast wallet new`. Add its public address
+to both network configurations. Add its private key only to
+`.sweeper.testnet.secrets`. Fund the relayer with a small amount of testnet
+native token. Replace the remaining placeholders. Then deploy the testnet
+stack:
 
 ```bash
 npm run deploy -- testnet
@@ -180,7 +186,7 @@ secrets for testnet and mainnet.
 
 The API Worker receives payment and webhook secrets plus public network
 configuration. The private relayer Worker receives only its network JSON and
-relayer key; it never receives the payment API key or webhook secret.
+relayer key. It never receives the payment API key or webhook secret.
 
 ```json
 {
@@ -206,11 +212,14 @@ relayer key; it never receives the payment API key or webhook secret.
 
 Copy only the networks you enable from
 [`networks.example.json`](networks.example.json). The
-`rpcUrls` is an ordered failover list. Keep separate lists in the testnet and
-mainnet Cloudflare secrets; do not commit provider credentials.
-`SWEEPER_NETWORKS_JSON` copies the same list and adds `relayerPrivateKey`; the
-API rejects that field. All URLs must use HTTPS, all configured addresses must
-be distinct, and the private key must match `relayerAddress`.
+`rpcUrls` field is an ordered failover list.
+
+Keep separate lists in the testnet and mainnet Cloudflare secrets. Do not commit
+provider credentials. Copy the same list to `SWEEPER_NETWORKS_JSON`. Add
+`relayerPrivateKey` only to that list. The API rejects that field.
+
+Use HTTPS for all URLs. Make sure that all configured addresses are distinct.
+Make sure that the private key matches `relayerAddress`.
 
 | Setting | Purpose |
 | --- | --- |
@@ -218,18 +227,18 @@ be distinct, and the private key must match `relayerAddress`.
 | `MAX_EXPIRY_SECONDS` | Maximum caller-selected lifetime. |
 | `PAYMENT_GRACE_SECONDS` | Time after expiry in which a mined transfer still qualifies. |
 | `REORG_HISTORY_BLOCKS` | Canonical block window retained for reorg recovery. |
-| `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment worth collecting. |
+| `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment that qualifies for collection. |
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
-| `SWEEPER_RETRY_SECONDS` | Delay before retrying collection. |
+| `SWEEPER_RETRY_SECONDS` | Delay between collection attempts. |
 
 The minute scanner queues only chains with open payments or confirmed payments
 still inside the configured reorg window. Chains with older history receive a
-maintenance scan every 15 minutes so late transfers remain recoverable without
-spending queue operations on idle networks.
+maintenance scan every 15 minutes. This schedule recovers late transfers and
+limits operations on idle queues.
 
 ## API
 
-All payment routes use `/api/payments/v1`. Only `GET /health` is public; every
+All payment routes use `/api/payments/v1`. Only `GET /health` is public. Every
 other route requires the server-side bearer key.
 
 ```bash
@@ -261,8 +270,8 @@ periods remain application concepts stored in `externalId` or metadata.
 | `GET` | `/analytics/summary` | Read exact aggregate payment and collection metrics. |
 | `GET` | `/health` | Read scanner progress by network. |
 
-Successful payments emit `payment.succeeded`; an orphaned success emits
-`payment.reorged`. Expired underpayments that are later collected emit the
+Successful payments emit `payment.succeeded`. An orphaned success emits
+`payment.reorged`. Collected expired underpayments emit the
 informational `payment.recovered` event but never become paid. See the
 [application integration guide](INTEGRATION.md) for webhook verification,
 idempotent fulfillment, partial payments, recurring invoices, and examples.
@@ -280,28 +289,32 @@ cp .demo.secrets.example .demo.secrets
 npm run deploy:demo
 ```
 
-Create a Turnstile widget for the demo hostname, fill the secrets file, and set
-the API Worker's webhook URL to the demo's `/webhooks/payment` endpoint. Dummy
-Turnstile keys are for local and automated tests only.
+Create a Turnstile widget for the demo hostname. Fill the secrets file. Set the
+API Worker webhook URL to the demo `/webhooks/payment` endpoint.
+
+Dummy Turnstile keys are for local and automated tests only.
 
 ## Security
 
+The gateway uses these security controls:
+
 - `PaymentForwarder` has no owner, proxy, upgrade path, arbitrary destination,
   `delegatecall`, or `selfdestruct`. Treasury and asset are immutable.
-- The API and relayer verify the configured factory's runtime code hash before
-  calculating addresses or signing collection transactions.
-- The treasury key never enters Cloudflare. Prefer a multisig treasury for real
-  funds.
+- The API and relayer validate the configured factory runtime code hash. Then
+  they calculate addresses or sign collection transactions.
+- The treasury key never enters Cloudflare. A multisig treasury is preferable
+  for real funds.
 - The relayer key can spend only its own native balance. It cannot sign for a
-  deposit address or redirect a forwarder, so keep its balance deliberately low.
+  deposit address or redirect a forwarder. A low balance limits its exposure.
 - The API rejects relayer private keys and independently validates registered
   collection transactions. The relayer Worker never receives payment or webhook
   credentials.
 - Webhooks sign the exact body and timestamp, never follow redirects, and retry
   with stable event IDs.
-- Token configuration is an allowlist. Never enable an untrusted token contract.
+- Token configuration is an allowlist. Trusted token contracts are the only
+  permitted entries.
 
-Read [`SECURITY.md`](SECURITY.md) before production use. This design reduces the
+Before production use, read [`SECURITY.md`](SECURITY.md). This design reduces the
 impact of a compromised Worker but does not make unaudited code risk-free.
 
 ## Development
@@ -317,30 +330,32 @@ builds. The pre-commit hook runs the same contract checks plus staged linting.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run contracts:check` | Verify Solidity formatting, tests, invariants, and generated bytecode. |
+| `npm run contracts:check` | Validate Solidity formatting, tests, invariants, and generated bytecode. |
 | `npm run dev` | Start the API Worker locally. |
 | `npm run dev:demo` | Start the demo Worker locally. |
 | `npm run format` | Format supported files with Biome. |
 | `npm run lint` | Lint the codebase with Biome. |
 | `npm test` | Run Worker and D1 tests. |
-| `npm run deploy:dry-run` | Build every Worker environment without deploying. |
+| `npm run deploy:dry-run` | Build every Worker environment. Do not deploy. |
 | `npm run deploy -- testnet` | Deploy the isolated testnet stack. |
 | `npm run deploy:factory -- testnet 84532` | Test and deploy the factory on Base Sepolia. |
 
-Before mainnet, complete testnet payments for every enabled native/token pair,
-verify treasury receipt and signed webhooks, exercise RPC failure recovery, and
-review every configured address. Mainnet commands require
-`ALLOW_UNAUDITED_MAINNET=true`.
+Before mainnet, complete a testnet payment for each enabled native or token
+pair. Validate the treasury receipt and signed webhook for each payment.
+Exercise RPC failure recovery. Review every configured address. Mainnet
+commands require `ALLOW_UNAUDITED_MAINNET=true`.
 
-For the included networks, test Base Sepolia ETH/USDC, Ethereum Sepolia
-ETH/USDC, and BNB Testnet TBNB. There is no issuer-native Tether test token in
-this matrix, so fork-test the exact Ethereum USDT and BNB BSC-USD contracts and
-run a minimum-value mainnet canary before enabling either token publicly.
+Test Base Sepolia ETH and USDC. Test Ethereum Sepolia ETH and USDC. Test BNB
+Testnet TBNB.
+
+This matrix has no issuer-native Tether test token. Fork-test the exact Ethereum
+USDT and BNB BSC-USD contracts. Before you enable either token publicly, run a
+minimum-value mainnet canary.
 
 ## Contributing
 
-Issues and pull requests are welcome. Keep changes focused, add a regression
-test for payment or security behavior, and run `npm run check`. Report
+Issues and pull requests are welcome. Keep changes focused. Add a regression
+test for payment or security behavior. Run `npm run check`. Report
 vulnerabilities through GitHub private vulnerability reporting.
 
 ## License
