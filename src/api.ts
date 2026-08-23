@@ -274,7 +274,7 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     ),
     all<{ chain: string; fee_wei: string }>(
       env.DB,
-      "SELECT chain, fee_wei FROM withdrawal_transactions WHERE status = 'confirmed'",
+      "SELECT chain, fee_wei FROM withdrawal_transactions WHERE block_number IS NOT NULL",
     ),
   ]);
   const withdrawalFees: Record<string, bigint> = {};

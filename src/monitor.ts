@@ -496,14 +496,17 @@ export async function recalculateChain(
       reorged.has(intent.id) || intent.status === "reorged",
     );
     if (status === "reorged") hashes.push(...orphanedHashes);
-    const eligible = eligibleForSweep(
-      Boolean(intent.token_address),
-      status,
-      allConfirmed,
-      expected,
-      now > intent.expires_at + grace,
-      minTokenBps,
-    );
+    const expiredWithGrace = now > intent.expires_at + grace;
+    const eligible =
+      (intent.purpose === "swap" && expiredWithGrace && allConfirmed > 0n) ||
+      eligibleForSweep(
+        Boolean(intent.token_address),
+        status,
+        allConfirmed,
+        expected,
+        expiredWithGrace,
+        minTokenBps,
+      );
     await updatePayment(
       env.DB,
       intent,

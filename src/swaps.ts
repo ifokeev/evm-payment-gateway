@@ -311,7 +311,7 @@ export async function reconcileSwaps(env: ApiEnv): Promise<void> {
     try {
       await reconcileSwap(env, row, now);
     } catch (error) {
-      await setStatus(env.DB, row.id, row.status, safeErrorText(error));
+      await setStatus(env.DB, row.id, row.status, safeErrorText(error), row.completed_at);
     }
   }
 }
@@ -333,7 +333,7 @@ async function reconcileSwap(env: ApiEnv, row: ReconcileRow, now: number): Promi
   if (
     row.refund_withdrawal &&
     row.refund_units !== null &&
-    (BigInt(row.refund_units) !== received || confirmed !== received || collected !== received)
+    (BigInt(row.refund_units) !== observed || collected !== observed)
   ) {
     if (row.refund_status === "awaiting_signature") {
       await env.DB.prepare(
@@ -362,11 +362,17 @@ async function reconcileSwap(env: ApiEnv, row: ReconcileRow, now: number): Promi
   }
   if (row.refund_withdrawal) {
     if (row.refund_status === "complete") {
-      await setStatus(env.DB, row.id, "refunded", "", now);
+      await setStatus(env.DB, row.id, "refunded", "", row.completed_at ?? now);
       return;
     }
     if (row.refund_status === "failed" || row.refund_status === "expired") {
-      await setStatus(env.DB, row.id, "refund_required", `refund ${row.refund_status}`);
+      if (!(await reopenRefundWithdrawal(env, row, now)))
+        await setStatus(
+          env.DB,
+          row.id,
+          "refund_required",
+          `refund ${row.refund_status}; a previous transaction may still execute`,
+        );
       return;
     }
     await setStatus(
@@ -394,7 +400,7 @@ async function reconcileSwap(env: ApiEnv, row: ReconcileRow, now: number): Promi
       return;
     }
     if (row.withdrawal_status === "complete") {
-      await setStatus(env.DB, row.id, "complete", "", now);
+      await setStatus(env.DB, row.id, "complete", "", row.completed_at ?? now);
       return;
     }
     if (row.withdrawal_status === "failed" || row.withdrawal_status === "expired") {
@@ -454,11 +460,9 @@ async function createRefundWithdrawal(
     .first<{ id: string }>();
   if (!claimed) return;
 
-  const received = BigInt(row.received_units);
-  const confirmed = BigInt(row.confirmed_units);
+  const refundable = BigInt(row.observed_units ?? "0");
   const collected = BigInt(row.collected_units ?? "0");
-  if (received <= 0n) return;
-  if (confirmed !== received) {
+  if (refundable <= 0n) {
     await setStatus(
       env.DB,
       row.id,
@@ -467,7 +471,7 @@ async function createRefundWithdrawal(
     );
     return;
   }
-  if (!["complete", "external"].includes(row.sweep_status ?? "") || collected !== received) {
+  if (!["complete", "external"].includes(row.sweep_status ?? "") || collected !== refundable) {
     await setStatus(env.DB, row.id, "refund_required", `${reason}: waiting for exact collection`);
     return;
   }
@@ -489,7 +493,7 @@ async function createRefundWithdrawal(
 
   const withdrawalId = randomId("wd");
   const idempotencyKey = `swap:${row.id}:refund`;
-  const amount = formatUnits(collected, row.input_decimals);
+  const amount = formatUnits(refundable, row.input_decimals);
   const requestHash = await sha256(
     stableStringify({
       swapId: row.id,
@@ -511,8 +515,8 @@ async function createRefundWithdrawal(
       FROM swaps s JOIN deposit_intents d ON d.id = s.deposit_intent
       JOIN sweep_jobs j ON j.deposit_intent = d.id
       WHERE s.id = ? AND s.refund_withdrawal IS NULL AND s.status = 'refund_required'
-        AND d.received_units = ? AND d.confirmed_units = ?
-        AND j.collected_units = ? AND j.status IN ('complete','external')`).bind(
+        AND j.observed_units = ? AND j.collected_units = ?
+        AND j.status IN ('complete','external')`).bind(
       withdrawalId,
       idempotencyKey,
       requestHash,
@@ -532,9 +536,8 @@ async function createRefundWithdrawal(
       now,
       now,
       row.id,
-      row.received_units,
-      row.confirmed_units,
-      collected.toString(),
+      refundable.toString(),
+      refundable.toString(),
     ),
     env.DB.prepare(`UPDATE swaps SET refund_withdrawal = ?, status = 'refund_awaiting_signature',
       last_error = ?, updated_at = ? WHERE id = ? AND refund_withdrawal IS NULL
@@ -552,6 +555,53 @@ async function createRefundWithdrawal(
       .first<{ refund_withdrawal: string | null }>();
     if (!winner?.refund_withdrawal) return;
   }
+}
+
+async function reopenRefundWithdrawal(
+  env: ApiEnv,
+  row: ReconcileRow,
+  now: number,
+): Promise<boolean> {
+  if (!row.refund_withdrawal) return false;
+  const expiry =
+    now + intSetting(env.DEFAULT_EXPIRY_SECONDS, "DEFAULT_EXPIRY_SECONDS", 300, 86_400);
+  const [reopened] = await env.DB.batch([
+    env.DB.prepare(`UPDATE withdrawal_intents
+      SET status = 'awaiting_signature', expires_at = ?, last_error = '', completed_at = NULL,
+        updated_at = ?
+      WHERE id = ? AND status IN ('failed','expired')
+        AND NOT EXISTS (SELECT 1 FROM withdrawal_transactions
+          WHERE withdrawal = ? AND (status != 'failed' OR block_number IS NULL
+            OR last_error != 'transaction reverted'))`).bind(
+      expiry,
+      now,
+      row.refund_withdrawal,
+      row.refund_withdrawal,
+    ),
+    env.DB.prepare(`DELETE FROM withdrawal_nonce_reservations WHERE withdrawal = ?
+      AND EXISTS (SELECT 1 FROM withdrawal_intents
+        WHERE id = ? AND status = 'awaiting_signature')`).bind(
+      row.refund_withdrawal,
+      row.refund_withdrawal,
+    ),
+    env.DB.prepare(`UPDATE swaps SET status = 'refund_awaiting_signature', last_error = '',
+      completed_at = NULL, updated_at = ? WHERE id = ? AND refund_withdrawal = ?
+      AND EXISTS (SELECT 1 FROM withdrawal_intents
+        WHERE id = ? AND status = 'awaiting_signature')`).bind(
+      now,
+      row.id,
+      row.refund_withdrawal,
+      row.refund_withdrawal,
+    ),
+  ]);
+  if ((reopened.meta.changes ?? 0) === 1) return true;
+  return Boolean(
+    await env.DB.prepare(
+      "SELECT 1 FROM withdrawal_intents WHERE id = ? AND status = 'awaiting_signature'",
+    )
+      .bind(row.refund_withdrawal)
+      .first(),
+  );
 }
 
 async function createOutputWithdrawal(env: ApiEnv, row: ReconcileRow, now: number): Promise<void> {
@@ -644,18 +694,10 @@ async function setStatus(
   completedAt: number | null = null,
 ): Promise<void> {
   await db
-    .prepare(`UPDATE swaps SET status = ?, last_error = ?, completed_at = ?, updated_at = ?
-      WHERE id = ? AND (status != ? OR last_error != ? OR COALESCE(completed_at, 0) != COALESCE(?, 0))`)
-    .bind(
-      status,
-      error.slice(0, 1_000),
-      completedAt,
-      unixNow(),
-      id,
-      status,
-      error.slice(0, 1_000),
-      completedAt,
+    .prepare(
+      "UPDATE swaps SET status = ?, last_error = ?, completed_at = ?, updated_at = ? WHERE id = ?",
     )
+    .bind(status, error.slice(0, 1_000), completedAt, unixNow(), id)
     .run();
 }
 

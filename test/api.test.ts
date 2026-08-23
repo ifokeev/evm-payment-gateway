@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { encodeFunctionData, erc20Abi, type Hex, keccak256 } from "viem";
+import { encodeFunctionData, erc20Abi, type Hex, keccak256, serializeTransaction } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -282,7 +282,8 @@ describe("payment API", () => {
       purpose: "swap",
     });
     expect(invoice.status).toBe(201);
-    expect(await invoice.json<{ kind: string; purpose: string }>()).toMatchObject({
+    const invoiceBody = await invoice.json<{ id: string; kind: string; purpose: string }>();
+    expect(invoiceBody).toMatchObject({
       kind: "invoice",
       purpose: "swap",
     });
@@ -481,6 +482,25 @@ describe("withdrawal API", () => {
       );
       expect(rejected.status).toBe(400);
     }
+    const invalidSignature = serializeTransaction(baseTransaction, {
+      r: "0x0",
+      s: "0x1",
+      v: 2709n,
+    });
+    const invalidSignatureResponse = await api.fetch(
+      authorizedRequest(
+        `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rawTransaction: invalidSignature }),
+        },
+      ),
+    );
+    expect(invalidSignatureResponse.status).toBe(400);
+    expect(await invalidSignatureResponse.json()).toEqual({
+      error: "invalid raw transaction signature",
+    });
     expect(
       await bindings.DB.prepare(
         "SELECT COUNT(*) AS count FROM withdrawal_transactions WHERE withdrawal = ?",
@@ -588,6 +608,23 @@ describe("withdrawal API", () => {
       status: "complete",
       transaction: { hash: txHash, status: "confirmed", blockNumber: 100 },
     });
+    const completedAt = await bindings.DB.prepare(
+      "SELECT completed_at FROM withdrawal_intents WHERE id = ?",
+    )
+      .bind(withdrawal.id)
+      .first<{ completed_at: number }>();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime((completedAt!.completed_at + 60) * 1_000);
+      await reconcileWithdrawals(bindings);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      await bindings.DB.prepare("SELECT completed_at FROM withdrawal_intents WHERE id = ?")
+        .bind(withdrawal.id)
+        .first(),
+    ).toEqual(completedAt);
     await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
       .bind(withdrawal.id)
       .run();
@@ -862,6 +899,130 @@ describe("withdrawal API", () => {
       .bind(withdrawal.id)
       .run();
   });
+
+  it("reconciles the live withdrawal before a full page of replaced history", async () => {
+    const destination = "0x8888888888888888888888888888888888888888";
+    const created = await createWithdrawal(randomId("withdrawal-history"), {
+      externalId: "history-priority",
+      asset: "USDC",
+      amount: "1",
+      destinationAddress: destination,
+    });
+    const withdrawal = await created.json<{ id: string }>();
+    const proposal = await (
+      await api.fetch(
+        authorizedRequest(
+          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/proposal`,
+        ),
+      )
+    ).json<{ proposal: { to: `0x${string}`; data: Hex } }>();
+    const raw = await treasury.signTransaction({
+      type: "legacy",
+      chainId: 1337,
+      nonce: 40,
+      to: proposal.proposal.to,
+      value: 0n,
+      gas: 80_000n,
+      gasPrice: 1n,
+      data: proposal.proposal.data,
+    });
+    const txHash = keccak256(raw);
+    const transactionId = randomId("wtx");
+    await bindings.DB.batch([
+      bindings.DB.prepare(
+        "UPDATE withdrawal_intents SET status = 'submitted', updated_at = 2 WHERE id = ?",
+      ).bind(withdrawal.id),
+      bindings.DB.prepare(`INSERT INTO withdrawal_transactions
+        (id,withdrawal,chain,tx_hash,raw_tx,from_address,to_address,nonce,status,created_at,updated_at)
+        VALUES (?,?,'test',?,?,?, ?,40,'prepared',2,2)`).bind(
+        transactionId,
+        withdrawal.id,
+        txHash,
+        raw,
+        testTreasury,
+        testToken,
+      ),
+    ]);
+    await bindings.DB.batch(
+      Array.from({ length: 100 }, () =>
+        bindings.DB.prepare(`INSERT INTO withdrawal_transactions
+          (id,withdrawal,chain,tx_hash,raw_tx,from_address,to_address,nonce,status,created_at,updated_at)
+          VALUES (?,?,'test',?,?,?, ?,40,'replaced',1,1)`).bind(
+          randomId("wtx"),
+          withdrawal.id,
+          `0x${crypto.randomUUID().replaceAll("-", "").repeat(2)}`,
+          raw,
+          testTreasury,
+          testToken,
+        ),
+      ),
+    );
+    const blockHash = `0x${"b".repeat(64)}` as Hex;
+    let broadcasts = 0;
+    rpcResponder = async (request) => {
+      const body = JSON.parse(await request.text()) as {
+        id: number;
+        method: string;
+        params: unknown[];
+      };
+      let result: unknown;
+      if (body.method === "eth_chainId") result = "0x539";
+      else if (body.method === "eth_sendRawTransaction") {
+        broadcasts++;
+        result = txHash;
+      } else if (body.method === "eth_blockNumber") result = "0x33";
+      else if (body.method === "eth_getBlockByNumber") result = { hash: blockHash };
+      else if (body.method === "eth_getTransactionReceipt")
+        result =
+          body.params[0] === txHash
+            ? {
+                blockHash,
+                blockNumber: "0x32",
+                contractAddress: null,
+                cumulativeGasUsed: "0x10000",
+                effectiveGasPrice: "0x1",
+                from: testTreasury,
+                gasUsed: "0x10000",
+                logs: [
+                  {
+                    address: testToken,
+                    blockHash,
+                    blockNumber: "0x32",
+                    data: `0x${(1_000_000).toString(16).padStart(64, "0")}`,
+                    logIndex: "0x0",
+                    removed: false,
+                    topics: [
+                      "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                      `0x${"0".repeat(24)}${testTreasury.slice(2).toLowerCase()}`,
+                      `0x${"0".repeat(24)}${destination.slice(2).toLowerCase()}`,
+                    ],
+                    transactionHash: txHash,
+                    transactionIndex: "0x0",
+                  },
+                ],
+                logsBloom: `0x${"0".repeat(512)}`,
+                status: "0x1",
+                to: testToken,
+                transactionHash: txHash,
+                transactionIndex: "0x0",
+                type: "0x0",
+              }
+            : null;
+      else throw new Error(`unmocked withdrawal RPC method: ${body.method}`);
+      return Response.json({ jsonrpc: "2.0", id: body.id, result });
+    };
+
+    await reconcileWithdrawals(bindings);
+    expect(broadcasts).toBe(1);
+    expect(
+      await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
+        .bind(withdrawal.id)
+        .first(),
+    ).toEqual({ status: "complete" });
+    await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
+      .bind(withdrawal.id)
+      .run();
+  });
 });
 
 describe("swap API", () => {
@@ -898,6 +1059,151 @@ describe("swap API", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "deposit intent already received funds" });
     await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(deposit.id).run();
+  });
+
+  it("rotates idle swaps so a later funded swap reaches reconciliation", async () => {
+    const prefix = `fair-${crypto.randomUUID()}`;
+    const deposit = await (
+      await create(`${prefix}-target`, { amount: "1", metadata: {}, purpose: "swap" })
+    ).json<{ id: string }>();
+    const created = await api.fetch(
+      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${prefix}-target-swap`,
+        },
+        body: JSON.stringify({
+          depositIntentId: deposit.id,
+          outputChain: "test",
+          outputAsset: "ETH",
+          outputAmount: "0.25",
+          destinationAddress: "0x5555555555555555555555555555555555555555",
+          refundAddress: "0x4444444444444444444444444444444444444444",
+        }),
+      }),
+    );
+    const target = await created.json<{ id: string }>();
+    const now = unixNow();
+    await bindings.DB.batch([
+      bindings.DB.prepare(
+        "UPDATE deposit_intents SET received_units = expected_units, confirmed_units = expected_units, status = 'paid' WHERE id = ?",
+      ).bind(deposit.id),
+      bindings.DB.prepare("UPDATE swaps SET updated_at = 2 WHERE id = ?").bind(target.id),
+      bindings.DB.prepare(`INSERT INTO sweep_jobs
+        (id,deposit_intent,chain,observed_units,collected_units,remaining_units,status,next_attempt_at,
+         completed_at,created_at,updated_at)
+        VALUES (?,?,'test','1000000','1000000','0','complete',?,?,?,?)`).bind(
+        randomId("sweep"),
+        deposit.id,
+        now,
+        now,
+        now,
+        now,
+      ),
+    ]);
+    const idle = Array.from({ length: 100 }, (_, index) => {
+      const salt = `0x${(index + 10_000).toString(16).padStart(64, "0")}` as Hex;
+      return {
+        depositId: `pi_${prefix}_${index}`,
+        swapId: `swp_${prefix}_${index}`,
+        salt,
+        address: counterfactualAddress(testFactory, salt, testTreasury, testToken).address,
+      };
+    });
+    await bindings.DB.batch(
+      idle.map((row, index) =>
+        bindings.DB.prepare(`INSERT INTO deposit_intents
+          (id,idempotency_key,request_hash,kind,purpose,external_id,chain,chain_id,asset,
+           token_address,decimals,expected_amount,expected_units,treasury_address,deposit_address,
+           intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,
+           expires_at,metadata,created_at,updated_at)
+          VALUES (?,?,?,'payment','swap',?,'test',1337,'USDC',?,6,'1','1000000',?,?,?,?,?,1,2,
+            'pending',?,'{}',1,1)`).bind(
+          row.depositId,
+          `${prefix}-deposit-${index}`,
+          "a".repeat(64),
+          `${prefix}-idle-${index}`,
+          testToken,
+          testTreasury,
+          row.address,
+          row.salt,
+          testFactory,
+          counterfactualAddress(testFactory, row.salt, testTreasury, testToken).initCodeHash,
+          now + 3_600,
+        ),
+      ),
+    );
+    await bindings.DB.batch(
+      idle.map((row, index) =>
+        bindings.DB.prepare(`INSERT INTO swaps
+          (id,idempotency_key,request_hash,external_id,deposit_intent,output_chain,output_chain_id,
+           output_asset,output_token_address,output_decimals,output_source_address,
+           output_confirmations,output_max_gas_price_wei,output_amount,output_units,
+           destination_address,refund_address,refund_source_address,refund_confirmations,
+           refund_max_gas_price_wei,quote_expires_at,status,last_error,created_at,updated_at)
+          VALUES (?,?,?, ?,?,'test',1337,'ETH','',18,?,2,'1000000000','0.25',
+            '250000000000000000',?,?,?,2,'1000000000',?,'awaiting_input','',1,1)`).bind(
+          row.swapId,
+          `${prefix}-swap-${index}`,
+          "b".repeat(64),
+          `${prefix}-idle-${index}`,
+          row.depositId,
+          testTreasury,
+          "0x6666666666666666666666666666666666666666",
+          "0x7777777777777777777777777777777777777777",
+          testTreasury,
+          now + 3_600,
+        ),
+      ),
+    );
+
+    await reconcileSwaps(bindings);
+    expect(
+      await bindings.DB.prepare("SELECT withdrawal_intent FROM swaps WHERE id = ?")
+        .bind(target.id)
+        .first(),
+    ).toEqual({ withdrawal_intent: null });
+    await reconcileSwaps(bindings);
+    const result = await bindings.DB.prepare(
+      "SELECT status, withdrawal_intent FROM swaps WHERE id = ?",
+    )
+      .bind(target.id)
+      .first<{ status: string; withdrawal_intent: string }>();
+    expect(result?.status).toBe("awaiting_signature");
+    expect(result?.withdrawal_intent).toMatch(/^wd_/);
+
+    await bindings.DB.prepare(
+      "UPDATE withdrawal_intents SET status = 'complete', completed_at = ? WHERE id = ?",
+    )
+      .bind(now, result!.withdrawal_intent)
+      .run();
+    await reconcileSwaps(bindings);
+    const completedAt = await bindings.DB.prepare("SELECT completed_at FROM swaps WHERE id = ?")
+      .bind(target.id)
+      .first<{ completed_at: number }>();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime((completedAt!.completed_at + 60) * 1_000);
+      await reconcileSwaps(bindings);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      await bindings.DB.prepare("SELECT status, completed_at FROM swaps WHERE id = ?")
+        .bind(target.id)
+        .first(),
+    ).toEqual({ status: "complete", completed_at: completedAt!.completed_at });
+
+    await bindings.DB.batch([
+      bindings.DB.prepare("DELETE FROM swaps WHERE external_id LIKE ?").bind(`${prefix}%`),
+      bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?").bind(
+        result!.withdrawal_intent,
+      ),
+      bindings.DB.prepare("DELETE FROM deposit_intents WHERE external_id LIKE ?").bind(
+        `${prefix}%`,
+      ),
+    ]);
   });
 
   it("links one exact collected input to one output proposal under concurrent reconciliation", async () => {
@@ -1205,6 +1511,54 @@ describe("swap API", () => {
       depositIntentId: deposit.id,
     });
     await bindings.DB.prepare(
+      "UPDATE withdrawal_intents SET status = 'expired', expires_at = ? WHERE id = ?",
+    )
+      .bind(now - 1, refund!.refund_withdrawal)
+      .run();
+    await reconcileSwaps(bindings);
+    expect(
+      await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
+        .bind(refund!.refund_withdrawal)
+        .first(),
+    ).toEqual({ status: "awaiting_signature" });
+
+    const failedTransaction = randomId("wtx");
+    await bindings.DB.batch([
+      bindings.DB.prepare(`INSERT INTO withdrawal_transactions
+        (id,withdrawal,chain,tx_hash,raw_tx,from_address,to_address,nonce,fee_wei,status,
+         block_number,block_hash,last_error,created_at,updated_at)
+        VALUES (?,?,'test',?,'0x01',?,?,55,'100','failed',12,?,'transaction reverted',?,?)`).bind(
+        failedTransaction,
+        refund!.refund_withdrawal,
+        `0x${crypto.randomUUID().replaceAll("-", "").repeat(2)}`,
+        testTreasury,
+        testToken,
+        `0x${"9".repeat(64)}`,
+        now,
+        now,
+      ),
+      bindings.DB.prepare(`INSERT INTO withdrawal_nonce_reservations
+        (chain,from_address,nonce,withdrawal,created_at) VALUES ('test',?,55,?,?)`).bind(
+        testTreasury,
+        refund!.refund_withdrawal,
+        now,
+      ),
+      bindings.DB.prepare(
+        "UPDATE withdrawal_intents SET status = 'failed', last_error = 'transaction reverted' WHERE id = ?",
+      ).bind(refund!.refund_withdrawal),
+    ]);
+    await reconcileSwaps(bindings);
+    expect(
+      await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
+        .bind(refund!.refund_withdrawal)
+        .first(),
+    ).toEqual({ status: "awaiting_signature" });
+    expect(
+      await bindings.DB.prepare("SELECT 1 FROM withdrawal_nonce_reservations WHERE withdrawal = ?")
+        .bind(refund!.refund_withdrawal)
+        .first(),
+    ).toBeNull();
+    await bindings.DB.prepare(
       "UPDATE withdrawal_intents SET status = 'complete', completed_at = ? WHERE id = ?",
     )
       .bind(now, refund!.refund_withdrawal)
@@ -1213,6 +1567,21 @@ describe("swap API", () => {
     expect(
       await bindings.DB.prepare("SELECT status FROM swaps WHERE id = ?").bind(swap.id).first(),
     ).toEqual({ status: "refunded" });
+    const completedAt = await bindings.DB.prepare("SELECT completed_at FROM swaps WHERE id = ?")
+      .bind(swap.id)
+      .first<{ completed_at: number }>();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime((completedAt!.completed_at + 60) * 1_000);
+      await reconcileSwaps(bindings);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      await bindings.DB.prepare("SELECT completed_at FROM swaps WHERE id = ?")
+        .bind(swap.id)
+        .first(),
+    ).toEqual(completedAt);
     await bindings.DB.batch([
       bindings.DB.prepare(
         "UPDATE deposit_intents SET received_units = '500000', confirmed_units = '500000' WHERE id = ?",
@@ -1388,7 +1757,7 @@ describe("swap API", () => {
         swap.id,
       ),
       bindings.DB.prepare(
-        "UPDATE deposit_intents SET received_units = '1000000', confirmed_units = '1000000', status = 'paid' WHERE id = ?",
+        "UPDATE deposit_intents SET received_units = '0', confirmed_units = '0', status = 'expired' WHERE id = ?",
       ).bind(deposit.id),
       bindings.DB.prepare(`INSERT INTO deposit_transfers
         (id,deposit_intent,chain,tx_hash,event_index,asset,from_address,to_address,amount_units,
@@ -1751,6 +2120,7 @@ describe("analytics", () => {
     const now = unixNow();
     const intentId = randomId("pi");
     const jobId = randomId("swp");
+    const withdrawalId = randomId("wd");
     const fields = intentFields("96", "");
     const requested = "900719925474099300000";
     const received = "900719925474099300001";
@@ -1799,6 +2169,42 @@ describe("analytics", () => {
         now,
         now,
       ),
+      bindings.DB.prepare(`INSERT INTO withdrawal_intents
+        (id,idempotency_key,request_hash,purpose,external_id,chain,chain_id,asset,token_address,
+         decimals,source_address,destination_address,amount,amount_units,confirmations,
+         max_gas_price_wei,status,expires_at,created_at,updated_at)
+        VALUES (?,?,?,'withdrawal','fee-analytics','fee-analytics',31337,'ETH','',18,?,?,
+          '1','1',1,'100','failed',?,?,?)`).bind(
+        withdrawalId,
+        randomId("idem"),
+        "8".repeat(64),
+        testTreasury,
+        "0x8888888888888888888888888888888888888888",
+        now + 3_600,
+        now,
+        now,
+      ),
+      ...[
+        { status: "confirmed", fee: "10", block: 1 },
+        { status: "failed", fee: "20", block: 2 },
+      ].map((transaction, index) =>
+        bindings.DB.prepare(`INSERT INTO withdrawal_transactions
+          (id,withdrawal,chain,tx_hash,raw_tx,from_address,to_address,nonce,fee_wei,status,
+           block_number,block_hash,created_at,updated_at)
+          VALUES (?,?,'fee-analytics',?,'0x01',?,?,0,?,?,?, ?,?,?)`).bind(
+          randomId("wtx"),
+          withdrawalId,
+          `0x${(index + 1).toString(16).padStart(64, "0")}`,
+          testTreasury,
+          "0x8888888888888888888888888888888888888888",
+          transaction.fee,
+          transaction.status,
+          transaction.block,
+          `0x${(index + 10).toString(16).padStart(64, "0")}`,
+          now,
+          now,
+        ),
+      ),
     ]);
 
     const response = await api.fetch(
@@ -1808,6 +2214,7 @@ describe("analytics", () => {
     const body = await response.json<{
       assets: Array<Record<string, unknown>>;
       collectionFeesWei: Record<string, string>;
+      withdrawalFeesWei: Record<string, string>;
     }>();
     expect(body.assets.find((item) => item.chain === "analytics" && item.asset === "TOK")).toEqual({
       chain: "analytics",
@@ -1822,6 +2229,10 @@ describe("analytics", () => {
       expiredIntents: 1,
     });
     expect(body.collectionFeesWei.analytics).toBe("123");
+    expect(body.withdrawalFeesWei["fee-analytics"]).toBe("30");
+    await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
+      .bind(withdrawalId)
+      .run();
   });
 });
 
@@ -2382,6 +2793,55 @@ describe("confirmation and reorg state", () => {
           .first<{ count: number }>()
       )?.count,
     ).toBe(0);
+  });
+
+  it("collects every expired swap underpayment even below the generic token threshold", async () => {
+    const created = await create(randomId("tiny-swap-input"), {
+      amount: "1",
+      metadata: {},
+      purpose: "swap",
+    });
+    const deposit = await created.json<{ id: string }>();
+    const intent = await bindings.DB.prepare("SELECT * FROM deposit_intents WHERE id = ?")
+      .bind(deposit.id)
+      .first<IntentRow>();
+    const now = unixNow();
+    await bindings.DB.batch([
+      bindings.DB.prepare("UPDATE deposit_intents SET expires_at = ? WHERE id = ?").bind(
+        now - 300,
+        deposit.id,
+      ),
+      bindings.DB.prepare(`INSERT INTO deposit_transfers
+        (id,deposit_intent,chain,tx_hash,event_index,asset,from_address,to_address,amount_units,
+         block_number,block_hash,block_timestamp,canonical,created_at,updated_at)
+        VALUES (?,?,'test',?,0,'USDC',?,?, '1',10,?,?,1,?,?)`).bind(
+        randomId("transfer"),
+        deposit.id,
+        `0x${"5".repeat(64)}`,
+        "0x5555555555555555555555555555555555555555",
+        intent!.deposit_address,
+        `0x${"6".repeat(64)}`,
+        now - 400,
+        now,
+        now,
+      ),
+    ]);
+    const expired = { ...intent!, expires_at: now - 300 };
+    await recalculateChain(
+      bindings,
+      loadNetworks(bindings.NETWORKS_JSON).get("test")!,
+      [expired],
+      11,
+      new Set(),
+    );
+    expect(
+      await bindings.DB.prepare(
+        "SELECT status, observed_units FROM sweep_jobs WHERE deposit_intent = ?",
+      )
+        .bind(deposit.id)
+        .first(),
+    ).toEqual({ status: "queued", observed_units: "1" });
+    await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(deposit.id).run();
   });
 });
 

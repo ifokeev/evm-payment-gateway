@@ -327,9 +327,14 @@ async function submitTransaction(id: string, request: Request, env: ApiEnv): Pro
   ) {
     throw new WithdrawalHttpError(400, "invalid withdrawal transaction envelope");
   }
-  const from = await recoverTransactionAddress({
-    serializedTransaction: raw as TransactionSerialized,
-  });
+  let from: Address;
+  try {
+    from = await recoverTransactionAddress({
+      serializedTransaction: raw as TransactionSerialized,
+    });
+  } catch {
+    throw new WithdrawalHttpError(400, "invalid raw transaction signature");
+  }
   const expected = transactionFields(withdrawal);
   if (
     !isAddressEqual(from, withdrawal.source_address) ||
@@ -536,7 +541,11 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
      WHERE (w.status IN ('submitted', 'confirming') AND t.status IN ('prepared', 'submitted', 'replaced'))
         OR (w.status = 'complete' AND t.status = 'confirmed' AND w.completed_at >= ?)
         OR (w.status = 'failed' AND w.updated_at >= ?)
-     ORDER BY CASE WHEN w.status IN ('submitted', 'confirming') THEN 0 ELSE 1 END, t.updated_at
+     ORDER BY CASE
+       WHEN w.status IN ('submitted', 'confirming') AND t.status != 'replaced' THEN 0
+       WHEN w.status IN ('submitted', 'confirming') THEN 1
+       ELSE 2 END,
+       t.updated_at
      LIMIT 100`,
     now - 7 * 24 * 60 * 60,
     now - 7 * 24 * 60 * 60,
@@ -721,7 +730,8 @@ async function reconcileTransaction(
         fee_wei = ?, last_error = '', updated_at = ? WHERE id = ?`)
       .bind(Number(receipt.blockNumber), receipt.blockHash, fee, now, transaction.id),
     db
-      .prepare(`UPDATE withdrawal_intents SET status = 'complete', last_error = '', completed_at = ?, updated_at = ?
+      .prepare(`UPDATE withdrawal_intents SET status = 'complete', last_error = '',
+        completed_at = COALESCE(completed_at, ?), updated_at = ?
         WHERE id = ?`)
       .bind(now, now, withdrawal.id),
   ]);
