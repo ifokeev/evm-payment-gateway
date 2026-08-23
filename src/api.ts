@@ -30,16 +30,18 @@ import {
   unixNow,
 } from "./monitor";
 import { rpcTransport } from "./rpc";
+import { routeSwap } from "./swaps";
 import type {
   ApiEnv,
+  DepositTransferRow,
   IntentRow,
   NetworkConfig,
   PaymentStatus,
-  PaymentTransactionRow,
   SweepJob,
   SweepOutcome,
   SweepTransaction,
 } from "./types";
+import { routeWithdrawal } from "./withdrawals";
 
 const API_ROOT = "/api/payments/v1";
 const MAX_COLLECTION_GAS = 1_000_000n;
@@ -89,13 +91,17 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
 
   if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`)
     return createIntent(request, env);
+  const withdrawal = await routeWithdrawal(request, url, env, API_ROOT);
+  if (withdrawal) return withdrawal;
+  const swap = await routeSwap(request, url, env, API_ROOT);
+  if (swap) return swap;
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics/summary`)
     return json(await analyticsSummary(env));
   const match = url.pathname.match(
     /^\/api\/payments\/v1\/intents\/([A-Za-z0-9_-]+)(?:\/(transactions|sweep))?$/,
   );
   if (!match || request.method !== "GET") throw new HttpError(404, "not found");
-  const intent = await env.DB.prepare("SELECT * FROM payment_intents WHERE id = ?")
+  const intent = await env.DB.prepare("SELECT * FROM deposit_intents WHERE id = ?")
     .bind(match[1])
     .first<IntentRow>();
   if (!intent) throw new HttpError(404, "payment intent not found");
@@ -110,16 +116,46 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
 
 async function health(env: ApiEnv): Promise<Response> {
   const networks = loadNetworks(env.NETWORKS_JSON);
-  const states = await all<{ chain: string; last_scanned: number }>(
+  const states = await all<{ chain: string; last_scanned: number; updated_at: number }>(
     env.DB,
-    "SELECT chain, last_scanned FROM chain_states",
+    "SELECT chain, last_scanned, updated_at FROM chain_states",
   );
-  const scanned = new Map(states.map((state) => [state.chain, state.last_scanned]));
+  const scanned = new Map(states.map((state) => [state.chain, state]));
+  const [withdrawals, swaps, activeChainRows] = await Promise.all([
+    env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM withdrawal_intents WHERE status IN ('awaiting_signature','submitted','confirming')",
+    ).first<{ count: number }>(),
+    env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM swaps WHERE status NOT IN ('complete','expired','refunded','reorged')",
+    ).first<{ count: number }>(),
+    all<{ chain: string }>(
+      env.DB,
+      "SELECT DISTINCT chain FROM deposit_intents WHERE status IN ('pending','underpaid','confirming','reorged')",
+    ),
+  ]);
+  const staleChains = activeChainRows
+    .map((row) => row.chain)
+    .filter((chain) => {
+      const state = scanned.get(chain);
+      return !state || unixNow() - state.updated_at > 300;
+    });
   return json({
-    ok: true,
+    ok: staleChains.length === 0,
     time: new Date().toISOString(),
+    activeWithdrawals: withdrawals?.count ?? 0,
+    activeSwaps: swaps?.count ?? 0,
+    staleChains,
     networks: Object.fromEntries(
-      [...networks.keys()].map((name) => [name, { lastScannedBlock: scanned.get(name) ?? null }]),
+      [...networks.keys()].map((name) => {
+        const state = scanned.get(name);
+        return [
+          name,
+          {
+            lastScannedBlock: state?.last_scanned ?? null,
+            lastScanAt: state ? new Date(state.updated_at * 1_000).toISOString() : null,
+          },
+        ];
+      }),
     ),
   });
 }
@@ -172,7 +208,7 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     }>(
       env.DB,
       `SELECT id, chain, asset, status, expected_units, received_units, confirmed_units, expires_at
-      FROM payment_intents WHERE id > ? ORDER BY id LIMIT 1000`,
+      FROM deposit_intents WHERE id > ? ORDER BY id LIMIT 1000`,
       cursor,
     );
     for (const row of rows) {
@@ -201,7 +237,7 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     }>(
       env.DB,
       `SELECT j.id, i.chain, i.asset, j.collected_units FROM sweep_jobs j
-      JOIN payment_intents i ON i.id = j.payment_intent WHERE j.id > ? ORDER BY j.id LIMIT 1000`,
+      JOIN deposit_intents i ON i.id = j.deposit_intent WHERE j.id > ? ORDER BY j.id LIMIT 1000`,
       cursor,
     );
     for (const row of rows) bucket(row.chain, row.asset).collected += BigInt(row.collected_units);
@@ -223,10 +259,27 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     cursor = rows[rows.length - 1].id;
   }
 
-  const webhookRows = await all<{ type: string; status: string; count: number }>(
-    env.DB,
-    "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
-  );
+  const [webhookRows, withdrawalRows, swapRows, withdrawalFeeRows] = await Promise.all([
+    all<{ type: string; status: string; count: number }>(
+      env.DB,
+      "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
+    ),
+    all<{ status: string; count: number }>(
+      env.DB,
+      "SELECT status, COUNT(*) AS count FROM withdrawal_intents GROUP BY status",
+    ),
+    all<{ status: string; count: number }>(
+      env.DB,
+      "SELECT status, COUNT(*) AS count FROM swaps GROUP BY status",
+    ),
+    all<{ chain: string; fee_wei: string }>(
+      env.DB,
+      "SELECT chain, fee_wei FROM withdrawal_transactions WHERE status = 'confirmed'",
+    ),
+  ]);
+  const withdrawalFees: Record<string, bigint> = {};
+  for (const row of withdrawalFeeRows)
+    withdrawalFees[row.chain] = (withdrawalFees[row.chain] ?? 0n) + BigInt(row.fee_wei);
   return {
     generatedAt: new Date().toISOString(),
     assets: [...buckets.values()]
@@ -248,6 +301,11 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     collectionFeesWei: Object.fromEntries(
       Object.entries(feesByChain).map(([chain, amount]) => [chain, amount.toString()]),
     ),
+    withdrawalFeesWei: Object.fromEntries(
+      Object.entries(withdrawalFees).map(([chain, amount]) => [chain, amount.toString()]),
+    ),
+    withdrawals: Object.fromEntries(withdrawalRows.map((row) => [row.status, row.count])),
+    swaps: Object.fromEntries(swapRows.map((row) => [row.status, row.count])),
     webhooks: webhookRows,
   };
 }
@@ -260,6 +318,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     throw new HttpError(400, "Idempotency-Key is required and must be at most 200 characters");
   const body = await readObject(request, [
     "kind",
+    "purpose",
     "externalId",
     "chain",
     "asset",
@@ -268,12 +327,15 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     "metadata",
   ]);
   const kind = requiredString(body, "kind").trim();
+  const purpose = requiredString(body, "purpose").trim();
   const externalId = requiredString(body, "externalId").trim();
   const chainName = requiredString(body, "chain").trim();
   const asset = requiredString(body, "asset").trim().toUpperCase();
   const rawAmount = requiredString(body, "amount");
   if (kind !== "payment" && kind !== "invoice")
     throw new HttpError(400, "kind must be payment or invoice");
+  if (purpose !== "checkout" && purpose !== "account_top_up" && purpose !== "swap")
+    throw new HttpError(400, "purpose must be checkout, account_top_up, or swap");
   if (!externalId || externalId.length > 200)
     throw new HttpError(400, "externalId is required and must be at most 200 characters");
   if (rawAmount.trim().length > 100)
@@ -319,6 +381,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     throw new HttpError(400, "metadata is too large");
   const normalized = {
     kind,
+    purpose,
     externalId,
     chain: chainName,
     asset,
@@ -327,7 +390,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     metadata,
   };
   const requestHash = await sha256(stableStringify(normalized));
-  const existing = await env.DB.prepare("SELECT * FROM payment_intents WHERE idempotency_key = ?")
+  const existing = await env.DB.prepare("SELECT * FROM deposit_intents WHERE idempotency_key = ?")
     .bind(idempotencyKey)
     .first<IntentRow>();
   if (existing) {
@@ -366,6 +429,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     idempotency_key: idempotencyKey,
     request_hash: requestHash,
     kind,
+    purpose,
     external_id: externalId,
     chain: chainName,
     chain_id: network.chainId,
@@ -376,6 +440,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     expected_units: parsedAmount.units.toString(),
     received_units: "0",
     confirmed_units: "0",
+    treasury_address: network.treasuryAddress,
     deposit_address: depositAddress,
     intent_salt: intentSalt,
     factory_address: network.factoryAddress,
@@ -389,17 +454,18 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     updated_at: now,
   };
   try {
-    await env.DB.prepare(`INSERT INTO payment_intents
-      (id, idempotency_key, request_hash, kind, external_id, chain, chain_id, asset, token_address, decimals,
-       expected_amount, expected_units, received_units, confirmed_units, deposit_address, intent_salt,
+    await env.DB.prepare(`INSERT INTO deposit_intents
+      (id, idempotency_key, request_hash, kind, purpose, external_id, chain, chain_id, asset, token_address, decimals,
+       expected_amount, expected_units, received_units, confirmed_units, treasury_address, deposit_address, intent_salt,
        factory_address, forwarder_init_code_hash,
        start_block, confirmations, status, expires_at, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
       .bind(
         intent.id,
         idempotencyKey,
         requestHash,
         kind,
+        purpose,
         externalId,
         chainName,
         network.chainId,
@@ -408,6 +474,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
         intent.decimals,
         intent.expected_amount,
         intent.expected_units,
+        intent.treasury_address,
         depositAddress,
         intent.intent_salt,
         intent.factory_address,
@@ -421,7 +488,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
       )
       .run();
   } catch (error) {
-    const winner = await env.DB.prepare("SELECT * FROM payment_intents WHERE idempotency_key = ?")
+    const winner = await env.DB.prepare("SELECT * FROM deposit_intents WHERE idempotency_key = ?")
       .bind(idempotencyKey)
       .first<IntentRow>();
     if (!winner) throw error;
@@ -464,6 +531,7 @@ async function intentResponse(
   return {
     id: intent.id,
     kind: intent.kind,
+    purpose: intent.purpose,
     externalId: intent.external_id,
     chain: intent.chain,
     chainId: intent.chain_id,
@@ -495,9 +563,9 @@ async function transactionResponses(
   intent: IntentRow,
   network: NetworkConfig,
 ): Promise<Record<string, unknown>[]> {
-  const transactions = await all<PaymentTransactionRow>(
+  const transactions = await all<DepositTransferRow>(
     env.DB,
-    "SELECT * FROM payment_transactions WHERE payment_intent = ? ORDER BY block_number, event_index LIMIT 10000",
+    "SELECT * FROM deposit_transfers WHERE deposit_intent = ? ORDER BY block_number, event_index LIMIT 10000",
     intent.id,
   );
   const state = await env.DB.prepare("SELECT last_scanned FROM chain_states WHERE chain = ?")
@@ -534,7 +602,7 @@ async function publicSweepResponse(
   intent: IntentRow,
   network: NetworkConfig,
 ): Promise<Record<string, unknown>> {
-  const job = await env.DB.prepare("SELECT * FROM sweep_jobs WHERE payment_intent = ?")
+  const job = await env.DB.prepare("SELECT * FROM sweep_jobs WHERE deposit_intent = ?")
     .bind(intent.id)
     .first<{
       id: string;
@@ -569,39 +637,69 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
         .bind(owner, now + 300, now, jobId, now, now, owner)
         .first<{
           id: string;
-          payment_intent: string;
+          deposit_intent: string;
           chain: string;
           observed_units: string;
           status: string;
           attempts: number;
         }>();
     if (!job) return null;
-    const intent = await this.env.DB.prepare("SELECT * FROM payment_intents WHERE id = ?")
-      .bind(job.payment_intent)
-      .first<IntentRow>();
-    if (!intent) throw new Error("payment intent is missing");
-    const network = loadNetworks(this.env.NETWORKS_JSON).get(job.chain);
-    if (!network) throw new Error(`network ${job.chain} is not configured`);
-    return {
-      id: job.id,
-      chain: job.chain,
-      chainId: network.chainId,
-      asset: intent.asset,
-      tokenAddress: intent.token_address,
-      depositAddress: intent.deposit_address,
-      intentSalt: intent.intent_salt,
-      factoryAddress: intent.factory_address,
-      factoryCodeHash: network.factoryCodeHash,
-      forwarderInitCodeHash: intent.forwarder_init_code_hash,
-      relayerAddress: network.relayerAddress,
-      treasuryAddress: network.treasuryAddress,
-      confirmations: network.confirmations,
-      maxGasPriceWei: network.maxGasPriceWei.toString(),
-      observedUnits: job.observed_units,
-      status: job.status,
-      attempts: job.attempts,
-      transactions: await sweepTransactions(this.env.DB, job.id, network, true),
-    };
+    try {
+      const intent = await this.env.DB.prepare("SELECT * FROM deposit_intents WHERE id = ?")
+        .bind(job.deposit_intent)
+        .first<IntentRow>();
+      if (!intent) throw new Error("deposit intent is missing");
+      const network = loadNetworks(this.env.NETWORKS_JSON).get(job.chain);
+      if (!network) throw new Error(`network ${job.chain} is not configured`);
+      const treasury = intent.treasury_address || network.treasuryAddress;
+      const expected = counterfactualAddress(
+        intent.factory_address,
+        intent.intent_salt,
+        treasury,
+        intent.token_address,
+      );
+      if (
+        !isAddressEqual(expected.address, intent.deposit_address) ||
+        expected.initCodeHash.toLowerCase() !== intent.forwarder_init_code_hash.toLowerCase()
+      ) {
+        throw new Error(
+          "historical deposit treasury is unknown; backfill treasury_address before collection",
+        );
+      }
+      if (!intent.treasury_address) {
+        await this.env.DB.prepare(
+          "UPDATE deposit_intents SET treasury_address = ?, updated_at = ? WHERE id = ? AND treasury_address = ''",
+        )
+          .bind(treasury, unixNow(), intent.id)
+          .run();
+      }
+      return {
+        id: job.id,
+        chain: job.chain,
+        chainId: network.chainId,
+        asset: intent.asset,
+        tokenAddress: intent.token_address,
+        depositAddress: intent.deposit_address,
+        intentSalt: intent.intent_salt,
+        factoryAddress: intent.factory_address,
+        factoryCodeHash: network.factoryCodeHash,
+        forwarderInitCodeHash: intent.forwarder_init_code_hash,
+        relayerAddress: network.relayerAddress,
+        treasuryAddress: treasury,
+        confirmations: network.confirmations,
+        maxGasPriceWei: network.maxGasPriceWei.toString(),
+        observedUnits: job.observed_units,
+        status: job.status,
+        attempts: job.attempts,
+        transactions: await sweepTransactions(this.env.DB, job.id, network, true),
+      };
+    } catch (error) {
+      await this.env.DB.prepare(`UPDATE sweep_jobs SET status = 'queued', lock_owner = '',
+        locked_until = 0, updated_at = ? WHERE id = ? AND lock_owner = ?`)
+        .bind(unixNow(), job.id, owner)
+        .run();
+      throw error;
+    }
   }
 
   async registerSweepTransaction(
@@ -648,17 +746,14 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     });
     const data = transaction.data ?? "0x";
     const value = transaction.value ?? 0n;
+    const treasury = locked.treasury_address || network.treasuryAddress;
     const expected = counterfactualAddress(
       network.factoryAddress,
       locked.intent_salt,
-      network.treasuryAddress,
+      treasury,
       locked.token_address,
     );
-    const canonicalData = collectionCall(
-      locked.intent_salt,
-      network.treasuryAddress,
-      locked.token_address,
-    );
+    const canonicalData = collectionCall(locked.intent_salt, treasury, locked.token_address);
     if (
       !isAddressEqual(from, network.relayerAddress) ||
       !isAddressEqual(transaction.to, network.factoryAddress) ||
@@ -786,18 +881,19 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     if (remaining < 0n) throw new Error("remainingUnits must be a non-negative integer");
     const now = unixNow();
     const job =
-      await this.env.DB.prepare(`SELECT j.attempts, j.payment_intent, j.observed_units, j.collected_units,
-      i.external_id, i.kind, i.chain, i.chain_id, i.asset, i.expected_amount, i.expected_units,
+      await this.env.DB.prepare(`SELECT j.attempts, j.deposit_intent, j.observed_units, j.collected_units,
+      i.external_id, i.kind, i.purpose, i.chain, i.chain_id, i.asset, i.expected_amount, i.expected_units,
       i.deposit_address, i.status AS payment_status, i.expires_at
-      FROM sweep_jobs j JOIN payment_intents i ON i.id = j.payment_intent WHERE j.id = ?`)
+      FROM sweep_jobs j JOIN deposit_intents i ON i.id = j.deposit_intent WHERE j.id = ?`)
         .bind(jobId)
         .first<{
           attempts: number;
-          payment_intent: string;
+          deposit_intent: string;
           observed_units: string;
           collected_units: string;
           external_id: string;
           kind: IntentRow["kind"];
+          purpose: IntentRow["purpose"];
           chain: string;
           chain_id: number;
           asset: string;
@@ -860,9 +956,10 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
         createdAt: new Date(now * 1_000).toISOString(),
         data: {
           paymentIntent: {
-            id: job.payment_intent,
+            id: job.deposit_intent,
             externalId: job.external_id,
             kind: job.kind,
+            purpose: job.purpose,
             chain: job.chain,
             chainId: job.chain_id,
             asset: job.asset,
@@ -880,11 +977,11 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       });
       statements.push(
         this.env.DB.prepare(`INSERT INTO webhook_events
-        (event_id, type, payment_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
+        (event_id, type, deposit_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
         SELECT ?, 'payment.recovered', ?, ?, 'pending', 0, ?, ?, ? FROM sweep_jobs
         WHERE id = ? AND status = 'processing' AND lock_owner = ?`).bind(
           eventId,
-          job.payment_intent,
+          job.deposit_intent,
           body,
           now,
           now,
@@ -906,24 +1003,26 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
   ): Promise<{
     id: string;
     chain: string;
-    payment_intent: string;
+    deposit_intent: string;
     token_address: Address | "";
+    treasury_address: Address | "";
     deposit_address: Address;
     intent_salt: Hex;
     factory_address: Address;
     forwarder_init_code_hash: Hex;
   }> {
     const row =
-      await this.env.DB.prepare(`SELECT j.id, j.chain, j.payment_intent, i.token_address, i.deposit_address,
+      await this.env.DB.prepare(`SELECT j.id, j.chain, j.deposit_intent, i.token_address, i.treasury_address, i.deposit_address,
         i.intent_salt, i.factory_address, i.forwarder_init_code_hash
-      FROM sweep_jobs j JOIN payment_intents i ON i.id = j.payment_intent
+      FROM sweep_jobs j JOIN deposit_intents i ON i.id = j.deposit_intent
       WHERE j.id = ? AND j.status = 'processing' AND j.lock_owner = ? AND j.locked_until >= ?`)
         .bind(jobId, owner, unixNow())
         .first<{
           id: string;
           chain: string;
-          payment_intent: string;
+          deposit_intent: string;
           token_address: Address | "";
+          treasury_address: Address | "";
           deposit_address: Address;
           intent_salt: Hex;
           factory_address: Address;

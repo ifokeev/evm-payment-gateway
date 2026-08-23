@@ -42,7 +42,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -192,6 +193,39 @@ a {
   flex-direction: column;
 }
 
+.flow-tabs {
+  width: fit-content;
+  margin-bottom: 34px;
+  padding: 4px;
+  border: 1px solid var(--left-border);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 4px;
+  background: var(--left-surface);
+}
+
+.flow-tab {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--left-muted);
+  font-size: 11px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.flow-tab[aria-selected="true"] {
+  background: var(--left-text);
+  color: var(--left-surface);
+}
+
+.flow-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 h1,
 h2,
 h3,
@@ -208,6 +242,13 @@ h1 {
 
 h1 span {
   display: block;
+}
+
+.flow-tab span {
+  margin-left: 4px;
+  color: var(--accent);
+  font-size: 8px;
+  text-transform: uppercase;
 }
 
 .intro-copy {
@@ -285,6 +326,12 @@ input {
   padding: 0 76px 0 16px;
   font-size: 17px;
   font-variant-numeric: tabular-nums;
+}
+
+#destination-address {
+  padding-inline: 16px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
 }
 
 input::placeholder {
@@ -516,7 +563,8 @@ button:disabled {
 
 .empty-state,
 .loading-state,
-#intent-state {
+#intent-state,
+#withdrawal-state {
   width: 100%;
   min-height: calc(100dvh - 265px);
 }
@@ -643,6 +691,11 @@ button:disabled {
   flex-direction: column;
 }
 
+#withdrawal-state {
+  display: flex;
+  flex-direction: column;
+}
+
 .intent-header {
   margin-bottom: 24px;
   display: flex;
@@ -672,11 +725,13 @@ button:disabled {
   flex: none;
 }
 
-.intent-header[data-status="paid"] .status-orbit {
+.intent-header[data-status="paid"] .status-orbit,
+.intent-header[data-status="complete"] .status-orbit {
   border: 2px solid var(--success);
 }
 
-.intent-header[data-status="paid"] .status-orbit::after {
+.intent-header[data-status="paid"] .status-orbit::after,
+.intent-header[data-status="complete"] .status-orbit::after {
   content: "";
   position: absolute;
   top: 7px;
@@ -737,6 +792,113 @@ button:disabled {
   display: grid;
   gap: 28px;
   padding-top: 12px;
+}
+
+.withdrawal-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(300px, 1.3fr);
+  gap: 36px;
+  align-items: end;
+}
+
+.route-grid,
+.proposal-grid {
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.route-grid dt,
+.proposal-grid dt,
+.signer-help {
+  color: var(--right-muted);
+  font-size: 10px;
+}
+
+.route-grid dd,
+.proposal-grid dd {
+  min-width: 0;
+  margin: 5px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.signer-panel {
+  margin-top: 28px;
+  padding: 20px;
+  border: 1px solid var(--right-border);
+  border-radius: var(--radius);
+  background: var(--right-surface-strong);
+}
+
+.signer-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.signer-panel h3,
+.signer-panel p {
+  margin: 0;
+}
+
+.signer-panel h3 {
+  font-size: 15px;
+}
+
+.signer-panel header p {
+  max-width: 62ch;
+  margin-top: 6px;
+  color: var(--right-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.proposal-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--right-border);
+}
+
+.proposal-data {
+  grid-column: 1 / -1;
+}
+
+.signed-transaction-form {
+  margin-top: 22px;
+  display: grid;
+  gap: 9px;
+}
+
+.signed-transaction-form label {
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.signed-transaction-form textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid var(--right-border);
+  border-radius: var(--radius);
+  outline: none;
+  resize: vertical;
+  background: var(--right-bg);
+  color: var(--right-text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.signed-transaction-form textarea:focus {
+  outline: 3px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: 2px;
+}
+
+.signed-transaction-form .primary-button {
+  min-height: 52px;
 }
 
 .amount-due {
@@ -1090,6 +1252,10 @@ button:disabled {
   display: none;
 }
 
+#withdrawal-state[hidden] {
+  display: none;
+}
+
 @media (min-width: 861px) and (max-height: 900px) {
   .intro {
     padding-block: 36px;
@@ -1158,7 +1324,8 @@ button:disabled {
 
   .empty-state,
   .loading-state,
-  #intent-state {
+  #intent-state,
+  #withdrawal-state {
     min-height: 660px;
   }
 }
@@ -1257,7 +1424,8 @@ button:disabled {
   }
 
   .loading-payment,
-  .payment-content {
+  .payment-content,
+  .withdrawal-summary {
     grid-template-columns: 1fr;
   }
 
@@ -1273,6 +1441,19 @@ button:disabled {
 
   .address-actions {
     grid-template-columns: 1fr;
+  }
+
+  .signer-panel > header,
+  .proposal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .signer-panel > header {
+    flex-direction: column;
+  }
+
+  .proposal-data {
+    grid-column: auto;
   }
 
   .activity-section {

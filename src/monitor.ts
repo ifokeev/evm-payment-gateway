@@ -1,13 +1,9 @@
 import { type Address, createPublicClient, getAddress, type Hex, parseAbiItem } from "viem";
 import { deriveStatus, eligibleForSweep, intSetting, loadNetworks } from "./domain";
 import { rpcTransport } from "./rpc";
-import type {
-  ApiEnv,
-  IntentRow,
-  NetworkConfig,
-  PaymentTransactionRow,
-  SweepMessage,
-} from "./types";
+import { reconcileSwaps } from "./swaps";
+import type { ApiEnv, DepositTransferRow, IntentRow, NetworkConfig, SweepMessage } from "./types";
+import { reconcileWithdrawals, rewindWithdrawals } from "./withdrawals";
 
 const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
@@ -40,6 +36,8 @@ export async function runScheduled(env: ApiEnv): Promise<void> {
     ["intent expiry", () => expirePendingIntents(env.DB)],
     ["webhook delivery", () => deliverWebhooks(env)],
     ["sweep dispatch", () => dispatchSweeps(env)],
+    ["withdrawal reconciliation", () => reconcileWithdrawals(env)],
+    ["swap reconciliation", () => reconcileSwaps(env)],
   ] as const) {
     try {
       await task();
@@ -58,13 +56,13 @@ async function scheduledScanChains(
   const rows = await all<{ chain: string }>(
     env.DB,
     `SELECT DISTINCT i.chain
-       FROM payment_intents i
+       FROM deposit_intents i
        LEFT JOIN chain_states s ON s.chain = i.chain
       WHERE ? = 1
          OR i.status IN ('pending', 'underpaid', 'confirming', 'reorged')
          OR (i.status = 'paid' AND EXISTS (
-              SELECT 1 FROM payment_transactions t
-               WHERE t.payment_intent = i.id AND t.canonical = 1
+              SELECT 1 FROM deposit_transfers t
+               WHERE t.deposit_intent = i.id AND t.canonical = 1
                  AND (s.last_scanned IS NULL OR t.block_number >= s.last_scanned - ?)
             ))
       ORDER BY i.chain`,
@@ -77,7 +75,7 @@ async function scheduledScanChains(
 export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<void> {
   const intents = await all<IntentRow>(
     env.DB,
-    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY created_at, id",
+    "SELECT * FROM deposit_intents WHERE chain = ? ORDER BY created_at, id",
     network.name,
   );
   if (!intents.length) return;
@@ -138,6 +136,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
     const tokenDepositAddresses = intents
       .filter((intent) => intent.token_address)
       .map((intent) => getAddress(intent.deposit_address));
+    // ponytail: this list retains historical token addresses for late-fund recovery; use an indexed provider when RPC topic limits become measurable.
     const start = Math.max(0, earliest, last < 0 ? earliest : last);
     // ponytail: native blocks are CPU-heavy; token logs can safely cover a much larger gap.
     const target = Math.min(latest, start + (nativeAddresses.size ? 39 : 4_999));
@@ -306,8 +305,8 @@ async function rewindIfNeeded(
   const affected = await all<{ id: string }>(
     env.DB,
     `
-    SELECT DISTINCT i.id FROM payment_intents i
-    JOIN payment_transactions t ON t.payment_intent = i.id
+    SELECT DISTINCT i.id FROM deposit_intents i
+    JOIN deposit_transfers t ON t.deposit_intent = i.id
     WHERE i.chain = ? AND i.status = 'paid' AND t.canonical = 1 AND t.block_number >= ?
   `,
     network.name,
@@ -315,9 +314,10 @@ async function rewindIfNeeded(
   );
   for (const row of affected) reorged.add(row.id);
   await rewindCollections(env.DB, network.name, fromBlock);
+  await rewindWithdrawals(env.DB, network.name, fromBlock);
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE payment_transactions SET canonical = 0, updated_at = ? WHERE chain = ? AND block_number >= ? AND canonical = 1",
+      "UPDATE deposit_transfers SET canonical = 0, updated_at = ? WHERE chain = ? AND block_number >= ? AND canonical = 1",
     ).bind(unixNow(), network.name, fromBlock),
     env.DB.prepare("DELETE FROM chain_blocks WHERE chain = ? AND block_number >= ?").bind(
       network.name,
@@ -395,10 +395,10 @@ async function saveBlock(
       .bind(chain, Number(block.number), block.hash, block.parentHash, Number(block.timestamp)),
     ...payments.map((payment) =>
       db
-        .prepare(`INSERT INTO payment_transactions
-      (id, payment_intent, chain, tx_hash, event_index, asset, from_address, to_address, amount_units, block_number, block_hash, block_timestamp, canonical, created_at, updated_at)
+        .prepare(`INSERT INTO deposit_transfers
+      (id, deposit_intent, chain, tx_hash, event_index, asset, from_address, to_address, amount_units, block_number, block_hash, block_timestamp, canonical, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-      ON CONFLICT(chain, tx_hash, event_index) DO UPDATE SET payment_intent = excluded.payment_intent,
+      ON CONFLICT(chain, tx_hash, event_index) DO UPDATE SET deposit_intent = excluded.deposit_intent,
       asset = excluded.asset, from_address = excluded.from_address, to_address = excluded.to_address,
       amount_units = excluded.amount_units, block_number = excluded.block_number, block_hash = excluded.block_hash,
       block_timestamp = excluded.block_timestamp, canonical = 1, updated_at = excluded.updated_at`)
@@ -436,28 +436,28 @@ export async function recalculateChain(
   head: number,
   reorged: Set<string>,
 ): Promise<void> {
-  const transactions = await all<PaymentTransactionRow>(
+  const transactions = await all<DepositTransferRow>(
     env.DB,
-    "SELECT * FROM payment_transactions WHERE chain = ? ORDER BY block_number, event_index",
+    "SELECT * FROM deposit_transfers WHERE chain = ? ORDER BY block_number, event_index",
     network.name,
   );
-  const byIntent = new Map<string, PaymentTransactionRow[]>();
+  const byIntent = new Map<string, DepositTransferRow[]>();
   for (const transaction of transactions) {
-    const list = byIntent.get(transaction.payment_intent) ?? [];
+    const list = byIntent.get(transaction.deposit_intent) ?? [];
     list.push(transaction);
-    byIntent.set(transaction.payment_intent, list);
+    byIntent.set(transaction.deposit_intent, list);
   }
   const jobs = await all<{
     id: string;
-    payment_intent: string;
+    deposit_intent: string;
     observed_units: string;
     status: string;
   }>(
     env.DB,
-    "SELECT id, payment_intent, observed_units, status FROM sweep_jobs WHERE chain = ?",
+    "SELECT id, deposit_intent, observed_units, status FROM sweep_jobs WHERE chain = ?",
     network.name,
   );
-  const jobsByIntent = new Map(jobs.map((job) => [job.payment_intent, job]));
+  const jobsByIntent = new Map(jobs.map((job) => [job.deposit_intent, job]));
   const grace = intSetting(env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
   const minTokenBps = intSetting(
     env.SWEEPER_MIN_TOKEN_PAYMENT_BPS,
@@ -525,7 +525,7 @@ export async function expirePendingIntents(db: D1Database): Promise<void> {
   const now = unixNow();
   await db
     .prepare(
-      "UPDATE payment_intents SET status = 'expired', updated_at = ? WHERE status = 'pending' AND received_units = '0' AND expires_at < ?",
+      "UPDATE deposit_intents SET status = 'expired', updated_at = ? WHERE status = 'pending' AND received_units = '0' AND expires_at < ?",
     )
     .bind(now, now)
     .run();
@@ -552,7 +552,7 @@ async function updatePayment(
     statements.push(
       db
         .prepare(
-          `UPDATE payment_intents SET received_units = ?, confirmed_units = ?, status = ?, updated_at = ? WHERE id = ?`,
+          `UPDATE deposit_intents SET received_units = ?, confirmed_units = ?, status = ?, updated_at = ? WHERE id = ?`,
         )
         .bind(received.toString(), confirmed.toString(), status, now, intent.id),
     );
@@ -561,7 +561,7 @@ async function updatePayment(
     statements.push(
       db
         .prepare(`INSERT INTO sweep_jobs
-      (id, payment_intent, chain, observed_units, remaining_units, status, attempts, next_attempt_at, created_at, updated_at)
+      (id, deposit_intent, chain, observed_units, remaining_units, status, attempts, next_attempt_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, '0', 'queued', 0, ?, ?, ?)`)
         .bind(randomId("swp"), intent.id, intent.chain, sweepUnits.toString(), now, now, now),
     );
@@ -609,6 +609,7 @@ async function updatePayment(
           id: intent.id,
           externalId: intent.external_id,
           kind: intent.kind,
+          purpose: intent.purpose,
           chain: intent.chain,
           chainId: intent.chain_id,
           asset: intent.asset,
@@ -624,7 +625,7 @@ async function updatePayment(
     statements.push(
       db
         .prepare(`INSERT INTO webhook_events
-      (event_id, type, payment_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
+      (event_id, type, deposit_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`)
         .bind(eventId, eventType, intent.id, body, now, now, now),
     );

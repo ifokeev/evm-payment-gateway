@@ -71,6 +71,16 @@ describe("payment domain", () => {
   });
 
   it("isolates the relayer key and validates contract identities", () => {
+    const withdrawalSourceAddress = "0x8888888888888888888888888888888888888888";
+    expect(
+      loadNetworks(JSON.stringify([{ ...base, withdrawalSourceAddress }])).get(base.name)
+        ?.withdrawalSourceAddress,
+    ).toBe(withdrawalSourceAddress);
+    expect(() =>
+      loadNetworks(
+        JSON.stringify([{ ...base, withdrawalSourceAddress: base.factoryAddress, tokens: {} }]),
+      ),
+    ).toThrow("must differ");
     expect(() =>
       loadNetworks(
         JSON.stringify([

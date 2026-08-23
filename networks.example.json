@@ -4,6 +4,7 @@
     "chainId": 1,
     "rpcUrls": ["https://ethereum-primary-rpc.example", "https://ethereum-fallback-rpc.example"],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
+    "withdrawalSourceAddress": "0x4444444444444444444444444444444444444444",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "relayerAddress": "0x3333333333333333333333333333333333333333",
@@ -24,6 +25,7 @@
       "https://ethereum-sepolia-fallback-rpc.example"
     ],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
+    "withdrawalSourceAddress": "0x4444444444444444444444444444444444444444",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "relayerAddress": "0x3333333333333333333333333333333333333333",
@@ -40,6 +42,7 @@
     "chainId": 8453,
     "rpcUrls": ["https://base-primary-rpc.example", "https://base-fallback-rpc.example"],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
+    "withdrawalSourceAddress": "0x4444444444444444444444444444444444444444",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "relayerAddress": "0x3333333333333333333333333333333333333333",
@@ -59,6 +62,7 @@
       "https://base-sepolia-fallback-rpc.example"
     ],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
+    "withdrawalSourceAddress": "0x4444444444444444444444444444444444444444",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "relayerAddress": "0x3333333333333333333333333333333333333333",
@@ -75,6 +79,7 @@
     "chainId": 56,
     "rpcUrls": ["https://bnb-primary-rpc.example", "https://bnb-fallback-rpc.example"],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
+    "withdrawalSourceAddress": "0x4444444444444444444444444444444444444444",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "relayerAddress": "0x3333333333333333333333333333333333333333",
@@ -94,6 +99,7 @@
       "https://bnb-testnet-fallback-rpc.example"
     ],
     "treasuryAddress": "0x1111111111111111111111111111111111111111",
+    "withdrawalSourceAddress": "0x4444444444444444444444444444444444444444",
     "factoryAddress": "0x2222222222222222222222222222222222222222",
     "factoryCodeHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "relayerAddress": "0x3333333333333333333333333333333333333333",

@@ -1,10 +1,15 @@
 import { paymentAction, walletPayment } from "./wallet.js";
 
 const form = document.querySelector("#payment-form");
+const flowTabs = document.querySelectorAll("[data-flow]");
 const network = document.querySelector("#network");
 const asset = document.querySelector("#asset");
 const purpose = document.querySelector("#purpose");
+const purposeField = document.querySelector("#purpose-field");
 const purposeHelp = document.querySelector("#purpose-help");
+const destinationField = document.querySelector("#destination-field");
+const destinationAddress = document.querySelector("#destination-address");
+const destinationError = document.querySelector("#destination-error");
 const amount = document.querySelector("#amount");
 const amountHelp = document.querySelector("#amount-help");
 const amountError = document.querySelector("#amount-error");
@@ -13,15 +18,22 @@ const createButton = document.querySelector("#create-button");
 const emptyState = document.querySelector("#empty-state");
 const loadingState = document.querySelector("#loading-state");
 const intentState = document.querySelector("#intent-state");
+const withdrawalState = document.querySelector("#withdrawal-state");
 const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
 const copyLabel = document.querySelector("#copy-label");
 const walletLink = document.querySelector("#wallet-link");
 const analyticsPanel = document.querySelector("#analytics-panel");
 const analyticsGrid = document.querySelector("#analytics-grid");
+const signedTransactionForm = document.querySelector("#signed-transaction-form");
+const rawTransaction = document.querySelector("#raw-transaction");
+const rawTransactionError = document.querySelector("#raw-transaction-error");
+const submitTransaction = document.querySelector("#submit-transaction");
+const copyProposal = document.querySelector("#copy-proposal");
 
 let config;
 let analytics;
+let flow = sessionStorage.getItem("demo:flow") === "withdrawal" ? "withdrawal" : "deposit";
 let turnstileToken = "";
 let turnstileWidget;
 let submitting = false;
@@ -31,7 +43,13 @@ let openingWallet = false;
 let walletPaymentUri = "";
 let currentIntentId = sessionStorage.getItem("demo:intentId") ?? "";
 let accessToken = sessionStorage.getItem("demo:accessToken") ?? "";
+let currentWithdrawalId = sessionStorage.getItem("demo:withdrawalId") ?? "";
+let withdrawalAccessToken = sessionStorage.getItem("demo:withdrawalAccessToken") ?? "";
+let currentProposal;
+let currentProposalId = "";
 let idempotencyKey = sessionStorage.getItem("demo:idempotencyKey") ?? crypto.randomUUID();
+
+for (const tab of flowTabs) tab.addEventListener("click", () => setFlow(tab.dataset.flow));
 
 network.addEventListener("change", () => {
   populateAssets();
@@ -51,6 +69,10 @@ amount.addEventListener("input", () => {
   amountError.textContent = "";
 });
 
+destinationAddress.addEventListener("input", () => {
+  destinationError.textContent = "";
+});
+
 copyAddress.addEventListener("click", async () => {
   const address = document.querySelector("#deposit-address").textContent;
   if (!address) return;
@@ -62,6 +84,19 @@ copyAddress.addEventListener("click", async () => {
     }, 1_500);
   } catch {
     showGlobalError("Copy failed. Select the address manually.");
+  }
+});
+
+copyProposal.addEventListener("click", async () => {
+  if (!currentProposal) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(currentProposal, null, 2));
+    copyProposal.textContent = "Copied";
+    setTimeout(() => {
+      copyProposal.textContent = "Copy proposal";
+    }, 1_500);
+  } catch {
+    showGlobalError("Copy failed. Select the proposal fields manually.");
   }
 });
 
@@ -100,45 +135,110 @@ form.addEventListener("submit", async (event) => {
   if (!config || !turnstileToken || submitting) return;
   submitting = true;
   amountError.textContent = "";
+  destinationError.textContent = "";
   globalError.hidden = true;
   setStage("loading");
   updateCreateButton();
   sessionStorage.setItem("demo:idempotencyKey", idempotencyKey);
 
   try {
-    const response = await fetch("/api/intents", {
+    const withdrawing = flow === "withdrawal";
+    const response = await fetch(withdrawing ? "/api/withdrawals" : "/api/intents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chain: network.value,
         asset: asset.value,
         amount: amount.value,
-        purpose: purpose.value,
+        ...(withdrawing
+          ? { destinationAddress: destinationAddress.value }
+          : { purpose: purpose.value }),
         idempotencyKey,
         turnstileToken,
       }),
     });
     const body = await response.json();
-    if (!response.ok) throw new DemoRequestError(response.status, body.error ?? "Payment failed");
-    currentIntentId = body.intent.id;
-    accessToken = body.accessToken;
-    sessionStorage.setItem("demo:intentId", currentIntentId);
-    sessionStorage.setItem("demo:accessToken", accessToken);
+    if (!response.ok)
+      throw new DemoRequestError(
+        response.status,
+        body.error ?? (withdrawing ? "Withdrawal failed" : "Payment failed"),
+      );
     sessionStorage.removeItem("demo:idempotencyKey");
     idempotencyKey = crypto.randomUUID();
-    renderPayment({ intent: body.intent, sweep: null, webhookEvent: null });
-    startPolling();
+    if (withdrawing) {
+      currentWithdrawalId = body.withdrawal.id;
+      withdrawalAccessToken = body.accessToken;
+      sessionStorage.setItem("demo:withdrawalId", currentWithdrawalId);
+      sessionStorage.setItem("demo:withdrawalAccessToken", withdrawalAccessToken);
+      renderWithdrawal(body.withdrawal);
+      startWithdrawalPolling(true);
+    } else {
+      currentIntentId = body.intent.id;
+      accessToken = body.accessToken;
+      sessionStorage.setItem("demo:intentId", currentIntentId);
+      sessionStorage.setItem("demo:accessToken", accessToken);
+      renderPayment({ intent: body.intent, sweep: null, webhookEvent: null });
+      startPolling();
+    }
   } catch (error) {
-    setStage(currentIntentId && accessToken ? "intent" : "empty");
-    const message = error instanceof Error ? error.message : "Payment failed";
-    if (error instanceof DemoRequestError && error.status === 400)
-      amountError.textContent = message;
-    else showGlobalError(message);
+    setStage(
+      flow === "withdrawal"
+        ? currentWithdrawalId && withdrawalAccessToken
+          ? "withdrawal"
+          : "empty"
+        : currentIntentId && accessToken
+          ? "intent"
+          : "empty",
+    );
+    const message = error instanceof Error ? error.message : "Request failed";
+    if (error instanceof DemoRequestError && error.status === 400) {
+      if (flow === "withdrawal" && message.toLowerCase().includes("destination"))
+        destinationError.textContent = message;
+      else amountError.textContent = message;
+    } else showGlobalError(message);
   } finally {
     submitting = false;
     turnstileToken = "";
     if (window.turnstile && turnstileWidget !== undefined) window.turnstile.reset(turnstileWidget);
     updateCreateButton();
+  }
+});
+
+signedTransactionForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!currentWithdrawalId || !withdrawalAccessToken || submitting) return;
+  submitting = true;
+  rawTransactionError.textContent = "";
+  globalError.hidden = true;
+  submitTransaction.disabled = true;
+  submitTransaction.textContent = "Submitting...";
+  try {
+    const response = await fetch(
+      `/api/withdrawals/${encodeURIComponent(currentWithdrawalId)}/transaction`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${withdrawalAccessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ rawTransaction: rawTransaction.value.trim() }),
+      },
+    );
+    const body = await response.json();
+    if (!response.ok)
+      throw new DemoRequestError(response.status, body.error ?? "Signed transaction failed");
+    rawTransaction.value = "";
+    renderWithdrawal(body.withdrawal);
+    startWithdrawalPolling();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Signed transaction failed";
+    if (error instanceof DemoRequestError && error.status < 500)
+      rawTransactionError.textContent = message;
+    else showGlobalError(message);
+  } finally {
+    submitting = false;
+    submitTransaction.disabled = false;
+    submitTransaction.textContent = "Submit signed transaction";
   }
 });
 
@@ -156,7 +256,7 @@ async function initialize() {
     amount.disabled = false;
     void loadAnalytics();
     await loadTurnstile(config.turnstileSiteKey);
-    if (currentIntentId && accessToken) startPolling(true);
+    setFlow(flow, true);
   } catch (error) {
     showGlobalError(error instanceof Error ? error.message : "Demo is unavailable");
   }
@@ -213,7 +313,10 @@ function updateSelection() {
   amount.placeholder = option.defaultAmount;
   assetLabel.textContent = option.asset;
   amountHelp.textContent = `${option.minimumAmount} to ${option.maximumAmount} ${option.asset}`;
-  text("#header-context", `Live ${option.chainLabel} demo`);
+  text(
+    "#header-context",
+    `Live ${option.chainLabel} ${flow === "withdrawal" ? "withdrawal" : "deposit"} demo`,
+  );
   text("#analytics-context", `${option.chainLabel} ${option.asset} activity in this deployment.`);
   renderAnalytics();
 }
@@ -278,13 +381,87 @@ function loadTurnstile(siteKey) {
 
 function updateCreateButton() {
   createButton.disabled = !config || !turnstileToken || submitting;
-  createButton.textContent = submitting ? "Creating payment..." : "Create payment";
+  createButton.textContent = submitting
+    ? flow === "withdrawal"
+      ? "Creating withdrawal..."
+      : "Creating payment..."
+    : flow === "withdrawal"
+      ? "Create withdrawal"
+      : "Create payment";
 }
 
 function setStage(stage) {
   emptyState.hidden = stage !== "empty";
   loadingState.hidden = stage !== "loading";
   intentState.hidden = stage !== "intent";
+  withdrawalState.hidden = stage !== "withdrawal";
+}
+
+function setFlow(next, initializing = false) {
+  if (submitting || (next !== "deposit" && next !== "withdrawal")) return;
+  const changed = flow !== next;
+  flow = next;
+  sessionStorage.setItem("demo:flow", flow);
+  clearTimeout(pollTimer);
+  for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
+  purposeField.hidden = flow !== "deposit";
+  purpose.disabled = flow !== "deposit";
+  destinationField.hidden = flow !== "withdrawal";
+  destinationAddress.disabled = !config || flow !== "withdrawal";
+  analyticsPanel.hidden = flow !== "deposit";
+  text(
+    "#page-title",
+    flow === "deposit" ? "Deposit crypto. See each step." : "Withdraw crypto. Keep the key.",
+  );
+  text(
+    "#intro-copy",
+    flow === "deposit"
+      ? "Create an exact testnet payment and follow it to treasury collection."
+      : "Create an exact proposal, approve it outside Cloudflare, and follow it to settlement.",
+  );
+  text(
+    "#empty-title",
+    flow === "deposit"
+      ? "Payment activity will appear here."
+      : "Withdrawal activity will appear here.",
+  );
+  text(
+    "#empty-detail",
+    flow === "deposit"
+      ? "Create an intent to receive a unique address, QR code, and wallet link."
+      : "Create a proposal to see the exact fields your external signer must approve.",
+  );
+  const depositSteps = [
+    ["On-chain activity", "Waiting for payment"],
+    ["Signed webhook", "Waiting for confirmation"],
+    ["Treasury collection", "Waiting for settlement"],
+  ];
+  const withdrawalSteps = [
+    ["Withdrawal proposal", "Exact route and amount"],
+    ["External signature", "Private key stays outside Cloudflare"],
+    ["Network settlement", "Waiting for broadcast"],
+  ];
+  const steps = flow === "deposit" ? depositSteps : withdrawalSteps;
+  for (const [index, [title, detail]] of steps.entries()) {
+    text(`#empty-step-${["one", "two", "three"][index]}`, title);
+    text(`#empty-step-${["one", "two", "three"][index]}-detail`, detail);
+  }
+  text(
+    "#loading-message",
+    flow === "deposit"
+      ? "Allocating a dedicated payment address..."
+      : "Locking the withdrawal proposal...",
+  );
+  updateSelection();
+  if (changed && !initializing) {
+    turnstileToken = "";
+    if (window.turnstile && turnstileWidget !== undefined) window.turnstile.reset(turnstileWidget);
+  }
+  updateCreateButton();
+  if (flow === "deposit" && currentIntentId && accessToken) startPolling(true);
+  else if (flow === "withdrawal" && currentWithdrawalId && withdrawalAccessToken)
+    startWithdrawalPolling(true);
+  else setStage("empty");
 }
 
 function renderPayment(state) {
@@ -357,6 +534,104 @@ function renderPayment(state) {
   renderTransactions(transactions, status, intent.chain);
   renderDelivery(webhookEvent, unpaidExpired);
   renderSweep(sweep, unpaidExpired);
+}
+
+function renderWithdrawal(withdrawal) {
+  setStage("withdrawal");
+  globalError.hidden = true;
+  const status = String(withdrawal.status ?? "awaiting_signature");
+  const titles = {
+    awaiting_signature: "Treasury signature required",
+    submitted: "Withdrawal submitted",
+    confirming: "Withdrawal confirming",
+    complete: "Withdrawal complete",
+    failed: "Withdrawal failed",
+    expired: "Withdrawal expired",
+  };
+  const details = {
+    awaiting_signature: "Approve the exact proposal with the external treasury signer.",
+    submitted: "The signed transaction was validated and broadcast.",
+    confirming: `Waiting for ${withdrawal.requiredConfirmations} network confirmations.`,
+    complete: "The withdrawal reached the required confirmation depth.",
+    failed: withdrawal.lastError || "The transaction did not complete.",
+    expired: "No signed transaction was accepted before expiry.",
+  };
+  document.querySelector("#withdrawal-header").dataset.status = status;
+  text("#withdrawal-status-title", titles[status] ?? "Withdrawal updated");
+  text("#withdrawal-status-detail", details[status] ?? "Withdrawal state updated.");
+  text("#withdrawal-amount", withdrawal.amount);
+  text("#withdrawal-asset", withdrawal.asset);
+  text("#withdrawal-source", withdrawal.sourceAddress);
+  text("#withdrawal-destination", withdrawal.destinationAddress);
+  text("#withdrawal-network", humanize(withdrawal.chain));
+  text("#withdrawal-id", withdrawal.id);
+  text("#withdrawal-created", formatDate(withdrawal.createdAt));
+  text("#withdrawal-expiry", formatExpiry(withdrawal.expiresAt));
+
+  if (withdrawal.proposal && typeof withdrawal.proposal === "object") {
+    currentProposal = withdrawal.proposal;
+    currentProposalId = withdrawal.id;
+  } else if (currentProposalId !== withdrawal.id) {
+    currentProposal = undefined;
+    currentProposalId = "";
+  }
+  document.querySelector("#signer-panel").hidden = !currentProposal;
+  signedTransactionForm.hidden = status !== "awaiting_signature";
+  copyProposal.disabled = !currentProposal;
+  if (currentProposal) {
+    text("#proposal-chain", currentProposal.chainId);
+    text("#proposal-to", currentProposal.to);
+    text("#proposal-value", currentProposal.value);
+    text("#proposal-gas", currentProposal.maxGas);
+    text("#proposal-gas-price", `${currentProposal.maxGasPriceWei} wei`);
+    text("#proposal-data", currentProposal.data);
+  }
+
+  setActivityState("#proposal-activity", "#proposal-badge", "success", "Ready");
+  const signatureState =
+    status === "awaiting_signature" ? "active" : status === "expired" ? "warning" : "success";
+  setActivityState(
+    "#signature-activity",
+    "#signature-badge",
+    signatureState,
+    status === "awaiting_signature" ? "Waiting" : status === "expired" ? "Expired" : "Validated",
+  );
+  const signatureStatus = document.querySelector("#signature-status");
+  signatureStatus.replaceChildren(
+    paragraph(
+      status === "awaiting_signature"
+        ? "Waiting for the treasury signer."
+        : status === "expired"
+          ? "No signature was registered before expiry."
+          : "The gateway recovered and validated the treasury signer.",
+      "muted",
+    ),
+  );
+
+  const chainStates = {
+    awaiting_signature: ["idle", "Waiting", "Broadcast starts after signature validation."],
+    submitted: ["detected", "Broadcast", "The transaction is waiting to enter a block."],
+    confirming: ["active", "Confirming", "The transaction is in a canonical block."],
+    complete: ["success", "Complete", "The required confirmation depth was reached."],
+    failed: ["warning", "Failed", withdrawal.lastError || "The transaction failed."],
+    expired: ["idle", "Not sent", "The proposal expired without a transaction."],
+  };
+  const [chainState, chainBadge, chainDetail] =
+    chainStates[status] ?? chainStates.awaiting_signature;
+  setActivityState("#withdrawal-chain-activity", "#withdrawal-chain-badge", chainState, chainBadge);
+  const chainStatus = document.querySelector("#withdrawal-chain-status");
+  chainStatus.replaceChildren(paragraph(chainDetail, "muted"));
+  if (withdrawal.transaction?.hash) {
+    const reference = document.createElement(withdrawal.transaction.explorerUrl ? "a" : "span");
+    reference.className = "transaction-hash";
+    reference.textContent = `Tx: ${withdrawal.transaction.hash}`;
+    if (withdrawal.transaction.explorerUrl) {
+      reference.href = withdrawal.transaction.explorerUrl;
+      reference.target = "_blank";
+      reference.rel = "noreferrer";
+    }
+    chainStatus.append(reference);
+  }
 }
 
 async function switchWalletNetwork(provider, chainId) {
@@ -545,7 +820,7 @@ function startPolling(immediate = false) {
   clearTimeout(pollTimer);
   pollAttempts = 0;
   const poll = async () => {
-    if (!currentIntentId || !accessToken || pollAttempts >= 360) return;
+    if (flow !== "deposit" || !currentIntentId || !accessToken || pollAttempts >= 360) return;
     pollAttempts += 1;
     try {
       const response = await fetch(`/api/intents/${encodeURIComponent(currentIntentId)}`, {
@@ -556,6 +831,7 @@ function startPolling(immediate = false) {
         if (response.status === 401) clearStoredPayment();
         throw new Error(body.error ?? "Payment status is unavailable");
       }
+      if (flow !== "deposit") return;
       renderPayment(body);
       const done =
         ["complete", "external"].includes(body.sweep?.status) &&
@@ -572,11 +848,50 @@ function startPolling(immediate = false) {
   pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
 }
 
+function startWithdrawalPolling(immediate = false) {
+  clearTimeout(pollTimer);
+  pollAttempts = 0;
+  const poll = async () => {
+    if (
+      flow !== "withdrawal" ||
+      !currentWithdrawalId ||
+      !withdrawalAccessToken ||
+      pollAttempts >= 360
+    )
+      return;
+    pollAttempts += 1;
+    try {
+      const response = await fetch(`/api/withdrawals/${encodeURIComponent(currentWithdrawalId)}`, {
+        headers: { Authorization: `Bearer ${withdrawalAccessToken}` },
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        if (response.status === 401) clearStoredWithdrawal();
+        throw new Error(body.error ?? "Withdrawal status is unavailable");
+      }
+      if (flow !== "withdrawal") return;
+      renderWithdrawal(body.withdrawal);
+      if (["complete", "failed", "expired"].includes(body.withdrawal.status)) return;
+    } catch (error) {
+      showGlobalError(error instanceof Error ? error.message : "Withdrawal status is unavailable");
+    }
+    pollTimer = setTimeout(poll, 5_000);
+  };
+  pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
+}
+
 function clearStoredPayment() {
   currentIntentId = "";
   accessToken = "";
   sessionStorage.removeItem("demo:intentId");
   sessionStorage.removeItem("demo:accessToken");
+}
+
+function clearStoredWithdrawal() {
+  currentWithdrawalId = "";
+  withdrawalAccessToken = "";
+  sessionStorage.removeItem("demo:withdrawalId");
+  sessionStorage.removeItem("demo:withdrawalAccessToken");
 }
 
 function showGlobalError(message) {

@@ -4,6 +4,7 @@ import demo, { type DemoEnv } from "../demo/worker";
 const intent = {
   id: "pi_demo123",
   kind: "payment",
+  purpose: "account_top_up",
   externalId: "demo_123",
   chain: "base-sepolia",
   chainId: 84532,
@@ -27,6 +28,38 @@ const intent = {
   expired: false,
   metadata: { shouldNotLeak: true },
   transactions: [],
+};
+const withdrawal = {
+  id: "wd_demo123",
+  purpose: "withdrawal",
+  externalId: "demo_withdrawal_123",
+  chain: "base-sepolia",
+  chainId: 84532,
+  asset: "USDC",
+  amount: "1.25",
+  amountUnits: "1250000",
+  sourceAddress: "0x2222222222222222222222222222222222222222",
+  destinationAddress: "0x3333333333333333333333333333333333333333",
+  requiredConfirmations: 3,
+  status: "awaiting_signature",
+  expiresAt: "2026-08-15T10:30:00.000Z",
+  completedAt: null,
+  lastError: "",
+  proposal: {
+    chainId: 84532,
+    from: "0x2222222222222222222222222222222222222222",
+    to: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    value: "0",
+    data: `0xa9059cbb${"0".repeat(24)}${"3".repeat(40)}${(1_250_000).toString(16).padStart(64, "0")}`,
+    amount: "1.25",
+    asset: "USDC",
+    maxGas: "500000",
+    maxGasPriceWei: "1000000000",
+  },
+  transaction: null,
+  internalSecret: "must-not-leak",
+  createdAt: "2026-08-15T10:00:00.000Z",
+  updatedAt: "2026-08-15T10:00:00.000Z",
 };
 const analytics = {
   generatedAt: "2026-08-15T12:00:00.000Z",
@@ -96,6 +129,8 @@ const options = [
 let env: DemoEnv;
 let events: Map<string, string>;
 let gatewayRequests: Array<{
+  method: string;
+  path: string;
   headers: Headers;
   body: Record<string, unknown> | null;
 }>;
@@ -114,9 +149,37 @@ beforeEach(() => {
         const request = input instanceof Request ? input : new Request(input, init);
         const path = new URL(request.url).pathname;
         gatewayRequests.push({
+          method: request.method,
+          path,
           headers: new Headers(request.headers),
           body: request.method === "POST" ? await request.clone().json() : null,
         });
+        if (request.method === "POST" && path.endsWith("/withdrawals")) {
+          const { proposal: _, internalSecret: __, ...created } = withdrawal;
+          return Response.json(created, { status: 201 });
+        }
+        if (request.method === "GET" && path.endsWith(`/withdrawals/${withdrawal.id}/proposal`)) {
+          return Response.json(withdrawal);
+        }
+        if (request.method === "POST" && path.endsWith("/transaction")) {
+          return Response.json(
+            {
+              ...withdrawal,
+              status: "submitted",
+              transaction: {
+                hash: `0x${"4".repeat(64)}`,
+                from: withdrawal.sourceAddress,
+                to: withdrawal.proposal.to,
+                nonce: 4,
+                feeWei: "0",
+                status: "submitted",
+                blockNumber: null,
+                lastError: "",
+              },
+            },
+            { status: 202 },
+          );
+        }
         if (request.method === "POST" && path.endsWith("/intents")) {
           return Response.json(intent, { status: 201 });
         }
@@ -179,10 +242,11 @@ describe("public demo", () => {
     expect(gatewayRequest.headers.get("Idempotency-Key")).toMatch(/^demo:/);
     expect(gatewayRequest.body).toMatchObject({
       kind: "payment",
+      purpose: "account_top_up",
       chain: "base-sepolia",
       asset: "USDC",
       amount: "1.25",
-      metadata: { demo: true, purpose: "account_top_up" },
+      metadata: { demo: true },
     });
 
     events.set(
@@ -209,6 +273,79 @@ describe("public demo", () => {
       env,
     );
     expect(unrelated.status).toBe(401);
+  });
+
+  it("creates, reveals, and submits an externally signed withdrawal", async () => {
+    const created = await demo.fetch(createWithdrawalRequest(), env);
+    expect(created.status).toBe(201);
+    const body = await created.json<{
+      withdrawal: Record<string, unknown>;
+      accessToken: string;
+    }>();
+    expect(body.withdrawal).toMatchObject({
+      id: withdrawal.id,
+      amount: "1.25",
+      destinationAddress: withdrawal.destinationAddress,
+      status: "awaiting_signature",
+      transaction: null,
+    });
+    expect(body.withdrawal).not.toHaveProperty("internalSecret");
+    expect(gatewayRequests[0]).toMatchObject({
+      method: "POST",
+      path: "/api/payments/v1/withdrawals",
+      body: {
+        purpose: "withdrawal",
+        chain: "base-sepolia",
+        asset: "USDC",
+        amount: "1.25",
+        destinationAddress: withdrawal.destinationAddress,
+      },
+    });
+    expect(gatewayRequests[0].headers.get("Idempotency-Key")).toMatch(/^demo:withdrawal:/);
+
+    const status = await demo.fetch(
+      new Request(`https://demo.test/api/withdrawals/${withdrawal.id}`, {
+        headers: { Authorization: `Bearer ${body.accessToken}` },
+      }),
+      env,
+    );
+    expect(await status.json()).toMatchObject({
+      withdrawal: {
+        id: withdrawal.id,
+        proposal: {
+          from: withdrawal.sourceAddress,
+          to: withdrawal.proposal.to,
+          data: withdrawal.proposal.data,
+        },
+      },
+    });
+
+    const rawTransaction = `0x${"12".repeat(100)}`;
+    const submitted = await demo.fetch(
+      new Request(`https://demo.test/api/withdrawals/${withdrawal.id}/transaction`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${body.accessToken}`,
+          "CF-Connecting-IP": "192.0.2.10",
+          "Content-Type": "application/json",
+          Origin: "https://demo.test",
+        },
+        body: JSON.stringify({ rawTransaction }),
+      }),
+      env,
+    );
+    expect(submitted.status).toBe(202);
+    expect(await submitted.json()).toMatchObject({
+      withdrawal: { status: "submitted", transaction: { nonce: 4, status: "submitted" } },
+    });
+    expect(gatewayRequests.at(-1)).toMatchObject({
+      method: "POST",
+      path: `/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
+      body: { rawTransaction },
+    });
+    expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
+      `Bearer ${env.PAYMENT_API_KEY}`,
+    );
   });
 
   it("allows only configured network and asset pairs", async () => {
@@ -427,6 +564,25 @@ function createRequest(input: {
       chain: "base-sepolia",
       asset: "USDC",
       ...input,
+      idempotencyKey: crypto.randomUUID(),
+      turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
+    }),
+  });
+}
+
+function createWithdrawalRequest(): Request {
+  return new Request("https://demo.test/api/withdrawals", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "https://demo.test",
+      "CF-Connecting-IP": "192.0.2.10",
+    },
+    body: JSON.stringify({
+      chain: "base-sepolia",
+      asset: "USDC",
+      amount: "1.250000",
+      destinationAddress: withdrawal.destinationAddress,
       idempotencyKey: crypto.randomUUID(),
       turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
     }),

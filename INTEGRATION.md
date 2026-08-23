@@ -37,6 +37,12 @@ All payment endpoints use the `/api/payments/v1` prefix and require
 | `GET` | `/intents/{id}` | Poll status and the included transaction history. |
 | `GET` | `/intents/{id}/transactions` | Read payment transactions only. |
 | `GET` | `/intents/{id}/sweep` | Inspect treasury collection progress. |
+| `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
+| `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
+| `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
+| `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
+| `POST` | `/swaps` | Link an exact swap deposit to an output proposal. |
+| `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
 | `GET` | `/analytics/summary` | Read aggregate payment and collection metrics. |
 
 Errors use `{ "error": "message" }`. The API does not support lookup by
@@ -68,6 +74,7 @@ export async function createCryptoCheckout(order: {
     },
     body: JSON.stringify({
       kind: "payment",
+      purpose: "checkout",
       externalId: order.id,
       chain: "base",
       asset: "USDC",
@@ -93,7 +100,8 @@ Keep `metadata` small. Store sensitive application data in your own database.
 
 Use `payment` for a one-time charge and `invoice` for a payable invoice. The
 gateway processes both types identically. Your application defines the product
-or service.
+or service. Set `purpose` to `checkout`, `account_top_up`, or `swap` so the
+business flow remains explicit outside `metadata`.
 
 The response includes the fields needed by your checkout:
 
@@ -101,6 +109,7 @@ The response includes the fields needed by your checkout:
 {
   "id": "pi_example",
   "kind": "payment",
+  "purpose": "checkout",
   "externalId": "order_123",
   "chain": "base",
   "chainId": 8453,
@@ -139,6 +148,9 @@ does not send the original full amount again.
 
 Show the chain, asset, `remainingAmount`, and deposit address as copyable text.
 The customer can compare these values with the wallet transaction.
+
+Send native deposits as direct wallet transactions. The scanner does not use
+trace APIs, so it cannot find an internal native transfer from a contract.
 
 Poll from your backend. Alternatively, expose a narrow application endpoint
 that proxies the safe status fields. Do not call the gateway directly from
@@ -250,12 +262,12 @@ sequenceDiagram
 ```json
 {
   "kind": "payment",
+  "purpose": "account_top_up",
   "externalId": "topup_attempt_123",
   "chain": "base",
   "asset": "USDC",
   "amount": "25",
   "metadata": {
-    "purpose": "account_top_up",
     "accountId": "account_123"
   }
 }
@@ -317,6 +329,7 @@ Example event:
       "id": "pi_example",
       "externalId": "order_123",
       "kind": "payment",
+      "purpose": "checkout",
       "chain": "base",
       "chainId": 8453,
       "asset": "USDC",
@@ -385,6 +398,143 @@ GET /api/payments/v1/analytics/summary
 It groups requested, received, confirmed, and collected units by chain and
 asset, plus collection fees and webhook counts. Use your configured token
 decimals to convert units only at the display boundary.
+
+## Treasury withdrawals
+
+The gateway does not store a treasury private key. The configured
+`withdrawalSourceAddress` is the source address for each new withdrawal. This
+address defaults to `treasuryAddress` when the configuration omits it.
+
+Create a withdrawal only after your application reserves the customer balance:
+
+```http
+POST /api/payments/v1/withdrawals
+Idempotency-Key: withdrawal:account-001:42
+Content-Type: application/json
+
+{
+  "purpose": "withdrawal",
+  "externalId": "account-withdrawal-42",
+  "chain": "base",
+  "asset": "USDC",
+  "amount": "125.50",
+  "destinationAddress": "0x...",
+  "expiresInSeconds": 1800
+}
+```
+
+Get the exact transaction fields from the proposal endpoint:
+
+```http
+GET /api/payments/v1/withdrawals/{id}/proposal
+```
+
+The external signer must validate these fields:
+
+- Validate the `chainId` value.
+- Validate the `from` treasury address.
+- Validate the `to` address.
+- Validate the native-token `value`.
+- Validate the ERC-20 `data`.
+- Validate the withdrawal amount and expiry time.
+- Validate `purpose` and `externalId` against the independently authorized operation.
+
+A swap proposal also includes `swapId` and `depositIntentId`. Read `/swaps/{swapId}`
+to compare the input and output with the independent ledger.
+
+The signer must also compare the proposal with an independently authorized
+withdrawal in your ledger. Do not approve a proposal only because the gateway
+returned it. Enforce your balance reservation, transaction limits, and manual
+approval policy in the signer system.
+
+Sign the transaction outside Cloudflare. Then submit the raw transaction:
+
+```http
+POST /api/payments/v1/withdrawals/{id}/transaction
+Content-Type: application/json
+
+{
+  "rawTransaction": "0x..."
+}
+```
+
+The gateway recovers the signer and validates all transaction fields. It stores
+the signed transaction before it broadcasts the transaction.
+
+The signer must use the nonce only for this withdrawal. The gateway rejects a
+nonce that belongs to a different withdrawal.
+
+If a transaction is stuck, submit a replacement for the same withdrawal. The
+replacement must use the same nonce and a higher fee cap.
+
+Poll the withdrawal until its status is `complete`. The first version supports
+direct transactions from an externally owned treasury account. It does not
+parse transactions that a Safe contract executes.
+
+## Custodial swaps
+
+The swap workflow supports different input and output EVM chains. It is not an
+atomic bridge or an on-chain exchange. Your application sets the quoted output
+amount before it creates the swap.
+
+First, create a token deposit intent with `purpose` set to `swap`. Then link the
+deposit to its output:
+
+```http
+POST /api/payments/v1/swaps
+Idempotency-Key: swap:quote-123
+Content-Type: application/json
+
+{
+  "depositIntentId": "pi_example",
+  "outputChain": "bnb",
+  "outputAsset": "USDT",
+  "outputAmount": "24.91",
+  "destinationAddress": "0x...",
+  "refundAddress": "0x..."
+}
+```
+
+The gateway locks `refundAddress` when it creates the swap. Use an address that
+the user controls on the input chain.
+
+The input and output can use different configured chains. The output can use a
+native asset or an allowed token. The first version accepts only token inputs.
+Native input monitoring cannot find internal transfers without transaction
+traces.
+
+The gateway requires an exact input. An underpayment waits for more funds until
+the quote expires. An overpayment enters `refund_required` immediately.
+
+The gateway creates one refund withdrawal after it confirms and collects all
+received input. The refund sends the collected input asset to `refundAddress`.
+The external signer must approve this withdrawal.
+
+The refund spends from `withdrawalSourceAddress` on the input chain. Keep enough
+approved liquidity in that wallet before the signer submits the refund.
+
+An expired or failed output also starts the refund flow. The gateway does not
+create a refund while an output is active or submitted. If an output revives
+before refund approval, the gateway expires the unsigned refund and marks the
+swap as `reorged`.
+
+The gateway creates the output withdrawal after these events occur:
+
+- The input gets the required confirmations.
+- The relayer collects the exact input in the treasury.
+- The input transaction was mined before the quote expiry.
+
+The external signer must validate the swap against an independent ledger and
+an independent RPC provider. The signer must validate the collected input,
+quoted output, destination, chain, asset, and amount before approval.
+
+For a refund, the signer must also validate `refundAddress` and the total
+collected input. The signer must reject a refund when the output can still
+complete.
+
+Input and output transactions are not atomic across chains. If the input
+reorganizes after output submission, the swap enters `reorged`. Stop automatic
+approval and reconcile the loss from the treasury ledger.
 
 ## Recurring billing
 

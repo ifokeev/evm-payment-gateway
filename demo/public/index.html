@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Create and complete testnet payments on Base, Ethereum, and BNB Chain."
+      content="Try testnet deposits and externally signed withdrawals on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -34,9 +34,20 @@
     <main class="page-shell">
       <section class="intro" aria-labelledby="page-title">
         <div class="intro-content">
+          <div class="flow-tabs" role="tablist" aria-label="Gateway flow">
+            <button class="flow-tab" type="button" role="tab" data-flow="deposit" aria-selected="true">
+              Deposit
+            </button>
+            <button class="flow-tab" type="button" role="tab" data-flow="withdrawal" aria-selected="false">
+              Withdraw
+            </button>
+            <button class="flow-tab" type="button" role="tab" aria-selected="false" disabled>
+              Swap <span>Soon</span>
+            </button>
+          </div>
           <div>
             <h1 id="page-title"><span>Pay crypto.</span><span>See each step.</span></h1>
-            <p class="intro-copy">
+            <p id="intro-copy" class="intro-copy">
               Create an exact testnet payment on Base, Ethereum, or BNB Chain and follow it to
               treasury collection.
             </p>
@@ -59,7 +70,7 @@
               </div>
             </div>
 
-            <div class="field">
+            <div id="purpose-field" class="field">
               <label for="purpose">Use case</label>
               <div class="select-control">
                 <select id="purpose" name="purpose">
@@ -70,6 +81,25 @@
               <p id="purpose-help" class="field-help">
                 The user chooses the amount before the app creates an exact payment intent.
               </p>
+            </div>
+
+            <div id="destination-field" class="field" hidden>
+              <label for="destination-address">Destination address</label>
+              <input
+                id="destination-address"
+                name="destinationAddress"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x..."
+                aria-describedby="destination-help destination-error"
+                disabled
+              />
+              <p id="destination-help" class="field-help">
+                The external signer must approve this exact recipient.
+              </p>
+              <p id="destination-error" class="field-error" role="alert"></p>
             </div>
 
             <div class="field">
@@ -109,7 +139,7 @@
         </div>
       </section>
 
-      <section class="payment-stage" aria-label="Payment status">
+      <section class="payment-stage" aria-label="Gateway flow status">
         <section
           id="analytics-panel"
           class="analytics-panel"
@@ -146,13 +176,13 @@
         <div id="empty-state" class="empty-state">
           <div class="empty-heading">
             <p class="status-label">Demo ready</p>
-            <h2>Payment activity will appear here.</h2>
-            <p>Create an intent to receive a unique address, QR code, and wallet link.</p>
+            <h2 id="empty-title">Payment activity will appear here.</h2>
+            <p id="empty-detail">Create an intent to receive a unique address, QR code, and wallet link.</p>
           </div>
           <div class="empty-flow">
-            <div><strong>On-chain activity</strong><span>Waiting for payment</span></div>
-            <div><strong>Signed webhook</strong><span>Waiting for confirmation</span></div>
-            <div><strong>Treasury collection</strong><span>Waiting for settlement</span></div>
+            <div><strong id="empty-step-one">On-chain activity</strong><span id="empty-step-one-detail">Waiting for payment</span></div>
+            <div><strong id="empty-step-two">Signed webhook</strong><span id="empty-step-two-detail">Waiting for confirmation</span></div>
+            <div><strong id="empty-step-three">Treasury collection</strong><span id="empty-step-three-detail">Waiting for settlement</span></div>
           </div>
         </div>
 
@@ -164,7 +194,7 @@
               <span></span><strong></strong><span></span><span></span>
             </div>
           </div>
-          <p>Allocating a dedicated payment address...</p>
+          <p id="loading-message">Allocating a dedicated payment address...</p>
         </div>
 
         <div id="intent-state" hidden>
@@ -264,6 +294,116 @@
             <div><dt>Payment ID</dt><dd id="intent-id"></dd></div>
             <div><dt>Created</dt><dd id="created-time"></dd></div>
             <div><dt>Expires in</dt><dd id="expiry-time"></dd></div>
+          </dl>
+        </div>
+
+        <div id="withdrawal-state" hidden>
+          <div class="payment-panel">
+            <div id="withdrawal-header" class="intent-header">
+              <span class="status-orbit" aria-hidden="true"></span>
+              <div>
+                <h2 id="withdrawal-status-title" class="status-label">Signature required</h2>
+                <p id="withdrawal-status-detail" class="status-detail">
+                  The treasury signer must approve the exact proposal.
+                </p>
+              </div>
+            </div>
+
+            <div class="withdrawal-summary">
+              <div>
+                <span class="detail-label">Withdrawal amount</span>
+                <p class="amount-due">
+                  <strong id="withdrawal-amount">0</strong>
+                  <span id="withdrawal-asset">USDC</span>
+                </p>
+              </div>
+              <dl class="route-grid">
+                <div><dt>Treasury source</dt><dd><code id="withdrawal-source"></code></dd></div>
+                <div><dt>User destination</dt><dd><code id="withdrawal-destination"></code></dd></div>
+              </dl>
+            </div>
+
+            <section id="signer-panel" class="signer-panel" aria-labelledby="signer-title">
+              <header>
+                <div>
+                  <h3 id="signer-title">External treasury signer</h3>
+                  <p>Compare this proposal with your ledger. The private key never enters Cloudflare.</p>
+                </div>
+                <button id="copy-proposal" class="secondary-button" type="button">Copy proposal</button>
+              </header>
+              <dl class="proposal-grid">
+                <div><dt>Chain ID</dt><dd id="proposal-chain"></dd></div>
+                <div><dt>Transaction target</dt><dd><code id="proposal-to"></code></dd></div>
+                <div><dt>Native value</dt><dd id="proposal-value"></dd></div>
+                <div><dt>Maximum gas</dt><dd id="proposal-gas"></dd></div>
+                <div><dt>Maximum gas price</dt><dd id="proposal-gas-price"></dd></div>
+                <div class="proposal-data"><dt>Calldata</dt><dd><code id="proposal-data"></code></dd></div>
+              </dl>
+              <form id="signed-transaction-form" class="signed-transaction-form">
+                <label for="raw-transaction">Signed raw transaction</label>
+                <textarea
+                  id="raw-transaction"
+                  rows="4"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="0x..."
+                  aria-describedby="raw-transaction-help raw-transaction-error"
+                ></textarea>
+                <p id="raw-transaction-help" class="signer-help">
+                  Sign outside this demo, then paste the serialized transaction here.
+                </p>
+                <p id="raw-transaction-error" class="field-error" role="alert"></p>
+                <button id="submit-transaction" class="primary-button" type="submit">
+                  Submit signed transaction
+                </button>
+              </form>
+            </section>
+          </div>
+
+          <div class="activity-list">
+            <section id="proposal-activity" class="activity-section" data-state="success">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-title">
+                  <h3>Withdrawal proposal</h3>
+                  <span id="proposal-badge" class="activity-status">Ready</span>
+                </div>
+                <div id="proposal-status" class="activity-content">
+                  <p class="muted">Exact amount and destination are locked.</p>
+                </div>
+              </div>
+            </section>
+            <section id="signature-activity" class="activity-section" data-state="active">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-title">
+                  <h3>External signature</h3>
+                  <span id="signature-badge" class="activity-status">Waiting</span>
+                </div>
+                <div id="signature-status" class="activity-content">
+                  <p class="muted">Waiting for the treasury signer.</p>
+                </div>
+              </div>
+            </section>
+            <section id="withdrawal-chain-activity" class="activity-section" data-state="idle">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-title">
+                  <h3>Network settlement</h3>
+                  <span id="withdrawal-chain-badge" class="activity-status">Waiting</span>
+                </div>
+                <div id="withdrawal-chain-status" class="activity-content">
+                  <p class="muted">Broadcast starts after signature validation.</p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <dl class="intent-meta">
+            <div><dt>Network</dt><dd id="withdrawal-network"></dd></div>
+            <div><dt>Withdrawal ID</dt><dd id="withdrawal-id"></dd></div>
+            <div><dt>Created</dt><dd id="withdrawal-created"></dd></div>
+            <div><dt>Expires in</dt><dd id="withdrawal-expiry"></dd></div>
           </dl>
         </div>
 

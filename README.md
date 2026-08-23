@@ -39,6 +39,8 @@ your treasury. You do not operate servers or manage deposit keys.
 | Payment state | Polling, expiry, partial payments, remaining-amount top-ups, confirmations, overpayments, and transaction history. |
 | Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting. Then the scanner retries. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
+| Withdrawal coordination | The API validates and broadcasts exact transactions that an external treasury signer approves. |
+| Swap coordination | Exact token inputs create one same-chain or cross-chain output. Failed swaps create externally signed refund proposals. |
 | Signed events | HMAC-SHA256 webhooks retry with stable event IDs for idempotent application handling. |
 | Serverless deployment | Cloudflare Workers, D1, Queues, Cron Triggers, and service bindings. No VM or container is necessary. |
 | Analytics | Exact integer totals for requested, received, confirmed, collected, fees, statuses, and webhooks. |
@@ -107,6 +109,9 @@ remains the only destination for these assets.
 The payer never interacts with the factory directly and never needs extra gas
 beyond the transfer itself. The deposit address never needs ETH or BNB for an
 ERC-20 collection.
+
+Send native deposits as direct wallet transactions. The scanner does not use
+trace APIs, so it cannot find an internal native transfer from a contract.
 
 ```mermaid
 stateDiagram-v2
@@ -194,6 +199,7 @@ relayer key. It never receives the payment API key or webhook secret.
   "chainId": 84532,
   "rpcUrls": ["https://your-primary-rpc.example", "https://your-fallback-rpc.example"],
   "treasuryAddress": "0xYourTreasury",
+  "withdrawalSourceAddress": "0xYourPayoutWallet",
   "factoryAddress": "0xDeployedFactory",
   "factoryCodeHash": "0xRuntimeCodeHash",
   "relayerAddress": "0xLowBalanceRelayer",
@@ -217,6 +223,10 @@ Copy only the networks you enable from
 Keep separate lists in the testnet and mainnet Cloudflare secrets. Do not commit
 provider credentials. Copy the same list to `SWEEPER_NETWORKS_JSON`. Add
 `relayerPrivateKey` only to that list. The API rejects that field.
+
+`withdrawalSourceAddress` is optional. It defaults to `treasuryAddress`.
+Configure a separate payout wallet to limit the balance that the external
+signer can spend.
 
 Use HTTPS for all URLs. Make sure that all configured addresses are distinct.
 Make sure that the private key matches `relayerAddress`.
@@ -248,6 +258,7 @@ curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
   -H "Content-Type: application/json" \
   -d '{
     "kind": "payment",
+    "purpose": "checkout",
     "externalId": "order-001",
     "chain": "base-sepolia",
     "asset": "USDC",
@@ -257,9 +268,9 @@ curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
   }'
 ```
 
-`kind` is the generic settlement behavior: `payment` for a charge and `invoice`
-for a payable invoice. Donations, account deposits, purchases, and subscription
-periods remain application concepts stored in `externalId` or metadata.
+`kind` is the settlement behavior: `payment` or `invoice`. `purpose` classifies
+the deposit as `checkout`, `account_top_up`, or `swap`. Direct withdrawal
+requests use `withdrawal`. The swap coordinator creates `swap` withdrawals.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -267,6 +278,12 @@ periods remain application concepts stored in `externalId` or metadata.
 | `GET` | `/intents/{id}` | Poll state and included transactions. |
 | `GET` | `/intents/{id}/transactions` | Read payment transaction history. |
 | `GET` | `/intents/{id}/sweep` | Read treasury-collection history. |
+| `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
+| `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
+| `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for the external signer. |
+| `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
+| `POST` | `/swaps` | Link an exact swap deposit to a same-chain or cross-chain output. |
+| `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
 | `GET` | `/analytics/summary` | Read exact aggregate payment and collection metrics. |
 | `GET` | `/health` | Read scanner progress by network. |
 
@@ -278,9 +295,11 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 ## Demo
 
-The optional demo Worker shows real Base Sepolia, Ethereum Sepolia, and BNB
-Testnet payments with polling, signed webhook receipt, and treasury collection.
-A private service binding keeps the API key out of browser code.
+The optional demo Worker shows testnet deposits, signed webhooks, treasury
+collection, and externally signed withdrawals. The withdrawal view shows the
+exact proposal and accepts a signed raw transaction. The treasury signer stays
+outside Cloudflare. A private service binding keeps the API key out of browser
+code.
 
 [Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev)
 
@@ -304,6 +323,8 @@ The gateway uses these security controls:
   they calculate addresses or sign collection transactions.
 - The treasury key never enters Cloudflare. A multisig treasury is preferable
   for real funds.
+- The withdrawal API accepts only a transaction from the configured withdrawal source.
+  It validates the chain, asset, amount, destination, fee, gas, and nonce.
 - The relayer key can spend only its own native balance. It cannot sign for a
   deposit address or redirect a forwarder. A low balance limits its exposure.
 - The API rejects relayer private keys and independently validates registered

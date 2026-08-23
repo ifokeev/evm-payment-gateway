@@ -59,9 +59,21 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`) {
     return createDemoIntent(request, env);
   }
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/withdrawals`) {
+    return createDemoWithdrawal(request, env);
+  }
   const intentMatch = url.pathname.match(/^\/api\/intents\/(pi_[A-Za-z0-9_-]+)$/);
   if (request.method === "GET" && intentMatch) {
     return getDemoIntent(request, env, intentMatch[1]);
+  }
+  const withdrawalMatch = url.pathname.match(
+    /^\/api\/withdrawals\/(wd_[A-Za-z0-9_-]+)(?:\/(transaction))?$/,
+  );
+  if (request.method === "GET" && withdrawalMatch && !withdrawalMatch[2]) {
+    return getDemoWithdrawal(request, env, withdrawalMatch[1]);
+  }
+  if (request.method === "POST" && withdrawalMatch?.[2] === "transaction") {
+    return submitDemoWithdrawal(request, env, withdrawalMatch[1]);
   }
   if (request.method === "POST" && url.pathname === "/webhooks/payment") {
     return receiveWebhook(request, env);
@@ -73,8 +85,7 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
 }
 
 async function createDemoIntent(request: Request, env: DemoEnv): Promise<Response> {
-  const origin = request.headers.get("Origin");
-  if (origin && origin !== new URL(request.url).origin) throw new DemoError(403, "invalid origin");
+  enforceSameOrigin(request);
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.DEMO_RATE_LIMITER.limit({ key: `create:${ip}` })).success) {
     throw new DemoError(429, "too many demo payments; try again in a minute");
@@ -142,6 +153,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
       },
       body: JSON.stringify({
         kind: "payment",
+        purpose,
         externalId: `demo_${idempotencyKey}`,
         chain: option.chain,
         asset: option.asset,
@@ -152,7 +164,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
           300,
           86_400,
         ),
-        metadata: { demo: true, purpose },
+        metadata: { demo: true },
       }),
     }),
   );
@@ -173,6 +185,158 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
   );
 }
 
+async function createDemoWithdrawal(request: Request, env: DemoEnv): Promise<Response> {
+  enforceSameOrigin(request);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `withdrawal:${ip}` })).success) {
+    throw new DemoError(429, "too many demo withdrawals; try again in a minute");
+  }
+  const body = await readObject(request, 8_192);
+  rejectUnknownFields(body, [
+    "chain",
+    "asset",
+    "amount",
+    "destinationAddress",
+    "idempotencyKey",
+    "turnstileToken",
+  ]);
+  const chain = stringField(body, "chain");
+  const asset = stringField(body, "asset");
+  const amount = stringField(body, "amount");
+  const destinationAddress = stringField(body, "destinationAddress");
+  const idempotencyKey = stringField(body, "idempotencyKey");
+  const turnstileToken = stringField(body, "turnstileToken");
+  if (!/^0x[0-9a-f]{40}$/i.test(destinationAddress) || /^0x0{40}$/i.test(destinationAddress)) {
+    throw new DemoError(400, "enter a valid destination address");
+  }
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)
+  ) {
+    throw new DemoError(400, "idempotencyKey must be a UUID");
+  }
+  if (!turnstileToken || turnstileToken.length > 2_048) {
+    throw new DemoError(400, "complete the security check");
+  }
+  const option = demoOption(env, chain, asset);
+  const configured = amountConfig(option);
+  let parsed: ReturnType<typeof parseAmount>;
+  try {
+    parsed = parseAmount(amount, configured.decimals);
+  } catch {
+    throw new DemoError(400, "enter a valid withdrawal amount");
+  }
+  if (parsed.units < configured.minimum.units || parsed.units > configured.maximum.units) {
+    throw new DemoError(
+      400,
+      `amount must be between ${configured.minimum.amount} and ${configured.maximum.amount}`,
+    );
+  }
+  if (
+    !(await verifyTurnstile(
+      turnstileToken,
+      ip,
+      new URL(request.url).hostname,
+      env.TURNSTILE_SECRET_KEY,
+    ))
+  ) {
+    throw new DemoError(403, "security check failed; please try again");
+  }
+
+  const gateway = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `demo:withdrawal:${idempotencyKey}`,
+      },
+      body: JSON.stringify({
+        purpose: "withdrawal",
+        externalId: `demo_withdrawal_${idempotencyKey}`,
+        chain: option.chain,
+        asset: option.asset,
+        amount: parsed.amount,
+        destinationAddress,
+        expiresInSeconds: integerSetting(
+          env.DEMO_EXPIRY_SECONDS,
+          "DEMO_EXPIRY_SECONDS",
+          300,
+          86_400,
+        ),
+      }),
+    }),
+  );
+  const gatewayBody = await responseObject(gateway, 2_000_000);
+  if (!gateway.ok) {
+    throw new DemoError(
+      gateway.status >= 500 ? 502 : gateway.status,
+      "gateway rejected the withdrawal",
+    );
+  }
+  const withdrawal = publicWithdrawal(gatewayBody);
+  return json(
+    {
+      withdrawal,
+      accessToken: await issueAccessToken(
+        withdrawal.id as string,
+        Date.now() + 24 * 60 * 60 * 1_000,
+        env.DEMO_SESSION_SECRET,
+      ),
+    },
+    gateway.status,
+  );
+}
+
+async function getDemoWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  await requireAccess(request, withdrawalId, env);
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${withdrawalId}/proposal`, {
+      headers: gatewayAuthorization(env),
+    }),
+  );
+  const body = await responseObject(response, 2_000_000);
+  if (!response.ok) throw new DemoError(502, "gateway withdrawal status is unavailable");
+  return json({ withdrawal: publicWithdrawal(body) });
+}
+
+async function submitDemoWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  enforceSameOrigin(request);
+  await requireAccess(request, withdrawalId, env);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `withdrawal-submit:${ip}` })).success) {
+    throw new DemoError(429, "too many signed transaction attempts; try again in a minute");
+  }
+  const body = await readObject(request, 262_200);
+  rejectUnknownFields(body, ["rawTransaction"]);
+  const rawTransaction = stringField(body, "rawTransaction");
+  if (!/^0x(?:[0-9a-f]{2})+$/i.test(rawTransaction) || rawTransaction.length > 262_146) {
+    throw new DemoError(400, "enter a valid signed raw transaction");
+  }
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${withdrawalId}/transaction`, {
+      method: "POST",
+      headers: { ...gatewayAuthorization(env), "Content-Type": "application/json" },
+      body: JSON.stringify({ rawTransaction }),
+    }),
+  );
+  const responseBody = await responseObject(response, 2_000_000);
+  if (!response.ok) {
+    throw new DemoError(
+      response.status >= 500 ? 502 : response.status,
+      "gateway rejected the signed transaction",
+    );
+  }
+  return json({ withdrawal: publicWithdrawal(responseBody) }, response.status);
+}
+
 async function getDemoAnalytics(request: Request, env: DemoEnv): Promise<Response> {
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.DEMO_RATE_LIMITER.limit({ key: `analytics:${ip}` })).success) {
@@ -191,14 +355,8 @@ async function getDemoAnalytics(request: Request, env: DemoEnv): Promise<Respons
 }
 
 async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): Promise<Response> {
-  const authorization = request.headers.get("Authorization") ?? "";
-  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  if (!(await validAccessToken(token, intentId, env.DEMO_SESSION_SECRET))) {
-    throw new DemoError(401, "invalid demo access token");
-  }
-  const headers = {
-    Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
-  };
+  await requireAccess(request, intentId, env);
+  const headers = gatewayAuthorization(env);
   const [intentResponse, sweepResponse, webhookEvent] = await Promise.all([
     env.GATEWAY.fetch(
       new Request(`https://gateway.internal${GATEWAY_ROOT}/intents/${intentId}`, { headers }),
@@ -337,6 +495,7 @@ function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
   const fields = [
     "id",
     "kind",
+    "purpose",
     "externalId",
     "chain",
     "chainId",
@@ -360,6 +519,63 @@ function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
     "createdAt",
     "updatedAt",
   ];
+  return publicFields(value, fields);
+}
+
+function publicWithdrawal(value: Record<string, unknown>): Record<string, unknown> {
+  const id = value.id;
+  if (typeof id !== "string" || !/^wd_[A-Za-z0-9_-]+$/.test(id)) {
+    throw new DemoError(502, "gateway returned an invalid withdrawal");
+  }
+  const result = publicFields(value, [
+    "id",
+    "purpose",
+    "externalId",
+    "chain",
+    "chainId",
+    "asset",
+    "amount",
+    "amountUnits",
+    "sourceAddress",
+    "destinationAddress",
+    "requiredConfirmations",
+    "status",
+    "expiresAt",
+    "completedAt",
+    "lastError",
+    "createdAt",
+    "updatedAt",
+  ]);
+  if (isObject(value.proposal)) {
+    result.proposal = publicFields(value.proposal, [
+      "chainId",
+      "from",
+      "to",
+      "value",
+      "data",
+      "amount",
+      "asset",
+      "maxGas",
+      "maxGasPriceWei",
+    ]);
+  }
+  result.transaction = isObject(value.transaction)
+    ? publicFields(value.transaction, [
+        "hash",
+        "from",
+        "to",
+        "nonce",
+        "feeWei",
+        "status",
+        "blockNumber",
+        "lastError",
+        "explorerUrl",
+      ])
+    : null;
+  return result;
+}
+
+function publicFields(value: Record<string, unknown>, fields: string[]): Record<string, unknown> {
   return Object.fromEntries(
     fields.filter((field) => field in value).map((field) => [field, value[field]]),
   );
@@ -548,6 +764,25 @@ async function validAccessToken(token: string, intentId: string, secret: string)
     signature,
     new TextEncoder().encode(payload),
   );
+}
+
+async function requireAccess(request: Request, resourceId: string, env: DemoEnv): Promise<void> {
+  const authorization = request.headers.get("Authorization") ?? "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!(await validAccessToken(token, resourceId, env.DEMO_SESSION_SECRET))) {
+    throw new DemoError(401, "invalid demo access token");
+  }
+}
+
+function gatewayAuthorization(env: DemoEnv): Record<string, string> {
+  return {
+    Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
+  };
+}
+
+function enforceSameOrigin(request: Request): void {
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== new URL(request.url).origin) throw new DemoError(403, "invalid origin");
 }
 
 async function readObject(

@@ -23,6 +23,9 @@ reenter, lie about balances, or block collection. The included transfer logic
 supports standard boolean-returning tokens and established no-return tokens,
 but configuration remains the security boundary.
 
+The native-asset scanner reads top-level transactions. It does not use trace
+APIs and cannot find internal native transfers from contracts.
+
 ## Cloudflare credentials
 
 The treasury key and multisig owner keys must never enter Cloudflare. The API
@@ -39,6 +42,27 @@ The API and relayer both pin the factory runtime code hash. The API rejects
 relayer private keys. It independently validates each registered transaction.
 This validation covers the signer, chain, factory destination, calldata, value,
 gas, and gas price.
+
+The API does not receive the treasury private key. An external treasury signer
+creates withdrawal transactions. The API validates the signer, chain, asset,
+amount, destination, calldata, nonce, gas, and fee before broadcast.
+The signer must compare each proposal with an independently authorized ledger
+entry. It must not trust the gateway proposal as its only approval source.
+The API also rejects known deposit addresses as withdrawal destinations. This
+check prevents circular transfers from creating false payment credits.
+
+Configure `withdrawalSourceAddress` as a separate, limited-balance payout wallet
+for a smaller loss limit. A multisig treasury can keep the collected reserves.
+Cloudflare stores only the public addresses.
+
+For a swap, the signer must validate the input with an independent RPC provider
+or indexer. It must validate the output quote against the independent ledger.
+Cross-chain input and output transactions are not atomic. An input reorg after
+an output requires manual treasury reconciliation.
+
+Cloudflare creates refund proposals but never signs them. The signer must make
+sure that the output cannot complete before it approves a refund. The gateway
+expires an unsigned refund if a failed output becomes active again.
 
 Use Cloudflare encrypted secrets. Keep `.api.<environment>.secrets` and
 `.sweeper.<environment>.secrets` out of version control. Never share relayer
