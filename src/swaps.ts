@@ -104,7 +104,7 @@ async function createSwap(request: Request, env: ApiEnv): Promise<Response> {
   const rawOutputAmount = requiredString(body, "outputAmount");
   const destination = checkedAddress(requiredString(body, "destinationAddress"));
   const refundAddress = checkedAddress(requiredString(body, "refundAddress"), "refundAddress");
-  if (!/^pi_[A-Za-z0-9_-]+$/.test(depositIntentId))
+  if (!/^di_[A-Za-z0-9_-]+$/.test(depositIntentId))
     throw new SwapHttpError(400, "invalid depositIntentId");
   if (rawOutputAmount.trim().length > 100)
     throw new SwapHttpError(400, "outputAmount must be at most 100 characters");

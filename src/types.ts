@@ -68,7 +68,7 @@ export type IntentRow = {
   forwarder_init_code_hash: Hex;
   start_block: number;
   confirmations: number;
-  status: PaymentStatus;
+  status: DepositStatus;
   expires_at: number;
   metadata: string;
   created_at: number;
@@ -93,7 +93,7 @@ export type DepositTransferRow = {
   updated_at: number;
 };
 
-export type PaymentStatus = "pending" | "underpaid" | "confirming" | "paid" | "expired" | "reorged";
+export type DepositStatus = "pending" | "underpaid" | "confirming" | "paid" | "expired" | "reorged";
 
 export type SweepTransaction = {
   id: string;

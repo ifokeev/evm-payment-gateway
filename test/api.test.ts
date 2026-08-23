@@ -94,7 +94,7 @@ describe("payment API", () => {
     ).toBe(401);
   });
 
-  it("creates, polls, and safely replays an exact payment intent", async () => {
+  it("creates, polls, and safely replays an exact deposit intent", async () => {
     const key = randomId("idem");
     const first = await create(key, { amount: "0010.250000", metadata: { z: 1, a: 2 } });
     expect(first.status).toBe(201);
@@ -1105,7 +1105,7 @@ describe("swap API", () => {
     const idle = Array.from({ length: 100 }, (_, index) => {
       const salt = `0x${(index + 10_000).toString(16).padStart(64, "0")}` as Hex;
       return {
-        depositId: `pi_${prefix}_${index}`,
+        depositId: `di_${prefix}_${index}`,
         swapId: `swp_${prefix}_${index}`,
         salt,
         address: counterfactualAddress(testFactory, salt, testTreasury, testToken).address,
@@ -1945,7 +1945,7 @@ describe("swap API", () => {
 describe("sweep coordinator", () => {
   it("backfills a cryptographically provable historical treasury snapshot", async () => {
     const now = unixNow();
-    const validIntentId = randomId("pi");
+    const validIntentId = randomId("di");
     const validJobId = randomId("swp");
     const valid = intentFields("91", testToken);
     const insertIntent = (id: string, fields: ReturnType<typeof intentFields>) =>
@@ -1993,7 +1993,7 @@ describe("sweep coordinator", () => {
 
   it("accepts only the canonical relayer factory call and stores it idempotently", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const jobId = randomId("swp");
     const snapshottedTreasury = "0x4444444444444444444444444444444444444444";
     const fields = intentFields("90", testToken, snapshottedTreasury);
@@ -2053,7 +2053,7 @@ describe("sweep coordinator", () => {
 
   it("reports expired underpayment recovery without marking the payment paid", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const jobId = randomId("swp");
     const fields = intentFields("95", testToken);
     await bindings.DB.batch([
@@ -2093,16 +2093,16 @@ describe("sweep coordinator", () => {
         .first(),
     ).toEqual({ status: "external", collected_units: "40" });
     const event = await bindings.DB.prepare(
-      "SELECT body FROM webhook_events WHERE deposit_intent = ? AND type = 'payment.recovered'",
+      "SELECT body FROM webhook_events WHERE deposit_intent = ? AND type = 'deposit.recovered'",
     )
       .bind(intentId)
       .first<{ body: string }>();
-    expect(JSON.parse(event!.body).data.paymentIntent).toMatchObject({
+    expect(JSON.parse(event!.body).data.depositIntent).toMatchObject({
       requestedUnits: "100",
       receivedUnits: "40",
       missingUnits: "60",
       collectedUnits: "40",
-      paymentStatus: "underpaid",
+      depositStatus: "underpaid",
       settlementStatus: "expired_underpaid_collected",
     });
     expect(
@@ -2118,7 +2118,7 @@ describe("sweep coordinator", () => {
 describe("analytics", () => {
   it("aggregates integer units, collection, fees, and status counts without floats", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const jobId = randomId("swp");
     const withdrawalId = randomId("wd");
     const fields = intentFields("96", "");
@@ -2239,9 +2239,9 @@ describe("analytics", () => {
 describe("chain scanner", () => {
   it("bounds native scans and fast-forwards token-only catch-up", async () => {
     const now = unixNow();
-    const nativeId = randomId("pi");
-    const tokenId = randomId("pi");
-    const secondTokenId = randomId("pi");
+    const nativeId = randomId("di");
+    const tokenId = randomId("di");
+    const secondTokenId = randomId("di");
     const native = intentFields("a1", "");
     const token = intentFields("b2", testToken);
     const secondToken = intentFields("c3", testToken);
@@ -2294,7 +2294,7 @@ describe("chain scanner", () => {
         now,
       ),
     ]);
-    const extraTokenIds = Array.from({ length: 99 }, () => randomId("pi"));
+    const extraTokenIds = Array.from({ length: 99 }, () => randomId("di"));
     await bindings.DB.batch(
       extraTokenIds.map((id, index) => {
         const salt = `0x${(index + 1).toString(16).padStart(64, "0")}` as `0x${string}`;
@@ -2488,7 +2488,7 @@ describe("chain scanner", () => {
           (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
            deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
            VALUES (?,?,?,'payment',?,'scale-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
-          randomId("pi"),
+          randomId("di"),
           randomId("idem"),
           "2".repeat(64),
           `scale-${index}`,
@@ -2533,7 +2533,7 @@ describe("chain scanner", () => {
 describe("confirmation and reorg state", () => {
   it("rolls collection amounts and fees back before retrying a reorged transaction", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const jobId = randomId("swp");
     const fields = intentFields("89", "");
     await bindings.DB.batch([
@@ -2605,7 +2605,7 @@ describe("confirmation and reorg state", () => {
 
   it("expires an untouched intent even when chain polling is unavailable", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const fields = intentFields("91", "");
     await bindings.DB.prepare(`INSERT INTO deposit_intents
       (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
@@ -2636,7 +2636,7 @@ describe("confirmation and reorg state", () => {
 
   it("emits each paid transition once and reverses it after an orphaned block", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const fields = intentFields("92", "");
     await bindings.DB.prepare(`INSERT INTO deposit_intents
       (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
@@ -2693,7 +2693,7 @@ describe("confirmation and reorg state", () => {
     expect(
       (
         await bindings.DB.prepare(
-          "SELECT count(*) AS count FROM webhook_events WHERE deposit_intent = ? AND type = 'payment.succeeded'",
+          "SELECT count(*) AS count FROM webhook_events WHERE deposit_intent = ? AND type = 'deposit.succeeded'",
         )
           .bind(intentId)
           .first<{ count: number }>()
@@ -2717,25 +2717,25 @@ describe("confirmation and reorg state", () => {
     expect(
       (
         await bindings.DB.prepare(
-          "SELECT count(*) AS count FROM webhook_events WHERE deposit_intent = ? AND type = 'payment.reorged'",
+          "SELECT count(*) AS count FROM webhook_events WHERE deposit_intent = ? AND type = 'deposit.reorged'",
         )
           .bind(intentId)
           .first<{ count: number }>()
       )?.count,
     ).toBe(1);
     const event = await bindings.DB.prepare(
-      "SELECT body FROM webhook_events WHERE deposit_intent = ? AND type = 'payment.reorged'",
+      "SELECT body FROM webhook_events WHERE deposit_intent = ? AND type = 'deposit.reorged'",
     )
       .bind(intentId)
       .first<{ body: string }>();
-    expect(JSON.parse(event!.body).data.paymentIntent.transactionHashes).toEqual([
+    expect(JSON.parse(event!.body).data.depositIntent.transactionHashes).toEqual([
       `0x${"1".repeat(64)}`,
     ]);
   });
 
   it("collects a confirmed late payment without crediting it", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const fields = intentFields("93", testToken);
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
@@ -2855,10 +2855,10 @@ describe("webhook delivery", () => {
       id: string;
     }>();
     expect(intent).not.toBeNull();
-    const body = JSON.stringify({ id: eventId, type: "payment.succeeded" });
+    const body = JSON.stringify({ id: eventId, type: "deposit.succeeded" });
     await bindings.DB.prepare(`INSERT INTO webhook_events
       (event_id,type,deposit_intent,body,status,attempts,next_attempt_at,created_at,updated_at)
-      VALUES (?,'payment.succeeded',?,?,'pending',0,?,?,?)`)
+      VALUES (?,'deposit.succeeded',?,?,'pending',0,?,?,?)`)
       .bind(eventId, intent!.id, body, unixNow(), unixNow(), unixNow())
       .run();
     const seen: Array<{
@@ -2924,7 +2924,7 @@ describe("webhook delivery", () => {
     }>();
     await bindings.DB.prepare(`INSERT INTO webhook_events
       (event_id,type,deposit_intent,body,status,attempts,next_attempt_at,created_at,updated_at)
-      VALUES (?,'payment.succeeded',?,'{}','pending',0,?,?,?)`)
+      VALUES (?,'deposit.succeeded',?,'{}','pending',0,?,?,?)`)
       .bind(eventId, intent!.id, unixNow(), unixNow(), unixNow())
       .run();
     let redirectMode = "";
@@ -2948,7 +2948,7 @@ describe("webhook delivery", () => {
 
   it("dispatches due sweeps without scanning unused networks", async () => {
     const now = unixNow();
-    const intentId = randomId("pi");
+    const intentId = randomId("di");
     const jobId = randomId("swp");
     const fields = intentFields("94", "");
     await bindings.DB.batch([

@@ -4,7 +4,7 @@
 
 **Serverless CREATE2 crypto payments in your own Cloudflare account.**
 
-The gateway creates exact payment intents with deterministic keyless addresses.
+The gateway creates exact deposit intents with deterministic keyless addresses.
 It waits for EVM confirmations, sends signed webhooks, and collects funds in
 your treasury. You do not operate servers or manage deposit keys.
 
@@ -100,7 +100,7 @@ flowchart LR
    immutable forwarder at the predicted address and collects its full balance.
 4. Native payments sent after deployment forward immediately. Another
    permissionless relayer call collects later ERC-20 payments.
-5. The application receives `payment.succeeded` independently of treasury
+5. The application receives `deposit.succeeded` independently of treasury
    collection, so relayer downtime never changes payment truth.
 
 Anyone can collect unexpected native or ERC-20 assets. The immutable treasury
@@ -276,7 +276,7 @@ requests use `withdrawal`. The swap coordinator creates `swap` withdrawals.
 | --- | --- | --- |
 | `POST` | `/intents` | Create or idempotently replay an intent. |
 | `GET` | `/intents/{id}` | Poll state and included transactions. |
-| `GET` | `/intents/{id}/transactions` | Read payment transaction history. |
+| `GET` | `/intents/{id}/transactions` | Read deposit transfer history. |
 | `GET` | `/intents/{id}/sweep` | Read treasury-collection history. |
 | `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
@@ -287,9 +287,9 @@ requests use `withdrawal`. The swap coordinator creates `swap` withdrawals.
 | `GET` | `/analytics/summary` | Read exact aggregate payment and collection metrics. |
 | `GET` | `/health` | Read scanner progress by network. |
 
-Successful payments emit `payment.succeeded`. An orphaned success emits
-`payment.reorged`. Collected expired underpayments emit the
-informational `payment.recovered` event but never become paid. See the
+Successful payments emit `deposit.succeeded`. An orphaned success emits
+`deposit.reorged`. Collected expired underpayments emit the
+informational `deposit.recovered` event but never become paid. See the
 [application integration guide](INTEGRATION.md) for webhook verification,
 idempotent fulfillment, partial payments, recurring invoices, and examples.
 
@@ -309,7 +309,7 @@ npm run deploy:demo
 ```
 
 Create a Turnstile widget for the demo hostname. Fill the secrets file. Set the
-API Worker webhook URL to the demo `/webhooks/payment` endpoint.
+API Worker webhook URL to the demo `/webhooks/deposit` endpoint.
 
 Dummy Turnstile keys are for local and automated tests only.
 

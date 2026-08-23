@@ -33,10 +33,10 @@ import { rpcTransport } from "./rpc";
 import { routeSwap } from "./swaps";
 import type {
   ApiEnv,
+  DepositStatus,
   DepositTransferRow,
   IntentRow,
   NetworkConfig,
-  PaymentStatus,
   SweepJob,
   SweepOutcome,
   SweepTransaction,
@@ -104,7 +104,7 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
   const intent = await env.DB.prepare("SELECT * FROM deposit_intents WHERE id = ?")
     .bind(match[1])
     .first<IntentRow>();
-  if (!intent) throw new HttpError(404, "payment intent not found");
+  if (!intent) throw new HttpError(404, "deposit intent not found");
   const networks = loadNetworks(env.NETWORKS_JSON);
   const network = networks.get(intent.chain);
   if (!network) throw new Error(`network ${intent.chain} is no longer configured`);
@@ -425,7 +425,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   );
   const now = unixNow();
   const intent: IntentRow = {
-    id: randomId("pi"),
+    id: randomId("di"),
     idempotency_key: idempotencyKey,
     request_hash: requestHash,
     kind,
@@ -883,7 +883,7 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     const job =
       await this.env.DB.prepare(`SELECT j.attempts, j.deposit_intent, j.observed_units, j.collected_units,
       i.external_id, i.kind, i.purpose, i.chain, i.chain_id, i.asset, i.expected_amount, i.expected_units,
-      i.deposit_address, i.status AS payment_status, i.expires_at
+      i.deposit_address, i.status AS deposit_status, i.expires_at
       FROM sweep_jobs j JOIN deposit_intents i ON i.id = j.deposit_intent WHERE j.id = ?`)
         .bind(jobId)
         .first<{
@@ -900,7 +900,7 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
           expected_amount: string;
           expected_units: string;
           deposit_address: Address;
-          payment_status: PaymentStatus;
+          deposit_status: DepositStatus;
           expires_at: number;
         }>();
     if (!job) throw new Error("sweep job not found");
@@ -944,7 +944,7 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     const grace = intSetting(this.env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
     if (
       collected > oldCollected &&
-      (job.payment_status === "underpaid" || job.payment_status === "expired") &&
+      (job.deposit_status === "underpaid" || job.deposit_status === "expired") &&
       now > job.expires_at + grace
     ) {
       const eventId = randomId("evt");
@@ -952,10 +952,10 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       const missing = expected > observed ? expected - observed : 0n;
       const body = JSON.stringify({
         id: eventId,
-        type: "payment.recovered",
+        type: "deposit.recovered",
         createdAt: new Date(now * 1_000).toISOString(),
         data: {
-          paymentIntent: {
+          depositIntent: {
             id: job.deposit_intent,
             externalId: job.external_id,
             kind: job.kind,
@@ -970,7 +970,7 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
             collectedUnits: collected.toString(),
             collectedDeltaUnits: (collected - oldCollected).toString(),
             depositAddress: job.deposit_address,
-            paymentStatus: job.payment_status,
+            depositStatus: job.deposit_status,
             settlementStatus: "expired_underpaid_collected",
           },
         },
@@ -978,7 +978,7 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       statements.push(
         this.env.DB.prepare(`INSERT INTO webhook_events
         (event_id, type, deposit_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
-        SELECT ?, 'payment.recovered', ?, ?, 'pending', 0, ?, ?, ? FROM sweep_jobs
+        SELECT ?, 'deposit.recovered', ?, ?, 'pending', 0, ?, ?, ? FROM sweep_jobs
         WHERE id = ? AND status = 'processing' AND lock_owner = ?`).bind(
           eventId,
           job.deposit_intent,

@@ -81,9 +81,9 @@ Use these operational controls:
 - Monitor relayer balance, failed collections, scanner lag, webhook retries,
   and unexpected factory code-hash failures.
 - Validate every token address and decimals value against issuer data.
-- Treat `payment.succeeded` as an at-least-once event.
+- Treat `deposit.succeeded` as an at-least-once event.
 - Deduplicate webhook IDs and business fulfillment in your database.
-- Handle `payment.reorged`. More confirmations reduce reorg risk but do not
+- Handle `deposit.reorged`. More confirmations reduce reorg risk but do not
   eliminate it.
 
 ## Mainnet status

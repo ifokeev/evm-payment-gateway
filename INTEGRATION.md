@@ -33,9 +33,9 @@ All payment endpoints use the `/api/payments/v1` prefix and require
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/intents` | Create or idempotently replay a payment intent. |
+| `POST` | `/intents` | Create or idempotently replay a deposit intent. |
 | `GET` | `/intents/{id}` | Poll status and the included transaction history. |
-| `GET` | `/intents/{id}/transactions` | Read payment transactions only. |
+| `GET` | `/intents/{id}/transactions` | Read deposit transfers only. |
 | `GET` | `/intents/{id}/sweep` | Inspect treasury collection progress. |
 | `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
@@ -107,7 +107,7 @@ The response includes the fields needed by your checkout:
 
 ```json
 {
-  "id": "pi_example",
+  "id": "di_example",
   "kind": "payment",
   "purpose": "checkout",
   "externalId": "order_123",
@@ -157,7 +157,7 @@ that proxies the safe status fields. Do not call the gateway directly from
 browser code. All intent reads require the bearer API key.
 
 ```http
-GET /api/payments/v1/intents/pi_example
+GET /api/payments/v1/intents/di_example
 Authorization: Bearer <gateway-api-key>
 ```
 
@@ -188,18 +188,18 @@ sequenceDiagram
     App-->>UI: Safe checkout fields
     Customer->>Chain: Send payment
     loop While checkout is open
-        UI->>App: Get payment status
+        UI->>App: Get deposit status
         App->>Gateway: GET /intents/{id}
         Gateway-->>App: Current status and transactions
         App-->>UI: Current status
     end
     Gateway->>Chain: Wait for configured confirmations
-    Gateway->>App: Signed payment.succeeded webhook
+    Gateway->>App: Signed deposit.succeeded webhook
     App->>App: Verify, deduplicate, and fulfill
     Gateway->>Treasury: Collect funds asynchronously
 ```
 
-### Payment statuses
+### Deposit statuses
 
 ```mermaid
 stateDiagram-v2
@@ -252,10 +252,10 @@ sequenceDiagram
     User->>UI: Choose amount
     UI->>App: Request top-up
     App->>App: Validate amount and account
-    App->>Gateway: Create payment intent
+    App->>Gateway: Create deposit intent
     Gateway-->>App: Exact amount, address, QR and URI
     App-->>UI: Safe payment fields
-    Gateway->>App: Signed payment.succeeded
+    Gateway->>App: Signed deposit.succeeded
     App->>App: Credit requested amount exactly once
 ```
 
@@ -273,14 +273,14 @@ sequenceDiagram
 }
 ```
 
-Create a new intent for every attempt. After `payment.succeeded`, credit the
+Create a new intent for every attempt. After `deposit.succeeded`, credit the
 validated requested amount once with your ledger constraint. Do not convert an
 accidental overpayment into additional balance.
 
 ## 3. Validate and process webhooks
 
-The gateway sends `payment.succeeded`, `payment.reorged`, and informational
-`payment.recovered` events. It retries non-2xx responses with exponential
+The gateway sends `deposit.succeeded`, `deposit.reorged`, and informational
+`deposit.recovered` events. It retries non-2xx responses with exponential
 backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
 
 ```text
@@ -322,11 +322,11 @@ Example event:
 ```json
 {
   "id": "evt_example",
-  "type": "payment.succeeded",
+  "type": "deposit.succeeded",
   "createdAt": "2026-08-14T20:05:00.000Z",
   "data": {
-    "paymentIntent": {
-      "id": "pi_example",
+    "depositIntent": {
+      "id": "di_example",
       "externalId": "order_123",
       "kind": "payment",
       "purpose": "checkout",
@@ -344,7 +344,7 @@ Example event:
 }
 ```
 
-For `payment.succeeded`, match both `externalId` and the stored intent ID. Then
+For `deposit.succeeded`, match both `externalId` and the stored intent ID. Then
 write a unique fulfillment ledger entry for your business order or invoice ID.
 Keep the gateway intent ID on that entry.
 
@@ -352,7 +352,7 @@ This constraint prevents duplicate fulfillment from webhooks, polling, new
 checkout attempts, or payment recovery after a reorg. After the transaction
 commits, return a 2xx response.
 
-For `payment.reorged`, record the incident. If your product supports safe
+For `deposit.reorged`, record the incident. If your product supports safe
 reversal, reverse the entitlement. If fulfillment is irreversible, configure
 more confirmations for that network. For irreversible fulfillment, route the
 reorg to manual review.
@@ -361,7 +361,7 @@ Model reversible fulfillment as a state transition on the existing business
 order or invoice. If the same intent becomes paid again after a reorg, reactivate
 that entitlement. For the same recovered intent, do not append a second grant.
 
-`payment.recovered` means the gateway collected some or all funds from an
+`deposit.recovered` means the gateway collected some or all funds from an
 expired or underpaid intent. It includes `requestedUnits`, `receivedUnits`,
 `missingUnits`, `collectedUnits`, and `collectedDeltaUnits`. It does not change
 the intent to `paid`.
@@ -486,7 +486,7 @@ Idempotency-Key: swap:quote-123
 Content-Type: application/json
 
 {
-  "depositIntentId": "pi_example",
+  "depositIntentId": "di_example",
   "outputChain": "bnb",
   "outputAsset": "USDT",
   "outputAmount": "24.91",
@@ -540,7 +540,7 @@ approval and reconcile the loss from the treasury ledger.
 
 For any recurring product, create a new `invoice` intent for every billing
 period. Use a new external ID and idempotency key for each period. After its own
-`payment.succeeded` event, fulfill the invoice.
+`deposit.succeeded` event, fulfill the invoice.
 
 The gateway never stores an allowance or withdraws from the customer's wallet
 automatically.
@@ -559,7 +559,7 @@ Before production, complete these tasks:
   database constraints.
 - Use polling for display and recovery.
 - Use a validated gateway status for fulfillment.
-- Handle `payment.reorged` according to the reversibility of your product.
-- Route `payment.recovered` to reconciliation.
-- Never treat `payment.recovered` as payment success.
+- Handle `deposit.reorged` according to the reversibility of your product.
+- Route `deposit.recovered` to reconciliation.
+- Never treat `deposit.recovered` as payment success.
 - Never make fulfillment depend on asynchronous treasury collection.

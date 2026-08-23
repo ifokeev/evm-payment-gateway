@@ -1,7 +1,7 @@
 import { type Address, getAddress, isAddress, isAddressEqual, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH } from "./contracts.generated";
-import type { NetworkConfig, PaymentStatus, TokenConfig } from "./types";
+import type { DepositStatus, NetworkConfig, TokenConfig } from "./types";
 
 const UINT256_MAX = (1n << 256n) - 1n;
 
@@ -32,7 +32,7 @@ export function deriveStatus(
   expected: bigint,
   expired: boolean,
   reorged: boolean,
-): PaymentStatus {
+): DepositStatus {
   if (confirmed >= expected) return "paid";
   if (reorged) return "reorged";
   if (received >= expected) return "confirming";
@@ -204,7 +204,7 @@ export function stableStringify(value: unknown): string {
 
 export function eligibleForSweep(
   isToken: boolean,
-  status: PaymentStatus,
+  status: DepositStatus,
   confirmed: bigint,
   expected: bigint,
   expiredWithGrace: boolean,

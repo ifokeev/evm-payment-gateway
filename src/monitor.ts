@@ -599,8 +599,8 @@ async function updatePayment(
   }
 
   let eventType = "";
-  if (status === "paid" && intent.status !== "paid") eventType = "payment.succeeded";
-  else if (status === "reorged" && intent.status === "paid") eventType = "payment.reorged";
+  if (status === "paid" && intent.status !== "paid") eventType = "deposit.succeeded";
+  else if (status === "reorged" && intent.status === "paid") eventType = "deposit.reorged";
   if (eventType) {
     const eventId = randomId("evt");
     const body = JSON.stringify({
@@ -608,7 +608,7 @@ async function updatePayment(
       type: eventType,
       createdAt: new Date(now * 1000).toISOString(),
       data: {
-        paymentIntent: {
+        depositIntent: {
           id: intent.id,
           externalId: intent.external_id,
           kind: intent.kind,

@@ -61,7 +61,7 @@ asset.addEventListener("change", updateSelection);
 purpose.addEventListener("change", () => {
   purposeHelp.textContent =
     purpose.value === "account_top_up"
-      ? "The user chooses the amount before the app creates an exact payment intent."
+      ? "The user chooses the amount before the app creates an exact deposit intent."
       : "A normal one-time payment for an order or service.";
 });
 
@@ -484,11 +484,11 @@ function renderPayment(state) {
       : `${intent.remainingAmount} ${intent.asset} remains to be paid.`,
     confirming: `Waiting for ${intent.requiredConfirmations} confirmations on ${humanize(intent.chain)}.`,
     paid: "The required network confirmations were reached.",
-    expired: "Create a new payment intent to try again.",
+    expired: "Create a new deposit intent to try again.",
     reorged: "A confirmed transaction is no longer canonical.",
   };
   document.querySelector(".intent-header").dataset.status = status;
-  text("#status-title", titles[status] ?? "Payment status updated");
+  text("#status-title", titles[status] ?? "Deposit status updated");
   text("#status-detail", details[status] ?? "Payment state updated.");
   text("#metadata-network", humanize(intent.chain));
   text("#intent-id", intent.id);
@@ -758,7 +758,7 @@ function renderDelivery(event, unpaidExpired) {
     );
     return;
   }
-  const reorged = event.type === "payment.reorged";
+  const reorged = event.type === "deposit.reorged";
   setActivityState(
     "#delivery-activity",
     "#delivery-badge",
@@ -829,19 +829,19 @@ function startPolling(immediate = false) {
       const body = await response.json();
       if (!response.ok) {
         if (response.status === 401) clearStoredPayment();
-        throw new Error(body.error ?? "Payment status is unavailable");
+        throw new Error(body.error ?? "Deposit status is unavailable");
       }
       if (flow !== "deposit") return;
       renderPayment(body);
       const done =
         ["complete", "external"].includes(body.sweep?.status) &&
-        ["payment.succeeded", "payment.reorged"].includes(body.webhookEvent?.type);
+        ["deposit.succeeded", "deposit.reorged"].includes(body.webhookEvent?.type);
       if (done) {
         await loadAnalytics();
         return;
       }
     } catch (error) {
-      showGlobalError(error instanceof Error ? error.message : "Payment status is unavailable");
+      showGlobalError(error instanceof Error ? error.message : "Deposit status is unavailable");
     }
     pollTimer = setTimeout(poll, 5_000);
   };

@@ -62,7 +62,7 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "POST" && url.pathname === `${API_ROOT}/withdrawals`) {
     return createDemoWithdrawal(request, env);
   }
-  const intentMatch = url.pathname.match(/^\/api\/intents\/(pi_[A-Za-z0-9_-]+)$/);
+  const intentMatch = url.pathname.match(/^\/api\/intents\/(di_[A-Za-z0-9_-]+)$/);
   if (request.method === "GET" && intentMatch) {
     return getDemoIntent(request, env, intentMatch[1]);
   }
@@ -75,7 +75,7 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "POST" && withdrawalMatch?.[2] === "transaction") {
     return submitDemoWithdrawal(request, env, withdrawalMatch[1]);
   }
-  if (request.method === "POST" && url.pathname === "/webhooks/payment") {
+  if (request.method === "POST" && url.pathname === "/webhooks/deposit") {
     return receiveWebhook(request, env);
   }
   if (url.pathname.startsWith(`${API_ROOT}/`) || url.pathname.startsWith("/webhooks/")) {
@@ -411,29 +411,29 @@ async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response>
   if (!isObject(event) || event.id !== eventId || !isObject(event.data)) {
     throw new DemoError(400, "invalid webhook body");
   }
-  if (event.type !== "payment.succeeded" && event.type !== "payment.reorged") {
+  if (event.type !== "deposit.succeeded" && event.type !== "deposit.reorged") {
     throw new DemoError(400, "unsupported webhook event");
   }
-  const paymentIntent = event.data.paymentIntent;
+  const depositIntent = event.data.depositIntent;
   if (
-    !isObject(paymentIntent) ||
-    typeof paymentIntent.id !== "string" ||
-    !/^pi_[A-Za-z0-9_-]+$/.test(paymentIntent.id)
+    !isObject(depositIntent) ||
+    typeof depositIntent.id !== "string" ||
+    !/^di_[A-Za-z0-9_-]+$/.test(depositIntent.id)
   ) {
     throw new DemoError(400, "invalid webhook body");
   }
   await env.DEMO_EVENTS.put(
-    `intent:${paymentIntent.id}`,
+    `intent:${depositIntent.id}`,
     JSON.stringify({
       id: eventId,
       type: event.type,
       createdAt: event.createdAt,
-      paymentIntent: {
-        id: paymentIntent.id,
-        status: paymentIntent.status,
-        receivedUnits: paymentIntent.receivedUnits,
-        confirmedUnits: paymentIntent.confirmedUnits,
-        transactionHashes: paymentIntent.transactionHashes,
+      depositIntent: {
+        id: depositIntent.id,
+        status: depositIntent.status,
+        receivedUnits: depositIntent.receivedUnits,
+        confirmedUnits: depositIntent.confirmedUnits,
+        transactionHashes: depositIntent.transactionHashes,
       },
     }),
     { expirationTtl: 7 * 24 * 60 * 60 },
@@ -489,7 +489,7 @@ function amountConfig(option: DemoOption): {
 
 function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
   const id = value.id;
-  if (typeof id !== "string" || !/^pi_[A-Za-z0-9_-]+$/.test(id)) {
+  if (typeof id !== "string" || !/^di_[A-Za-z0-9_-]+$/.test(id)) {
     throw new DemoError(502, "gateway returned an invalid intent");
   }
   const fields = [

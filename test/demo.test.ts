@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import demo, { type DemoEnv } from "../demo/worker";
 
 const intent = {
-  id: "pi_demo123",
+  id: "di_demo123",
   kind: "payment",
   purpose: "account_top_up",
   externalId: "demo_123",
@@ -82,7 +82,7 @@ const analytics = {
     },
   ],
   collectionFeesWei: { "base-sepolia": "secret-operational-detail" },
-  webhooks: [{ type: "payment.succeeded", status: "delivered", count: 9 }],
+  webhooks: [{ type: "deposit.succeeded", status: "delivered", count: 9 }],
 };
 const options = [
   {
@@ -251,7 +251,7 @@ describe("public demo", () => {
 
     events.set(
       `intent:${intent.id}`,
-      JSON.stringify({ id: "evt_demo", type: "payment.succeeded" }),
+      JSON.stringify({ id: "evt_demo", type: "deposit.succeeded" }),
     );
     const poll = await demo.fetch(
       new Request(`https://demo.test/api/intents/${intent.id}`, {
@@ -263,11 +263,11 @@ describe("public demo", () => {
     expect(await poll.json()).toMatchObject({
       intent: { id: intent.id },
       sweep: { status: "not_queued" },
-      webhookEvent: { id: "evt_demo", type: "payment.succeeded" },
+      webhookEvent: { id: "evt_demo", type: "deposit.succeeded" },
     });
 
     const unrelated = await demo.fetch(
-      new Request("https://demo.test/api/intents/pi_other", {
+      new Request("https://demo.test/api/intents/di_other", {
         headers: { Authorization: `Bearer ${body.accessToken}` },
       }),
       env,
@@ -442,10 +442,10 @@ describe("public demo", () => {
   it("accepts authentic idempotent webhooks and rejects tampering", async () => {
     const event = {
       id: "evt_demo123",
-      type: "payment.succeeded",
+      type: "deposit.succeeded",
       createdAt: new Date().toISOString(),
       data: {
-        paymentIntent: {
+        depositIntent: {
           id: intent.id,
           status: "paid",
           receivedUnits: "1250000",
@@ -458,7 +458,7 @@ describe("public demo", () => {
     const timestamp = Math.floor(Date.now() / 1_000).toString();
     const signature = await signWebhook(timestamp, rawBody, env.PAYMENT_WEBHOOK_SECRET);
     const webhookRequest = () =>
-      new Request("https://demo.test/webhooks/payment", {
+      new Request("https://demo.test/webhooks/deposit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -471,12 +471,12 @@ describe("public demo", () => {
     expect((await demo.fetch(webhookRequest(), env)).status).toBe(204);
     expect(JSON.parse(events.get(`intent:${intent.id}`) ?? "null")).toMatchObject({
       id: event.id,
-      type: "payment.succeeded",
-      paymentIntent: { id: intent.id, confirmedUnits: "1250000" },
+      type: "deposit.succeeded",
+      depositIntent: { id: intent.id, confirmedUnits: "1250000" },
     });
     expect((await demo.fetch(webhookRequest(), env)).status).toBe(204);
 
-    const tampered = new Request("https://demo.test/webhooks/payment", {
+    const tampered = new Request("https://demo.test/webhooks/deposit", {
       method: "POST",
       headers: {
         "Webhook-Id": event.id,
@@ -487,7 +487,7 @@ describe("public demo", () => {
     });
     expect((await demo.fetch(tampered, env)).status).toBe(401);
 
-    const stale = new Request("https://demo.test/webhooks/payment", {
+    const stale = new Request("https://demo.test/webhooks/deposit", {
       method: "POST",
       headers: {
         "Webhook-Id": event.id,
