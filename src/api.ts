@@ -259,7 +259,7 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     cursor = rows[rows.length - 1].id;
   }
 
-  const [webhookRows, withdrawalRows, swapRows, withdrawalFeeRows] = await Promise.all([
+  const [webhookRows, withdrawalRows, swapRows] = await Promise.all([
     all<{ type: string; status: string; count: number }>(
       env.DB,
       "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
@@ -272,14 +272,21 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
       env.DB,
       "SELECT status, COUNT(*) AS count FROM swaps GROUP BY status",
     ),
-    all<{ chain: string; fee_wei: string }>(
-      env.DB,
-      "SELECT chain, fee_wei FROM withdrawal_transactions WHERE block_number IS NOT NULL",
-    ),
   ]);
   const withdrawalFees: Record<string, bigint> = {};
-  for (const row of withdrawalFeeRows)
-    withdrawalFees[row.chain] = (withdrawalFees[row.chain] ?? 0n) + BigInt(row.fee_wei);
+  cursor = "";
+  for (;;) {
+    const rows = await all<{ id: string; chain: string; fee_wei: string }>(
+      env.DB,
+      `SELECT id, chain, fee_wei FROM withdrawal_transactions
+       WHERE block_number IS NOT NULL AND id > ? ORDER BY id LIMIT 1000`,
+      cursor,
+    );
+    for (const row of rows)
+      withdrawalFees[row.chain] = (withdrawalFees[row.chain] ?? 0n) + BigInt(row.fee_wei);
+    if (rows.length < 1000) break;
+    cursor = rows[rows.length - 1].id;
+  }
   return {
     generatedAt: new Date().toISOString(),
     assets: [...buckets.values()]

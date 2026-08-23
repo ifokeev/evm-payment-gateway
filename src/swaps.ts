@@ -295,6 +295,7 @@ export async function reconcileSwaps(env: ApiEnv): Promise<void> {
        w.status AS withdrawal_status, r.status AS refund_status, r.amount_units AS refund_units,
        (SELECT COUNT(*) FROM deposit_transfers t
          WHERE t.deposit_intent = d.id AND t.canonical = 1
+           AND t.amount_units != '0'
            AND t.block_timestamp > s.quote_expires_at) AS late_transfers
      FROM swaps s
      JOIN deposit_intents d ON d.id = s.deposit_intent
@@ -326,8 +327,9 @@ async function reconcileSwap(env: ApiEnv, row: ReconcileRow, now: number): Promi
   const confirmed = BigInt(row.confirmed_units);
   const observed = BigInt(row.observed_units ?? "0");
   const collected = BigInt(row.collected_units ?? "0");
+  const timelyExactInput = received === expected && row.late_transfers === 0;
   const exactTimelyInput =
-    row.deposit_status === "paid" && confirmed === expected && row.late_transfers === 0;
+    timelyExactInput && row.deposit_status === "paid" && confirmed === expected;
   const outputInputIntact =
     exactTimelyInput && received === expected && observed === expected && collected === expected;
   if (
@@ -418,6 +420,10 @@ async function reconcileSwap(env: ApiEnv, row: ReconcileRow, now: number): Promi
 
   if (received > expected || confirmed > expected || observed > expected || collected > expected) {
     await createRefundWithdrawal(env, row, "input amount does not exactly match quote", now);
+    return;
+  }
+  if (timelyExactInput && confirmed < expected) {
+    await setStatus(env.DB, row.id, "input_confirming", "");
     return;
   }
   if (now > row.quote_expires_at && !exactTimelyInput) {
@@ -640,14 +646,15 @@ async function createOutputWithdrawal(env: ApiEnv, row: ReconcileRow, now: numbe
       SELECT ?,?,?,'swap',?,?,?,?,?,?,?,?,?,?,?,?,'awaiting_signature',?,?,?
       FROM swaps s JOIN deposit_intents d ON d.id = s.deposit_intent
       JOIN sweep_jobs j ON j.deposit_intent = d.id
-      WHERE s.id = ? AND s.withdrawal_intent IS NULL
-        AND s.status IN ('awaiting_input','input_confirming','input_confirmed')
+      WHERE s.id = ? AND s.withdrawal_intent IS NULL AND s.refund_withdrawal IS NULL
+        AND s.status IN ('awaiting_input','input_confirming','input_confirmed','expired')
         AND d.status = 'paid' AND d.received_units = d.expected_units
         AND d.confirmed_units = d.expected_units
         AND j.observed_units = d.expected_units AND j.collected_units = d.expected_units
         AND j.status IN ('complete','external')
         AND NOT EXISTS (SELECT 1 FROM deposit_transfers t
           WHERE t.deposit_intent = d.id AND t.canonical = 1
+            AND t.amount_units != '0'
             AND t.block_timestamp > s.quote_expires_at)`).bind(
       withdrawalId,
       idempotencyKey,

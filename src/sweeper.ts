@@ -337,7 +337,7 @@ function retrySeconds(env: SweeperEnv): number {
 
 function knownTransactionError(error: unknown): boolean {
   const message = errorText(error).toLowerCase();
-  return message.includes("already known") || message.includes("known transaction");
+  return message.includes("already known") || /\bknown transaction\b/.test(message);
 }
 
 function queued(delaySeconds: number, remainingUnits = "0"): SweepOutcome {

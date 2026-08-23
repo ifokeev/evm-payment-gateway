@@ -645,7 +645,9 @@ async function reconcileTransaction(
       await client.getTransaction({ hash: transaction.tx_hash });
     } catch (transactionError) {
       if (!(transactionError instanceof TransactionNotFoundError)) throw transactionError;
+      await markSubmitted(db, withdrawal.id, transaction.id, "transaction and receipt not found");
       await broadcast(transaction.raw_tx, transaction.tx_hash, network, client);
+      return;
     }
     await markSubmitted(db, withdrawal.id, transaction.id);
     return;
@@ -1012,7 +1014,7 @@ function randomId(prefix: string): string {
 
 function knownTransactionError(error: unknown): boolean {
   const message = errorText(error).toLowerCase();
-  return message.includes("already known") || message.includes("known transaction");
+  return message.includes("already known") || /\bknown transaction\b/.test(message);
 }
 
 function errorText(error: unknown): string {

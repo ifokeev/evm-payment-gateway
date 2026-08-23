@@ -138,6 +138,14 @@ describe("keyless collection worker", () => {
     expect(fixture.state.released).toMatchObject({ status: "queued", error: "" });
   });
 
+  it("does not classify unknown transaction errors as successful broadcasts", async () => {
+    const fixture = collectionFixture({ broadcastError: "unknown transaction type" });
+    await sweeper.queue(fixture.batch, fixture.env);
+
+    expect(fixture.state.released?.error).toContain("unknown transaction type");
+    expect(fixture.state.reports).toHaveLength(0);
+  });
+
   it("recognizes a permissionless external collection", async () => {
     const fixture = collectionFixture({ balance: 0n, forwarderCode: "0x01" });
     await sweeper.queue(fixture.batch, fixture.env);
@@ -203,6 +211,7 @@ type FixtureOptions = {
   collectedAsset?: `0x${string}`;
   headBlock?: bigint;
   receiptStatus?: "0x0" | "0x1";
+  broadcastError?: string;
 };
 
 function collectionFixture(options: FixtureOptions = {}): {
@@ -411,7 +420,15 @@ function collectionFixture(options: FixtureOptions = {}): {
       } else if (body.method === "eth_getTransactionCount") result = "0x0";
       else if (body.method === "eth_estimateGas")
         result = `0x${(options.estimatedGas ?? 200_000n).toString(16)}`;
-      else if (body.method === "eth_sendRawTransaction") result = keccak256(body.params[0] as Hex);
+      else if (body.method === "eth_sendRawTransaction") {
+        if (options.broadcastError)
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            error: { code: -32_000, message: options.broadcastError },
+          });
+        result = keccak256(body.params[0] as Hex);
+      }
       return Response.json({ jsonrpc: "2.0", id: body.id, result });
     }),
   );
