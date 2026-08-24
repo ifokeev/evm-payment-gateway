@@ -295,11 +295,13 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 ## Demo
 
-The optional demo Worker shows testnet deposits, signed webhooks, treasury
-collection, and externally signed withdrawals. The withdrawal view shows the
-exact proposal and accepts a signed raw transaction. The treasury signer stays
-outside Cloudflare. A private service binding keeps the API key out of browser
-code.
+The optional demo Worker shows testnet deposits, withdrawals, and cross-chain
+swaps. Swap quotes use fixed configured testnet amounts, not market prices. The
+demo follows signed webhooks, treasury collection, outputs, and refunds.
+
+The withdrawal and swap views show exact proposals and accept signed raw
+transactions. The treasury signer stays outside Cloudflare. A private service
+binding keeps the API key out of browser code.
 
 [Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev)
 

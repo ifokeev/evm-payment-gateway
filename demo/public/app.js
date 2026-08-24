@@ -4,12 +4,20 @@ const form = document.querySelector("#payment-form");
 const flowTabs = document.querySelectorAll("[data-flow]");
 const network = document.querySelector("#network");
 const asset = document.querySelector("#asset");
+const outputFields = document.querySelector("#output-fields");
+const outputNetwork = document.querySelector("#output-network");
+const outputAsset = document.querySelector("#output-asset");
+const outputAmount = document.querySelector("#output-amount");
+const outputAssetLabel = document.querySelector("#output-asset-label");
 const purpose = document.querySelector("#purpose");
 const purposeField = document.querySelector("#purpose-field");
 const purposeHelp = document.querySelector("#purpose-help");
 const destinationField = document.querySelector("#destination-field");
 const destinationAddress = document.querySelector("#destination-address");
 const destinationError = document.querySelector("#destination-error");
+const refundField = document.querySelector("#refund-field");
+const refundAddress = document.querySelector("#refund-address");
+const refundError = document.querySelector("#refund-error");
 const amount = document.querySelector("#amount");
 const amountHelp = document.querySelector("#amount-help");
 const amountError = document.querySelector("#amount-error");
@@ -19,6 +27,8 @@ const emptyState = document.querySelector("#empty-state");
 const loadingState = document.querySelector("#loading-state");
 const intentState = document.querySelector("#intent-state");
 const withdrawalState = document.querySelector("#withdrawal-state");
+const signerPanel = document.querySelector("#signer-panel");
+const swapRouteSummary = document.querySelector("#swap-route-summary");
 const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
 const copyLabel = document.querySelector("#copy-label");
@@ -33,7 +43,9 @@ const copyProposal = document.querySelector("#copy-proposal");
 
 let config;
 let analytics;
-let flow = sessionStorage.getItem("demo:flow") === "withdrawal" ? "withdrawal" : "deposit";
+let flow = ["deposit", "withdrawal", "swap"].includes(sessionStorage.getItem("demo:flow"))
+  ? sessionStorage.getItem("demo:flow")
+  : "deposit";
 let turnstileToken = "";
 let turnstileWidget;
 let submitting = false;
@@ -45,18 +57,33 @@ let currentIntentId = sessionStorage.getItem("demo:intentId") ?? "";
 let accessToken = sessionStorage.getItem("demo:accessToken") ?? "";
 let currentWithdrawalId = sessionStorage.getItem("demo:withdrawalId") ?? "";
 let withdrawalAccessToken = sessionStorage.getItem("demo:withdrawalAccessToken") ?? "";
+let currentSwapId = sessionStorage.getItem("demo:swapId") ?? "";
+let swapAccessToken = sessionStorage.getItem("demo:swapAccessToken") ?? "";
 let currentProposal;
 let currentProposalId = "";
+let currentSignerPath = "";
+let currentSignerToken = "";
 let idempotencyKey = sessionStorage.getItem("demo:idempotencyKey") ?? crypto.randomUUID();
 
 for (const tab of flowTabs) tab.addEventListener("click", () => setFlow(tab.dataset.flow));
 
 network.addEventListener("change", () => {
   populateAssets();
+  populateOutputNetworks();
+  populateOutputAssets();
   updateSelection();
 });
 
-asset.addEventListener("change", updateSelection);
+asset.addEventListener("change", () => {
+  populateOutputNetworks();
+  populateOutputAssets();
+  updateSelection();
+});
+outputNetwork.addEventListener("change", () => {
+  populateOutputAssets();
+  updateSelection();
+});
+outputAsset.addEventListener("change", updateSelection);
 
 purpose.addEventListener("change", () => {
   purposeHelp.textContent =
@@ -71,6 +98,10 @@ amount.addEventListener("input", () => {
 
 destinationAddress.addEventListener("input", () => {
   destinationError.textContent = "";
+});
+
+refundAddress.addEventListener("input", () => {
+  refundError.textContent = "";
 });
 
 copyAddress.addEventListener("click", async () => {
@@ -136,6 +167,7 @@ form.addEventListener("submit", async (event) => {
   submitting = true;
   amountError.textContent = "";
   destinationError.textContent = "";
+  refundError.textContent = "";
   globalError.hidden = true;
   setStage("loading");
   updateCreateButton();
@@ -143,16 +175,25 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const withdrawing = flow === "withdrawal";
-    const response = await fetch(withdrawing ? "/api/withdrawals" : "/api/deposits", {
+    const swapping = flow === "swap";
+    const endpoint = withdrawing ? "/api/withdrawals" : swapping ? "/api/swaps" : "/api/deposits";
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chain: network.value,
         asset: asset.value,
         amount: amount.value,
-        ...(withdrawing
-          ? { destinationAddress: destinationAddress.value }
-          : { purpose: purpose.value }),
+        ...(withdrawing ? { destinationAddress: destinationAddress.value } : {}),
+        ...(swapping
+          ? {
+              outputChain: outputNetwork.value,
+              outputAsset: outputAsset.value,
+              destinationAddress: destinationAddress.value,
+              refundAddress: refundAddress.value,
+            }
+          : {}),
+        ...(!withdrawing && !swapping ? { purpose: purpose.value } : {}),
         idempotencyKey,
         turnstileToken,
       }),
@@ -161,7 +202,8 @@ form.addEventListener("submit", async (event) => {
     if (!response.ok)
       throw new DemoRequestError(
         response.status,
-        body.error ?? (withdrawing ? "Withdrawal failed" : "Payment failed"),
+        body.error ??
+          (withdrawing ? "Withdrawal failed" : swapping ? "Swap failed" : "Payment failed"),
       );
     sessionStorage.removeItem("demo:idempotencyKey");
     idempotencyKey = crypto.randomUUID();
@@ -172,6 +214,13 @@ form.addEventListener("submit", async (event) => {
       sessionStorage.setItem("demo:withdrawalAccessToken", withdrawalAccessToken);
       renderWithdrawal(body.withdrawal);
       startWithdrawalPolling(true);
+    } else if (swapping) {
+      currentSwapId = body.swap.id;
+      swapAccessToken = body.accessToken;
+      sessionStorage.setItem("demo:swapId", currentSwapId);
+      sessionStorage.setItem("demo:swapAccessToken", swapAccessToken);
+      renderSwap(body);
+      startSwapPolling();
     } else {
       currentIntentId = body.intent.id;
       accessToken = body.accessToken;
@@ -186,13 +235,18 @@ form.addEventListener("submit", async (event) => {
         ? currentWithdrawalId && withdrawalAccessToken
           ? "withdrawal"
           : "empty"
-        : currentIntentId && accessToken
-          ? "intent"
-          : "empty",
+        : flow === "swap"
+          ? currentSwapId && swapAccessToken
+            ? "intent"
+            : "empty"
+          : currentIntentId && accessToken
+            ? "intent"
+            : "empty",
     );
     const message = error instanceof Error ? error.message : "Request failed";
     if (error instanceof DemoRequestError && error.status === 400) {
-      if (flow === "withdrawal" && message.toLowerCase().includes("destination"))
+      if (message.toLowerCase().includes("refund")) refundError.textContent = message;
+      else if (message.toLowerCase().includes("destination"))
         destinationError.textContent = message;
       else amountError.textContent = message;
     } else showGlobalError(message);
@@ -206,30 +260,32 @@ form.addEventListener("submit", async (event) => {
 
 signedTransactionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!currentWithdrawalId || !withdrawalAccessToken || submitting) return;
+  if (!currentSignerPath || !currentSignerToken || submitting) return;
   submitting = true;
   rawTransactionError.textContent = "";
   globalError.hidden = true;
   submitTransaction.disabled = true;
   submitTransaction.textContent = "Submitting...";
   try {
-    const response = await fetch(
-      `/api/withdrawals/${encodeURIComponent(currentWithdrawalId)}/transaction`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${withdrawalAccessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ rawTransaction: rawTransaction.value.trim() }),
+    const response = await fetch(currentSignerPath, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${currentSignerToken}`,
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({ rawTransaction: rawTransaction.value.trim() }),
+    });
     const body = await response.json();
     if (!response.ok)
       throw new DemoRequestError(response.status, body.error ?? "Signed transaction failed");
     rawTransaction.value = "";
-    renderWithdrawal(body.withdrawal);
-    startWithdrawalPolling();
+    if (flow === "swap") {
+      renderSwap(body);
+      startSwapPolling();
+    } else {
+      renderWithdrawal(body.withdrawal);
+      startWithdrawalPolling();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Signed transaction failed";
     if (error instanceof DemoRequestError && error.status < 500)
@@ -250,10 +306,11 @@ async function initialize() {
     config = body;
     populateNetworks();
     populateAssets();
+    populateOutputNetworks();
+    populateOutputAssets();
     updateSelection();
     network.disabled = false;
     asset.disabled = false;
-    amount.disabled = false;
     void loadAnalytics();
     await loadTurnstile(config.turnstileSiteKey);
     setFlow(flow, true);
@@ -282,14 +339,20 @@ async function loadAnalytics() {
 }
 
 function populateNetworks() {
+  const previous = network.value;
   network.replaceChildren();
   const seen = new Set();
-  for (const option of config.options) {
+  const options =
+    flow === "swap"
+      ? config.options.filter((option) => option.asset !== option.nativeAsset)
+      : config.options;
+  for (const option of options) {
     if (seen.has(option.chain)) continue;
     seen.add(option.chain);
     const item = document.createElement("option");
     item.value = option.chain;
     item.textContent = option.chainLabel;
+    item.selected = option.chain === previous;
     network.append(item);
   }
 }
@@ -297,7 +360,9 @@ function populateNetworks() {
 function populateAssets() {
   const previous = asset.value;
   asset.replaceChildren();
-  for (const option of config.options.filter((item) => item.chain === network.value)) {
+  for (const option of config.options.filter(
+    (item) => item.chain === network.value && (flow !== "swap" || item.asset !== item.nativeAsset),
+  )) {
     const item = document.createElement("option");
     item.value = option.asset;
     item.textContent = option.asset;
@@ -306,17 +371,55 @@ function populateAssets() {
   }
 }
 
+function populateOutputNetworks() {
+  const previous = outputNetwork.value;
+  outputNetwork.replaceChildren();
+  const seen = new Set();
+  for (const option of swapOutputOptions()) {
+    if (seen.has(option.chain)) continue;
+    seen.add(option.chain);
+    const item = document.createElement("option");
+    item.value = option.chain;
+    item.textContent = option.chainLabel;
+    item.selected = option.chain === previous;
+    outputNetwork.append(item);
+  }
+}
+
+function populateOutputAssets() {
+  const previous = outputAsset.value;
+  outputAsset.replaceChildren();
+  for (const option of swapOutputOptions().filter((item) => item.chain === outputNetwork.value)) {
+    const item = document.createElement("option");
+    item.value = option.asset;
+    item.textContent = option.asset;
+    item.selected = option.asset === previous;
+    outputAsset.append(item);
+  }
+}
+
+function swapOutputOptions() {
+  return (
+    config?.options.filter(
+      (option) => option.chain !== network.value || option.asset !== asset.value,
+    ) ?? []
+  );
+}
+
 function updateSelection() {
   const option = selectedOption();
   if (!option) return;
   amount.value = option.defaultAmount;
   amount.placeholder = option.defaultAmount;
   assetLabel.textContent = option.asset;
-  amountHelp.textContent = `${option.minimumAmount} to ${option.maximumAmount} ${option.asset}`;
-  text(
-    "#header-context",
-    `Live ${option.chainLabel} ${flow === "withdrawal" ? "withdrawal" : "deposit"} demo`,
-  );
+  amountHelp.textContent =
+    flow === "swap"
+      ? `The fixed demo input is ${option.defaultAmount} ${option.asset}.`
+      : `${option.minimumAmount} to ${option.maximumAmount} ${option.asset}`;
+  const selectedOutput = selectedOutputOption();
+  outputAmount.value = selectedOutput?.defaultAmount ?? "";
+  outputAssetLabel.textContent = selectedOutput?.asset ?? "";
+  text("#header-context", `Live ${option.chainLabel} ${flow} demo`);
   text("#analytics-context", `${option.chainLabel} ${option.asset} activity in this deployment.`);
   renderAnalytics();
 }
@@ -324,6 +427,12 @@ function updateSelection() {
 function selectedOption() {
   return config?.options.find(
     (option) => option.chain === network.value && option.asset === asset.value,
+  );
+}
+
+function selectedOutputOption() {
+  return config?.options.find(
+    (option) => option.chain === outputNetwork.value && option.asset === outputAsset.value,
   );
 }
 
@@ -384,10 +493,14 @@ function updateCreateButton() {
   createButton.textContent = submitting
     ? flow === "withdrawal"
       ? "Creating withdrawal..."
-      : "Creating payment..."
+      : flow === "swap"
+        ? "Creating swap..."
+        : "Creating payment..."
     : flow === "withdrawal"
       ? "Create withdrawal"
-      : "Create payment";
+      : flow === "swap"
+        ? "Create swap"
+        : "Create payment";
 }
 
 function setStage(stage) {
@@ -395,10 +508,11 @@ function setStage(stage) {
   loadingState.hidden = stage !== "loading";
   intentState.hidden = stage !== "intent";
   withdrawalState.hidden = stage !== "withdrawal";
+  signerPanel.hidden = true;
 }
 
 function setFlow(next, initializing = false) {
-  if (submitting || (next !== "deposit" && next !== "withdrawal")) return;
+  if (submitting || !["deposit", "withdrawal", "swap"].includes(next)) return;
   const changed = flow !== next;
   flow = next;
   sessionStorage.setItem("demo:flow", flow);
@@ -406,30 +520,56 @@ function setFlow(next, initializing = false) {
   for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
   purposeField.hidden = flow !== "deposit";
   purpose.disabled = flow !== "deposit";
-  destinationField.hidden = flow !== "withdrawal";
-  destinationAddress.disabled = !config || flow !== "withdrawal";
+  outputFields.hidden = flow !== "swap";
+  outputNetwork.disabled = !config || flow !== "swap";
+  outputAsset.disabled = !config || flow !== "swap";
+  destinationField.hidden = flow === "deposit";
+  destinationAddress.disabled = !config || flow === "deposit";
+  refundField.hidden = flow !== "swap";
+  refundAddress.disabled = !config || flow !== "swap";
+  amount.disabled = !config || flow === "swap";
   analyticsPanel.hidden = flow !== "deposit";
+  text("#network-label", flow === "swap" ? "Input network" : "Network");
+  text("#asset-title", flow === "swap" ? "Input asset" : "Asset");
+  text("#amount-title", flow === "swap" ? "Fixed input amount" : "Amount");
+  text("#destination-label", flow === "swap" ? "Output destination" : "Destination address");
+  text(
+    "#destination-help",
+    flow === "swap"
+      ? "The treasury signer must approve this output recipient."
+      : "The external signer must approve this exact recipient.",
+  );
   text(
     "#page-title",
-    flow === "deposit" ? "Deposit crypto. See each step." : "Withdraw crypto. Keep the key.",
+    flow === "deposit"
+      ? "Deposit crypto. See each step."
+      : flow === "withdrawal"
+        ? "Withdraw crypto. Keep the key."
+        : "Swap across chains. Track both sides.",
   );
   text(
     "#intro-copy",
     flow === "deposit"
       ? "Create an exact testnet payment and follow it to treasury collection."
-      : "Create an exact proposal, approve it outside Cloudflare, and follow it to settlement.",
+      : flow === "withdrawal"
+        ? "Create an exact proposal, approve it outside Cloudflare, and follow it to settlement."
+        : "Use a fixed testnet quote and follow the input, collection, and treasury output.",
   );
   text(
     "#empty-title",
     flow === "deposit"
       ? "Payment activity will appear here."
-      : "Withdrawal activity will appear here.",
+      : flow === "withdrawal"
+        ? "Withdrawal activity will appear here."
+        : "Swap activity will appear here.",
   );
   text(
     "#empty-detail",
     flow === "deposit"
       ? "Create an intent to receive a unique address, QR code, and wallet link."
-      : "Create a proposal to see the exact fields your external signer must approve.",
+      : flow === "withdrawal"
+        ? "Create a proposal to see the exact fields your external signer must approve."
+        : "Create a fixed quote to receive the input address and exact output terms.",
   );
   const depositSteps = [
     ["On-chain activity", "Waiting for payment"],
@@ -441,7 +581,13 @@ function setFlow(next, initializing = false) {
     ["External signature", "Private key stays outside Cloudflare"],
     ["Network settlement", "Waiting for broadcast"],
   ];
-  const steps = flow === "deposit" ? depositSteps : withdrawalSteps;
+  const swapSteps = [
+    ["Swap input", "Waiting for payment"],
+    ["Treasury collection", "Waiting for settlement"],
+    ["Swap output", "Waiting for signature"],
+  ];
+  const steps =
+    flow === "deposit" ? depositSteps : flow === "withdrawal" ? withdrawalSteps : swapSteps;
   for (const [index, [title, detail]] of steps.entries()) {
     text(`#empty-step-${["one", "two", "three"][index]}`, title);
     text(`#empty-step-${["one", "two", "three"][index]}-detail`, detail);
@@ -450,8 +596,14 @@ function setFlow(next, initializing = false) {
     "#loading-message",
     flow === "deposit"
       ? "Allocating a dedicated payment address..."
-      : "Locking the withdrawal proposal...",
+      : flow === "withdrawal"
+        ? "Locking the withdrawal proposal..."
+        : "Locking the input and output terms...",
   );
+  populateNetworks();
+  populateAssets();
+  populateOutputNetworks();
+  populateOutputAssets();
   updateSelection();
   if (changed && !initializing) {
     turnstileToken = "";
@@ -461,6 +613,7 @@ function setFlow(next, initializing = false) {
   if (flow === "deposit" && currentIntentId && accessToken) startPolling(true);
   else if (flow === "withdrawal" && currentWithdrawalId && withdrawalAccessToken)
     startWithdrawalPolling(true);
+  else if (flow === "swap" && currentSwapId && swapAccessToken) startSwapPolling(true);
   else setStage("empty");
 }
 
@@ -468,6 +621,12 @@ function renderPayment(state) {
   const { intent, sweep, webhookEvent } = state;
   setStage("intent");
   globalError.hidden = true;
+  swapRouteSummary.hidden = true;
+  document.querySelector("#swap-output-activity").hidden = true;
+  text("#transactions-title", "On-chain activity");
+  text("#delivery-title", "Signed webhook");
+  text("#sweep-title", "Treasury collection");
+  text("#intent-id-label", "Payment ID");
   const status = String(intent.status ?? "pending");
   const titles = {
     pending: "Waiting for payment",
@@ -536,6 +695,61 @@ function renderPayment(state) {
   renderSweep(sweep, unpaidExpired);
 }
 
+function renderSwap(state) {
+  const { swap, intent, sweep, webhookEvent, payout } = state;
+  renderPayment({ intent, sweep, webhookEvent });
+  swapRouteSummary.hidden = false;
+  document.querySelector("#swap-output-activity").hidden = false;
+  const status = String(swap.status ?? "awaiting_input");
+  const titles = {
+    awaiting_input: "Waiting for swap input",
+    input_confirming: "Swap input confirming",
+    input_confirmed: "Collecting swap input",
+    awaiting_signature: "Output signature required",
+    output_submitted: "Swap output submitted",
+    complete: "Swap complete",
+    expired: "Swap quote expired",
+    refund_required: "Swap refund required",
+    refund_awaiting_signature: "Refund signature required",
+    refund_submitted: "Swap refund submitted",
+    refunded: "Swap refunded",
+    reorged: "Swap reorged",
+  };
+  const details = {
+    awaiting_input: "Send the exact token input before the quote expires.",
+    input_confirming: "The input waits for the required network confirmations.",
+    input_confirmed: "The relayer collects the confirmed input into the treasury.",
+    awaiting_signature: "The external signer must approve the exact output proposal.",
+    output_submitted: "The output transaction waits for network confirmation.",
+    complete: "The input and output reached their required confirmation depths.",
+    expired: "The quote expired without usable input.",
+    refund_required: "The gateway prepares a refund for collected input.",
+    refund_awaiting_signature: "The external signer must approve the exact refund proposal.",
+    refund_submitted: "The refund transaction waits for network confirmation.",
+    refunded: "The refund reached the required confirmation depth.",
+    reorged: "A linked transaction changed after swap coordination.",
+  };
+  document.querySelector(".intent-header").dataset.status = status;
+  text("#status-title", titles[status] ?? "Swap updated");
+  text("#status-detail", swap.lastError || details[status] || "Swap state updated.");
+  text(
+    "#swap-input-route",
+    `${swap.input.expectedAmount} ${swap.input.asset} on ${humanize(swap.input.chain)}`,
+  );
+  text(
+    "#swap-output-route",
+    `${swap.output.amount} ${swap.output.asset} on ${humanize(swap.output.chain)}`,
+  );
+  text("#swap-destination", swap.output.destinationAddress);
+  text("#swap-refund", swap.refund.address);
+  text("#intent-id-label", "Swap ID");
+  text("#intent-id", swap.id);
+  text("#expiry-time", formatExpiry(swap.quoteExpiresAt));
+  text("#transactions-title", "Swap input");
+  renderSwapOutput(swap, payout);
+  renderSigner(payout, `/api/swaps/${encodeURIComponent(swap.id)}/transaction`, swapAccessToken);
+}
+
 function renderWithdrawal(withdrawal) {
   setStage("withdrawal");
   globalError.hidden = true;
@@ -568,24 +782,11 @@ function renderWithdrawal(withdrawal) {
   text("#withdrawal-created", formatDate(withdrawal.createdAt));
   text("#withdrawal-expiry", formatExpiry(withdrawal.expiresAt));
 
-  if (withdrawal.proposal && typeof withdrawal.proposal === "object") {
-    currentProposal = withdrawal.proposal;
-    currentProposalId = withdrawal.id;
-  } else if (currentProposalId !== withdrawal.id) {
-    currentProposal = undefined;
-    currentProposalId = "";
-  }
-  document.querySelector("#signer-panel").hidden = !currentProposal;
-  signedTransactionForm.hidden = status !== "awaiting_signature";
-  copyProposal.disabled = !currentProposal;
-  if (currentProposal) {
-    text("#proposal-chain", currentProposal.chainId);
-    text("#proposal-to", currentProposal.to);
-    text("#proposal-value", currentProposal.value);
-    text("#proposal-gas", currentProposal.maxGas);
-    text("#proposal-gas-price", `${currentProposal.maxGasPriceWei} wei`);
-    text("#proposal-data", currentProposal.data);
-  }
+  renderSigner(
+    withdrawal,
+    `/api/withdrawals/${encodeURIComponent(withdrawal.id)}/transaction`,
+    withdrawalAccessToken,
+  );
 
   setActivityState("#proposal-activity", "#proposal-badge", "success", "Ready");
   const signatureState =
@@ -631,6 +832,79 @@ function renderWithdrawal(withdrawal) {
       reference.rel = "noreferrer";
     }
     chainStatus.append(reference);
+  }
+}
+
+function renderSigner(withdrawal, path, token) {
+  if (!withdrawal) {
+    currentProposal = undefined;
+    currentProposalId = "";
+    currentSignerPath = "";
+    currentSignerToken = "";
+    signerPanel.hidden = true;
+    return;
+  }
+  if (withdrawal.proposal && typeof withdrawal.proposal === "object") {
+    currentProposal = withdrawal.proposal;
+    currentProposalId = withdrawal.id;
+  } else if (currentProposalId !== withdrawal.id) {
+    currentProposal = undefined;
+    currentProposalId = "";
+  }
+  const awaitingSignature = withdrawal.status === "awaiting_signature";
+  currentSignerPath = currentProposal && awaitingSignature ? path : "";
+  currentSignerToken = currentSignerPath ? token : "";
+  signerPanel.hidden = !currentProposal;
+  signedTransactionForm.hidden = !awaitingSignature;
+  copyProposal.disabled = !currentProposal;
+  text(
+    "#signer-title",
+    withdrawal.purpose === "refund"
+      ? "External refund signer"
+      : withdrawal.purpose === "swap"
+        ? "External output signer"
+        : "External treasury signer",
+  );
+  if (!currentProposal) return;
+  text("#proposal-chain", currentProposal.chainId);
+  text("#proposal-to", currentProposal.to);
+  text("#proposal-value", currentProposal.value);
+  text("#proposal-gas", currentProposal.maxGas);
+  text("#proposal-gas-price", `${currentProposal.maxGasPriceWei} wei`);
+  text("#proposal-data", currentProposal.data);
+}
+
+function renderSwapOutput(swap, payout) {
+  const refunding = String(swap.status).startsWith("refund_") || swap.status === "refunded";
+  text("#swap-output-title", refunding ? "Swap refund" : "Swap output");
+  const states = {
+    awaiting_input: ["idle", "Waiting", "The output starts after treasury collection."],
+    input_confirming: ["idle", "Waiting", "The input waits for network confirmation."],
+    input_confirmed: ["active", "Collecting", "The relayer collects the input."],
+    awaiting_signature: ["active", "Signature", "The output proposal waits for approval."],
+    output_submitted: ["detected", "Submitted", "The output transaction is on the network."],
+    complete: ["success", "Complete", "The output reached the required confirmation depth."],
+    expired: ["idle", "Expired", "The quote expired without usable input."],
+    refund_required: ["warning", "Refund", "The gateway prepares the refund proposal."],
+    refund_awaiting_signature: ["active", "Signature", "The refund proposal waits for approval."],
+    refund_submitted: ["detected", "Submitted", "The refund transaction is on the network."],
+    refunded: ["success", "Refunded", "The refund reached the required confirmation depth."],
+    reorged: ["warning", "Reorg", "Manual treasury reconciliation is required."],
+  };
+  const [state, badge, detail] = states[swap.status] ?? states.awaiting_input;
+  setActivityState("#swap-output-activity", "#swap-output-badge", state, badge);
+  const container = document.querySelector("#swap-output-status");
+  container.replaceChildren(paragraph(detail, "muted"));
+  if (payout?.transaction?.hash) {
+    const reference = document.createElement(payout.transaction.explorerUrl ? "a" : "span");
+    reference.className = "transaction-hash";
+    reference.textContent = `Tx: ${payout.transaction.hash}`;
+    if (payout.transaction.explorerUrl) {
+      reference.href = payout.transaction.explorerUrl;
+      reference.target = "_blank";
+      reference.rel = "noreferrer";
+    }
+    container.append(reference);
   }
 }
 
@@ -880,6 +1154,35 @@ function startWithdrawalPolling(immediate = false) {
   pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
 }
 
+function startSwapPolling(immediate = false) {
+  clearTimeout(pollTimer);
+  pollAttempts = 0;
+  const poll = async () => {
+    if (flow !== "swap" || !currentSwapId || !swapAccessToken || pollAttempts >= 360) return;
+    pollAttempts += 1;
+    try {
+      const response = await fetch(`/api/swaps/${encodeURIComponent(currentSwapId)}`, {
+        headers: { Authorization: `Bearer ${swapAccessToken}` },
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        if (response.status === 401) clearStoredSwap();
+        throw new Error(body.error ?? "Swap status is unavailable");
+      }
+      if (flow !== "swap") return;
+      renderSwap(body);
+      if (["complete", "refunded", "reorged"].includes(body.swap.status)) {
+        await loadAnalytics();
+        return;
+      }
+    } catch (error) {
+      showGlobalError(error instanceof Error ? error.message : "Swap status is unavailable");
+    }
+    pollTimer = setTimeout(poll, 5_000);
+  };
+  pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
+}
+
 function clearStoredPayment() {
   currentIntentId = "";
   accessToken = "";
@@ -892,6 +1195,13 @@ function clearStoredWithdrawal() {
   withdrawalAccessToken = "";
   sessionStorage.removeItem("demo:withdrawalId");
   sessionStorage.removeItem("demo:withdrawalAccessToken");
+}
+
+function clearStoredSwap() {
+  currentSwapId = "";
+  swapAccessToken = "";
+  sessionStorage.removeItem("demo:swapId");
+  sessionStorage.removeItem("demo:swapAccessToken");
 }
 
 function showGlobalError(message) {

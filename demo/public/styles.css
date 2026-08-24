@@ -328,7 +328,8 @@ input {
   font-variant-numeric: tabular-nums;
 }
 
-#destination-address {
+#destination-address,
+#refund-address {
   padding-inline: 16px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 13px;
@@ -799,6 +800,29 @@ button:disabled {
   grid-template-columns: minmax(220px, 0.7fr) minmax(300px, 1.3fr);
   gap: 36px;
   align-items: end;
+}
+
+.swap-route-summary {
+  margin: 0 0 24px;
+  padding: 18px;
+  border: 1px solid var(--right-border);
+  border-radius: var(--radius);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+  background: var(--right-surface-strong);
+}
+
+.swap-route-summary dt {
+  color: var(--right-muted);
+  font-size: 10px;
+}
+
+.swap-route-summary dd {
+  min-width: 0;
+  margin: 5px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .route-grid,
@@ -1454,6 +1478,10 @@ button:disabled {
 
   .proposal-data {
     grid-column: auto;
+  }
+
+  .swap-route-summary {
+    grid-template-columns: 1fr;
   }
 
   .activity-section {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Try testnet deposits and externally signed withdrawals on EVM networks."
+      content="Try testnet deposits, externally signed withdrawals, and cross-chain swaps on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -41,8 +41,8 @@
             <button class="flow-tab" type="button" role="tab" data-flow="withdrawal" aria-selected="false">
               Withdraw
             </button>
-            <button class="flow-tab" type="button" role="tab" aria-selected="false" disabled>
-              Swap <span>Soon</span>
+            <button class="flow-tab" type="button" role="tab" data-flow="swap" aria-selected="false">
+              Swap
             </button>
           </div>
           <div>
@@ -56,18 +56,49 @@
           <form id="payment-form" class="payment-form" novalidate>
             <div class="network-fields">
               <div class="field">
-                <label for="network">Network</label>
+                <label id="network-label" for="network">Network</label>
                 <div class="select-control">
                   <select id="network" name="network" disabled></select>
                 </div>
               </div>
 
               <div class="field">
-                <label for="asset">Asset</label>
+                <label id="asset-title" for="asset">Asset</label>
                 <div class="select-control">
                   <select id="asset" name="asset" disabled></select>
                 </div>
               </div>
+            </div>
+
+            <div id="output-fields" class="field" hidden>
+              <div class="network-fields">
+                <div class="field">
+                  <label for="output-network">Output network</label>
+                  <div class="select-control">
+                    <select id="output-network" name="outputNetwork" disabled></select>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="output-asset">Output asset</label>
+                  <div class="select-control">
+                    <select id="output-asset" name="outputAsset" disabled></select>
+                  </div>
+                </div>
+              </div>
+              <div class="amount-control">
+                <input
+                  id="output-amount"
+                  name="outputAmount"
+                  type="text"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  aria-label="Fixed output amount"
+                  readonly
+                />
+                <span id="output-asset-label"></span>
+              </div>
+              <p class="field-help">The demo uses fixed testnet amounts. This value is not a market quote.</p>
             </div>
 
             <div id="purpose-field" class="field">
@@ -84,7 +115,7 @@
             </div>
 
             <div id="destination-field" class="field" hidden>
-              <label for="destination-address">Destination address</label>
+              <label id="destination-label" for="destination-address">Destination address</label>
               <input
                 id="destination-address"
                 name="destinationAddress"
@@ -102,8 +133,27 @@
               <p id="destination-error" class="field-error" role="alert"></p>
             </div>
 
+            <div id="refund-field" class="field" hidden>
+              <label for="refund-address">Refund address</label>
+              <input
+                id="refund-address"
+                name="refundAddress"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x..."
+                aria-describedby="refund-help refund-error"
+                disabled
+              />
+              <p id="refund-help" class="field-help">
+                The gateway uses this address if it must refund the swap input.
+              </p>
+              <p id="refund-error" class="field-error" role="alert"></p>
+            </div>
+
             <div class="field">
-              <label for="amount">Amount</label>
+              <label id="amount-title" for="amount">Amount</label>
               <div class="amount-control">
                 <input
                   id="amount"
@@ -207,6 +257,25 @@
               </div>
             </div>
 
+            <dl id="swap-route-summary" class="swap-route-summary" hidden>
+              <div>
+                <dt>Input</dt>
+                <dd id="swap-input-route"></dd>
+              </div>
+              <div>
+                <dt>Output</dt>
+                <dd id="swap-output-route"></dd>
+              </div>
+              <div>
+                <dt>Output destination</dt>
+                <dd><code id="swap-destination"></code></dd>
+              </div>
+              <div>
+                <dt>Refund address</dt>
+                <dd><code id="swap-refund"></code></dd>
+              </div>
+            </dl>
+
             <div id="payment-content" class="payment-content">
               <div class="qr-panel">
                 <img id="payment-qr" alt="Payment QR code" width="280" height="280" />
@@ -287,11 +356,25 @@
                 </div>
               </div>
             </section>
+            <section id="swap-output-activity" class="activity-section" data-state="idle" hidden>
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-heading">
+                  <div class="activity-title">
+                    <h3 id="swap-output-title">Swap output</h3>
+                    <span id="swap-output-badge" class="activity-status">Waiting</span>
+                  </div>
+                </div>
+                <div id="swap-output-status" class="activity-content">
+                  <p class="muted">The output starts after treasury collection.</p>
+                </div>
+              </div>
+            </section>
           </div>
 
           <dl class="intent-meta">
             <div><dt>Network</dt><dd id="metadata-network">Base Sepolia</dd></div>
-            <div><dt>Payment ID</dt><dd id="intent-id"></dd></div>
+            <div><dt id="intent-id-label">Payment ID</dt><dd id="intent-id"></dd></div>
             <div><dt>Created</dt><dd id="created-time"></dd></div>
             <div><dt>Expires in</dt><dd id="expiry-time"></dd></div>
           </dl>
@@ -323,41 +406,6 @@
               </dl>
             </div>
 
-            <section id="signer-panel" class="signer-panel" aria-labelledby="signer-title">
-              <header>
-                <div>
-                  <h3 id="signer-title">External treasury signer</h3>
-                  <p>Compare this proposal with your ledger. The private key never enters Cloudflare.</p>
-                </div>
-                <button id="copy-proposal" class="secondary-button" type="button">Copy proposal</button>
-              </header>
-              <dl class="proposal-grid">
-                <div><dt>Chain ID</dt><dd id="proposal-chain"></dd></div>
-                <div><dt>Transaction target</dt><dd><code id="proposal-to"></code></dd></div>
-                <div><dt>Native value</dt><dd id="proposal-value"></dd></div>
-                <div><dt>Maximum gas</dt><dd id="proposal-gas"></dd></div>
-                <div><dt>Maximum gas price</dt><dd id="proposal-gas-price"></dd></div>
-                <div class="proposal-data"><dt>Calldata</dt><dd><code id="proposal-data"></code></dd></div>
-              </dl>
-              <form id="signed-transaction-form" class="signed-transaction-form">
-                <label for="raw-transaction">Signed raw transaction</label>
-                <textarea
-                  id="raw-transaction"
-                  rows="4"
-                  spellcheck="false"
-                  autocomplete="off"
-                  placeholder="0x..."
-                  aria-describedby="raw-transaction-help raw-transaction-error"
-                ></textarea>
-                <p id="raw-transaction-help" class="signer-help">
-                  Sign outside this demo, then paste the serialized transaction here.
-                </p>
-                <p id="raw-transaction-error" class="field-error" role="alert"></p>
-                <button id="submit-transaction" class="primary-button" type="submit">
-                  Submit signed transaction
-                </button>
-              </form>
-            </section>
           </div>
 
           <div class="activity-list">
@@ -406,6 +454,42 @@
             <div><dt>Expires in</dt><dd id="withdrawal-expiry"></dd></div>
           </dl>
         </div>
+
+        <section id="signer-panel" class="signer-panel" aria-labelledby="signer-title" hidden>
+          <header>
+            <div>
+              <h3 id="signer-title">External treasury signer</h3>
+              <p>Compare this proposal with your ledger. The private key never enters Cloudflare.</p>
+            </div>
+            <button id="copy-proposal" class="secondary-button" type="button">Copy proposal</button>
+          </header>
+          <dl class="proposal-grid">
+            <div><dt>Chain ID</dt><dd id="proposal-chain"></dd></div>
+            <div><dt>Transaction target</dt><dd><code id="proposal-to"></code></dd></div>
+            <div><dt>Native value</dt><dd id="proposal-value"></dd></div>
+            <div><dt>Maximum gas</dt><dd id="proposal-gas"></dd></div>
+            <div><dt>Maximum gas price</dt><dd id="proposal-gas-price"></dd></div>
+            <div class="proposal-data"><dt>Calldata</dt><dd><code id="proposal-data"></code></dd></div>
+          </dl>
+          <form id="signed-transaction-form" class="signed-transaction-form">
+            <label for="raw-transaction">Signed raw transaction</label>
+            <textarea
+              id="raw-transaction"
+              rows="4"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="0x..."
+              aria-describedby="raw-transaction-help raw-transaction-error"
+            ></textarea>
+            <p id="raw-transaction-help" class="signer-help">
+              Sign outside this demo, then paste the serialized transaction here.
+            </p>
+            <p id="raw-transaction-error" class="field-error" role="alert"></p>
+            <button id="submit-transaction" class="primary-button" type="submit">
+              Submit signed transaction
+            </button>
+          </form>
+        </section>
 
         <div id="global-error" class="global-error" role="alert" hidden></div>
       </section>
