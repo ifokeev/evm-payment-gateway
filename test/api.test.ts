@@ -316,7 +316,7 @@ describe("payment API", () => {
     const deeplyNested = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
-      body: `{"kind":"payment","purpose":"checkout","externalId":"deep","chain":"test","asset":"USDC","amount":"1","metadata":${'{"next":'.repeat(depth)}null${"}".repeat(depth)}}`,
+      body: `{"kind":"payment","purpose":"deposit","externalId":"deep","chain":"test","asset":"USDC","amount":"1","metadata":${'{"next":'.repeat(depth)}null${"}".repeat(depth)}}`,
     });
     const deepResponse = await api.fetch(deeplyNested);
     expect(deepResponse.status).toBe(400);
@@ -342,7 +342,7 @@ describe("payment API", () => {
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
       body: JSON.stringify({
         kind: "custom",
-        purpose: "checkout",
+        purpose: "deposit",
         externalId: "unsupported-kind",
         chain: "test",
         asset: "USDC",
@@ -355,16 +355,16 @@ describe("payment API", () => {
     const invalidPurpose = await create(randomId("idem"), {
       amount: "1",
       metadata: {},
-      purpose: "withdrawal",
+      purpose: "checkout",
     });
     expect(await invalidPurpose.json()).toEqual({
-      error: "purpose must be checkout, account_top_up, or swap",
+      error: "purpose must be deposit or swap",
     });
     const schema = await bindings.DB.prepare(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deposit_intents'",
     ).first<{ sql: string }>();
     expect(schema?.sql).toContain("kind IN ('payment', 'invoice')");
-    expect(schema?.sql).toContain("purpose IN ('checkout', 'account_top_up', 'swap')");
+    expect(schema?.sql).toContain("purpose IN ('deposit', 'swap')");
     expect(
       (
         await bindings.DB.prepare(
@@ -419,7 +419,7 @@ describe("withdrawal API", () => {
           "Idempotency-Key": randomId("withdrawal-purpose"),
         },
         body: JSON.stringify({
-          purpose: "checkout",
+          purpose: "deposit",
           externalId: "invalid-purpose",
           chain: "test",
           asset: "USDC",
@@ -3306,7 +3306,7 @@ function create(
       headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({
         kind: "payment",
-        purpose: "checkout",
+        purpose: "deposit",
         externalId: idempotencyKey,
         chain: "test",
         asset: "USDC",

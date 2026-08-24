@@ -102,23 +102,12 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
   }
 
   const body = await readObject(request, 8_192);
-  rejectUnknownFields(body, [
-    "chain",
-    "asset",
-    "amount",
-    "purpose",
-    "idempotencyKey",
-    "turnstileToken",
-  ]);
+  rejectUnknownFields(body, ["chain", "asset", "amount", "idempotencyKey", "turnstileToken"]);
   const chain = stringField(body, "chain");
   const asset = stringField(body, "asset");
   const amount = stringField(body, "amount");
-  const purpose = stringField(body, "purpose");
   const idempotencyKey = demoIdempotencyKey(body);
   const turnstileToken = stringField(body, "turnstileToken");
-  if (purpose !== "checkout" && purpose !== "account_top_up") {
-    throw new DemoError(400, "purpose must be checkout or account_top_up");
-  }
 
   const option = demoOption(env, chain, asset);
   const configured = amountConfig(option);
@@ -146,7 +135,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
       },
       body: JSON.stringify({
         kind: "payment",
-        purpose,
+        purpose: "deposit",
         externalId: `demo_${idempotencyKey}`,
         chain: option.chain,
         asset: option.asset,

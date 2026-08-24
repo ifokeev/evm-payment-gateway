@@ -4,7 +4,7 @@ import demo, { type DemoEnv } from "../demo/worker";
 const intent = {
   id: "di_demo123",
   kind: "payment",
-  purpose: "account_top_up",
+  purpose: "deposit",
   externalId: "demo_123",
   chain: "base-sepolia",
   chainId: 84532,
@@ -315,10 +315,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("public demo", () => {
   it("creates an exact user-chosen payment without exposing backend fields", async () => {
-    const response = await demo.fetch(
-      createRequest({ amount: "1.250000", purpose: "account_top_up" }),
-      env,
-    );
+    const response = await demo.fetch(createRequest({ amount: "1.250000" }), env);
     expect(response.status).toBe(201);
     const body = await response.json<{
       intent: Record<string, unknown>;
@@ -337,7 +334,7 @@ describe("public demo", () => {
     expect(gatewayRequest.headers.get("Idempotency-Key")).toMatch(/^demo:/);
     expect(gatewayRequest.body).toMatchObject({
       kind: "payment",
-      purpose: "account_top_up",
+      purpose: "deposit",
       chain: "base-sepolia",
       asset: "USDC",
       amount: "1.25",
@@ -557,7 +554,6 @@ describe("public demo", () => {
         chain: "ethereum-sepolia",
         asset: "ETH",
         amount: "0.00001",
-        purpose: "checkout",
       }),
       env,
     );
@@ -569,33 +565,27 @@ describe("public demo", () => {
     });
 
     const unsupported = await demo.fetch(
-      createRequest({ chain: "bnb-testnet", asset: "USDC", amount: "1", purpose: "checkout" }),
+      createRequest({ chain: "bnb-testnet", asset: "USDC", amount: "1" }),
       env,
     );
     expect(unsupported.status).toBe(400);
   });
 
   it("enforces origin, amount, challenge, and rate-limit boundaries", async () => {
-    const foreign = createRequest({ amount: "1", purpose: "checkout" });
+    const foreign = createRequest({ amount: "1" });
     foreign.headers.set("Origin", "https://attacker.test");
     expect((await demo.fetch(foreign, env)).status).toBe(403);
 
-    expect(
-      (await demo.fetch(createRequest({ amount: "5.000001", purpose: "checkout" }), env)).status,
-    ).toBe(400);
+    expect((await demo.fetch(createRequest({ amount: "5.000001" }), env)).status).toBe(400);
 
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Response.json({ success: false })),
     );
-    expect(
-      (await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env)).status,
-    ).toBe(403);
+    expect((await demo.fetch(createRequest({ amount: "1" }), env)).status).toBe(403);
 
     rateLimitSuccess = false;
-    expect(
-      (await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env)).status,
-    ).toBe(429);
+    expect((await demo.fetch(createRequest({ amount: "1" }), env)).status).toBe(429);
     expect((await demo.fetch(new Request("https://demo.test/api/analytics"), env)).status).toBe(
       429,
     );
@@ -608,7 +598,6 @@ describe("public demo", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         amount: "1",
-        purpose: "checkout",
         idempotencyKey: crypto.randomUUID(),
         turnstileToken: "token",
         unexpected: true,
@@ -616,7 +605,7 @@ describe("public demo", () => {
     });
     expect((await demo.fetch(malformed, env)).status).toBe(400);
 
-    const created = await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env);
+    const created = await demo.fetch(createRequest({ amount: "1" }), env);
     const { accessToken } = await created.json<{ accessToken: string }>();
     const tamperedToken = `${accessToken.slice(0, -1)}${accessToken.endsWith("a") ? "b" : "a"}`;
     const tampered = await demo.fetch(
@@ -750,12 +739,7 @@ describe("public demo", () => {
   });
 });
 
-function createRequest(input: {
-  chain?: string;
-  asset?: string;
-  amount: string;
-  purpose: string;
-}): Request {
+function createRequest(input: { chain?: string; asset?: string; amount: string }): Request {
   return new Request("https://demo.test/api/deposits", {
     method: "POST",
     headers: {

@@ -341,8 +341,8 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   const rawAmount = requiredString(body, "amount");
   if (kind !== "payment" && kind !== "invoice")
     throw new HttpError(400, "kind must be payment or invoice");
-  if (purpose !== "checkout" && purpose !== "account_top_up" && purpose !== "swap")
-    throw new HttpError(400, "purpose must be checkout, account_top_up, or swap");
+  if (purpose !== "deposit" && purpose !== "swap")
+    throw new HttpError(400, "purpose must be deposit or swap");
   if (!externalId || externalId.length > 200)
     throw new HttpError(400, "externalId is required and must be at most 200 characters");
   if (rawAmount.trim().length > 100)

@@ -9,11 +9,11 @@ DROP INDEX payment_transactions_intent_idx;
 CREATE INDEX deposit_transfers_intent_idx
   ON deposit_transfers (deposit_intent, block_number, event_index);
 ALTER TABLE deposit_intents ADD COLUMN treasury_address TEXT NOT NULL DEFAULT '';
-ALTER TABLE deposit_intents ADD COLUMN purpose TEXT NOT NULL DEFAULT 'checkout'
-  CHECK (purpose IN ('checkout', 'account_top_up', 'swap'));
+ALTER TABLE deposit_intents ADD COLUMN purpose TEXT NOT NULL DEFAULT 'deposit'
+  CHECK (purpose IN ('deposit', 'swap'));
 UPDATE deposit_intents
 SET purpose = json_extract(metadata, '$.purpose')
-WHERE json_extract(metadata, '$.purpose') IN ('checkout', 'account_top_up', 'swap');
+WHERE json_extract(metadata, '$.purpose') IN ('deposit', 'swap');
 
 CREATE TABLE withdrawal_intents (
   id TEXT PRIMARY KEY,

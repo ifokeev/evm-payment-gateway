@@ -258,7 +258,7 @@ curl -X POST "$GATEWAY_URL/api/v1/deposits" \
   -H "Content-Type: application/json" \
   -d '{
     "kind": "payment",
-    "purpose": "checkout",
+    "purpose": "deposit",
     "externalId": "order-001",
     "chain": "base-sepolia",
     "asset": "USDC",
@@ -268,9 +268,10 @@ curl -X POST "$GATEWAY_URL/api/v1/deposits" \
   }'
 ```
 
-`kind` is the settlement behavior: `payment` or `invoice`. `purpose` classifies
-the deposit as `checkout`, `account_top_up`, or `swap`. Direct withdrawal
-requests use `withdrawal`. The swap coordinator creates `swap` withdrawals.
+`kind` is the settlement behavior: `payment` or `invoice`. Set `purpose` to
+`deposit` for a normal deposit or `swap` for a swap input. Store the business
+use case in `externalId` or `metadata`. Direct withdrawal requests use
+`withdrawal`. The swap coordinator creates `swap` withdrawals.
 
 | Method | Route | Purpose |
 | --- | --- | --- |

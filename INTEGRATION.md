@@ -75,7 +75,7 @@ export async function createCryptoCheckout(order: {
     },
     body: JSON.stringify({
       kind: "payment",
-      purpose: "checkout",
+      purpose: "deposit",
       externalId: order.id,
       chain: "base",
       asset: "USDC",
@@ -100,9 +100,9 @@ than 32 nested levels.
 Keep `metadata` small. Store sensitive application data in your own database.
 
 Use `payment` for a one-time charge and `invoice` for a payable invoice. The
-gateway processes both types identically. Your application defines the product
-or service. Set `purpose` to `checkout`, `account_top_up`, or `swap` so the
-business flow remains explicit outside `metadata`.
+gateway processes both types identically. Set `purpose` to `deposit` for a
+normal deposit. Use `swap` only for an input that the swap coordinator manages.
+Store the business use case in `externalId` or `metadata`.
 
 The response includes the fields needed by your checkout:
 
@@ -110,7 +110,7 @@ The response includes the fields needed by your checkout:
 {
   "id": "di_example",
   "kind": "payment",
-  "purpose": "checkout",
+  "purpose": "deposit",
   "externalId": "order_123",
   "chain": "base",
   "chainId": 8453,
@@ -263,7 +263,7 @@ sequenceDiagram
 ```json
 {
   "kind": "payment",
-  "purpose": "account_top_up",
+  "purpose": "deposit",
   "externalId": "topup_attempt_123",
   "chain": "base",
   "asset": "USDC",
@@ -330,7 +330,7 @@ Example event:
       "id": "di_example",
       "externalId": "order_123",
       "kind": "payment",
-      "purpose": "checkout",
+      "purpose": "deposit",
       "chain": "base",
       "chainId": 8453,
       "asset": "USDC",

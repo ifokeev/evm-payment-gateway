@@ -10,9 +10,6 @@ const outputNetwork = document.querySelector("#output-network");
 const outputAsset = document.querySelector("#output-asset");
 const outputAmount = document.querySelector("#output-amount");
 const outputAssetLabel = document.querySelector("#output-asset-label");
-const purpose = document.querySelector("#purpose");
-const purposeField = document.querySelector("#purpose-field");
-const purposeHelp = document.querySelector("#purpose-help");
 const destinationField = document.querySelector("#destination-field");
 const destinationAddress = document.querySelector("#destination-address");
 const destinationError = document.querySelector("#destination-error");
@@ -82,13 +79,6 @@ outputNetwork.addEventListener("change", () => {
   updateSelection();
 });
 outputAsset.addEventListener("change", updateSelection);
-
-purpose.addEventListener("change", () => {
-  purposeHelp.textContent =
-    purpose.value === "account_top_up"
-      ? "The user chooses the amount before the app creates an exact deposit intent."
-      : "A normal one-time payment for an order or service.";
-});
 
 amount.addEventListener("input", () => {
   amountError.textContent = "";
@@ -185,7 +175,6 @@ form.addEventListener("submit", async (event) => {
               walletAddress: destinationAddress.value,
             }
           : {}),
-        ...(!withdrawing && !swapping ? { purpose: purpose.value } : {}),
         idempotencyKey,
         turnstileToken,
       }),
@@ -511,8 +500,6 @@ function setFlow(next, initializing = false) {
   sessionStorage.setItem("demo:flow", flow);
   clearTimeout(pollTimer);
   for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
-  purposeField.hidden = flow !== "deposit";
-  purpose.disabled = flow !== "deposit";
   outputFields.hidden = flow !== "swap";
   outputNetwork.disabled = !config || flow !== "swap";
   outputAsset.disabled = !config || flow !== "swap";
