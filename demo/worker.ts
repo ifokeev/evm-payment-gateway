@@ -549,7 +549,7 @@ async function demoSwapState(env: DemoEnv, swapId: string): Promise<Record<strin
   const swapBody = await responseObject(swapResponse, 2_000_000);
   if (!swapResponse.ok) throw new DemoError(502, "gateway swap status is unavailable");
   const swap = publicSwap(swapBody);
-  if (swap.id !== swapId) throw new DemoError(502, "gateway returned an invalid swap");
+  if (swap.id !== swapId || !demoResource(swap)) throw new DemoError(404, "swap not found");
   const depositIntentId = swap.depositIntentId as string;
   const payoutId = swapPayoutId(swap);
   const [intentResponse, sweepResponse, payoutResponse, webhookEvent] = await Promise.all([

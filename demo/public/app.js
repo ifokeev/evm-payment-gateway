@@ -1085,21 +1085,21 @@ function startWithdrawalPolling(immediate = false) {
 
 function startSwapPolling(immediate = false) {
   clearTimeout(pollTimer);
-  pollAttempts = 0;
   const poll = async () => {
-    if (flow !== "swap" || !currentSwapId || pollAttempts >= 360) return;
-    pollAttempts += 1;
+    if (flow !== "swap" || !currentSwapId) return;
+    let delay = 5_000;
     try {
       const response = await fetch(`/api/swaps/${encodeURIComponent(currentSwapId)}`);
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Swap status is unavailable");
       if (flow !== "swap") return;
       renderSwap(body);
-      if (["complete", "expired", "refunded", "reorged"].includes(body.swap.status)) return;
+      if (["complete", "refunded", "reorged"].includes(body.swap.status)) return;
+      if (body.swap.status === "expired") delay = 30_000;
     } catch (error) {
       showGlobalError(error instanceof Error ? error.message : "Swap status is unavailable");
     }
-    pollTimer = setTimeout(poll, 5_000);
+    pollTimer = setTimeout(poll, delay);
   };
   pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
 }

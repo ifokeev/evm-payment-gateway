@@ -584,12 +584,15 @@ async function reopenRefundWithdrawal(
     env.DB.prepare(`UPDATE withdrawal_intents
       SET status = 'awaiting_signature', expires_at = ?, last_error = '', completed_at = NULL,
         updated_at = ?
-      WHERE id = ? AND status IN ('failed','expired')
+      WHERE id = ? AND (status = 'expired' OR (status = 'failed'
+        AND EXISTS (SELECT 1 FROM withdrawal_transactions
+          WHERE withdrawal = ? AND status = 'failed' AND block_number IS NOT NULL
+            AND last_error = 'transaction reverted')
         AND NOT EXISTS (SELECT 1 FROM withdrawal_transactions
-          WHERE withdrawal = ? AND (status != 'failed' OR block_number IS NULL
-            OR last_error != 'transaction reverted'))`).bind(
+          WHERE withdrawal = ? AND status NOT IN ('failed','replaced'))))`).bind(
       expiry,
       now,
+      row.refund_withdrawal,
       row.refund_withdrawal,
       row.refund_withdrawal,
     ),

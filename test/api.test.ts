@@ -93,8 +93,30 @@ describe("deposit API", () => {
   });
 
   it("reports an active chain stale when failed scans do not advance it", async () => {
-    const created = await create(randomId("health-scan"), { amount: "1", metadata: {} });
+    const created = await create(randomId("health-scan"), {
+      amount: "1",
+      metadata: {},
+      purpose: "swap",
+    });
     const intent = await created.json<{ id: string }>();
+    const swapResponse = await api.fetch(
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": randomId("health-swap"),
+        },
+        body: JSON.stringify({
+          depositIntentId: intent.id,
+          outputChain: "test",
+          outputAsset: "ETH",
+          outputAmount: "0.25",
+          destinationAddress: "0x5555555555555555555555555555555555555555",
+          refundAddress: "0x4444444444444444444444444444444444444444",
+        }),
+      }),
+    );
+    const swap = await swapResponse.json<{ id: string }>();
     const stored = await bindings.DB.prepare("SELECT start_block FROM deposit_intents WHERE id = ?")
       .bind(intent.id)
       .first<{ start_block: number }>();
@@ -107,7 +129,8 @@ describe("deposit API", () => {
     } satisfies NetworkConfig;
     try {
       await bindings.DB.batch([
-        bindings.DB.prepare("UPDATE deposit_intents SET chain = ? WHERE id = ?").bind(
+        bindings.DB.prepare(`UPDATE deposit_intents SET chain = ?, status = 'paid',
+          received_units = expected_units, confirmed_units = expected_units WHERE id = ?`).bind(
           chain,
           intent.id,
         ),
@@ -133,9 +156,14 @@ describe("deposit API", () => {
       ).toEqual({ updated_at: staleAt, lock_owner: "", locked_until: 0 });
 
       const response = await api.fetch(new Request("https://gateway.test/health"));
-      expect(await response.json()).toMatchObject({ ok: false, staleChains: [chain] });
+      expect(await response.json()).toMatchObject({
+        ok: false,
+        activeSwaps: 1,
+        staleChains: [chain],
+      });
     } finally {
       await bindings.DB.batch([
+        bindings.DB.prepare("DELETE FROM swaps WHERE id = ?").bind(swap.id),
         bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(intent.id),
         bindings.DB.prepare("DELETE FROM chain_blocks WHERE chain = ?").bind(chain),
         bindings.DB.prepare("DELETE FROM chain_states WHERE chain = ?").bind(chain),
@@ -619,6 +647,7 @@ describe("withdrawal API", () => {
     let canonicalBlockHash = blockHash;
     let transactionMissing = false;
     let rebroadcastError = "";
+    let receiptStatus = "0x1";
     rpcResponder = async (request) => {
       const body = JSON.parse(await request.text()) as {
         id: number;
@@ -666,7 +695,7 @@ describe("withdrawal API", () => {
                 },
               ],
               logsBloom: `0x${"0".repeat(512)}`,
-              status: "0x1",
+              status: receiptStatus,
               to: testToken,
               transactionHash: txHash,
               transactionIndex: "0x0",
@@ -736,6 +765,26 @@ describe("withdrawal API", () => {
         .bind(withdrawal.id)
         .first(),
     ).toEqual(completedAt);
+    receiptStatus = "0x0";
+    await reconcileWithdrawals(bindings);
+    const failedAt = await bindings.DB.prepare(
+      "SELECT status, updated_at FROM withdrawal_intents WHERE id = ?",
+    )
+      .bind(withdrawal.id)
+      .first<{ status: string; updated_at: number }>();
+    expect(failedAt?.status).toBe("failed");
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime((failedAt!.updated_at + 60) * 1_000);
+      await reconcileWithdrawals(bindings);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      await bindings.DB.prepare("SELECT status, updated_at FROM withdrawal_intents WHERE id = ?")
+        .bind(withdrawal.id)
+        .first(),
+    ).toEqual(failedAt);
     transactionMissing = true;
     rebroadcastError = "nonce too low";
     await reconcileWithdrawals(bindings);
@@ -799,6 +848,12 @@ describe("withdrawal API", () => {
           id: body.id,
           error: { code: -32_000, message: "unknown transaction type" },
         });
+      if (
+        body.method === "eth_getTransactionReceipt" ||
+        body.method === "eth_getTransactionByHash"
+      ) {
+        return Response.json({ jsonrpc: "2.0", id: body.id, result: null });
+      }
       throw new Error(`unmocked withdrawal RPC method: ${body.method}`);
     };
 
@@ -826,7 +881,7 @@ describe("withdrawal API", () => {
         .bind(withdrawal.id)
         .first(),
     ).toMatchObject({
-      status: "prepared",
+      status: "submitted",
       last_error: expect.stringContaining("unknown transaction type"),
     });
     await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
@@ -1164,7 +1219,11 @@ describe("withdrawal API", () => {
       if (body.method === "eth_chainId") result = "0x539";
       else if (body.method === "eth_sendRawTransaction") {
         broadcasts++;
-        result = txHash;
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32_000, message: "nonce too low" },
+        });
       } else if (body.method === "eth_blockNumber") result = "0x33";
       else if (body.method === "eth_getBlockByNumber") result = { hash: blockHash };
       else if (body.method === "eth_getTransactionReceipt")
@@ -1208,7 +1267,7 @@ describe("withdrawal API", () => {
     };
 
     await reconcileWithdrawals(bindings);
-    expect(broadcasts).toBe(1);
+    expect(broadcasts).toBe(0);
     expect(
       await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
         .bind(withdrawal.id)
@@ -1739,6 +1798,19 @@ describe("swap API", () => {
         testTreasury,
         testToken,
         `0x${"9".repeat(64)}`,
+        now,
+        now,
+      ),
+      bindings.DB.prepare(`INSERT INTO withdrawal_transactions
+        (id,withdrawal,replacement_of,chain,tx_hash,raw_tx,from_address,to_address,nonce,status,
+         last_error,created_at,updated_at)
+        VALUES (?,?,?,'test',?,'0x02',?,?,55,'replaced','replaced by mined attempt',?,?)`).bind(
+        randomId("wtx"),
+        refund!.refund_withdrawal,
+        failedTransaction,
+        `0x${crypto.randomUUID().replaceAll("-", "").repeat(2)}`,
+        testTreasury,
+        testToken,
         now,
         now,
       ),
@@ -3302,9 +3374,35 @@ describe("webhook delivery", () => {
     );
   });
 
-  it("scans active payment chains without queueing unused networks", async () => {
-    const response = await create(randomId("scheduled"), { amount: "1", metadata: {} });
+  it("keeps scanning a paid input while its swap is active", async () => {
+    const response = await create(randomId("scheduled"), {
+      amount: "1",
+      metadata: {},
+      purpose: "swap",
+    });
     const intent = await response.json<{ id: string }>();
+    const created = await api.fetch(
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": randomId("scheduled-swap"),
+        },
+        body: JSON.stringify({
+          depositIntentId: intent.id,
+          outputChain: "test",
+          outputAsset: "ETH",
+          outputAmount: "0.25",
+          destinationAddress: "0x5555555555555555555555555555555555555555",
+          refundAddress: "0x4444444444444444444444444444444444444444",
+        }),
+      }),
+    );
+    const swap = await created.json<{ id: string }>();
+    await bindings.DB.prepare(`UPDATE deposit_intents SET status = 'paid',
+      received_units = expected_units, confirmed_units = expected_units WHERE id = ?`)
+      .bind(intent.id)
+      .run();
     const sendScans = vi.fn(
       async (_messages: MessageSendRequest<{ chain: string }>[]) => undefined,
     );
@@ -3318,7 +3416,10 @@ describe("webhook delivery", () => {
       });
       expect(sendScans).toHaveBeenCalledWith([{ body: { chain: "test" } }]);
     } finally {
-      await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(intent.id).run();
+      await bindings.DB.batch([
+        bindings.DB.prepare("DELETE FROM swaps WHERE id = ?").bind(swap.id),
+        bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(intent.id),
+      ]);
     }
   });
 

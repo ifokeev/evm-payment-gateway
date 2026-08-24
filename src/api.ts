@@ -126,11 +126,14 @@ async function health(env: ApiEnv): Promise<Response> {
       "SELECT COUNT(*) AS count FROM withdrawal_intents WHERE status IN ('awaiting_signature','submitted','confirming')",
     ).first<{ count: number }>(),
     env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM swaps WHERE status NOT IN ('complete','expired','refunded','reorged')",
+      "SELECT COUNT(*) AS count FROM swaps WHERE status NOT IN ('complete','refunded','reorged')",
     ).first<{ count: number }>(),
     all<{ chain: string }>(
       env.DB,
-      "SELECT DISTINCT chain FROM deposit_intents WHERE status IN ('pending','underpaid','confirming','reorged')",
+      `SELECT DISTINCT d.chain FROM deposit_intents d
+       WHERE d.status IN ('pending','underpaid','confirming','reorged')
+          OR (d.status = 'paid' AND EXISTS (SELECT 1 FROM swaps s
+            WHERE s.deposit_intent = d.id AND s.status NOT IN ('complete','refunded','reorged')))`,
     ),
   ]);
   const staleChains = activeChainRows

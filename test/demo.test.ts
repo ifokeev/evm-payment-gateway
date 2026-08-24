@@ -572,6 +572,21 @@ describe("public demo", () => {
     });
   });
 
+  it("does not proxy a non-demo swap", async () => {
+    const gatewayFetch = vi.fn(async () =>
+      Response.json({ ...swap, id: "swp_private123", externalId: "private_swap" }),
+    );
+    env.GATEWAY = { fetch: gatewayFetch } as unknown as Fetcher;
+
+    const response = await demo.fetch(
+      new Request("https://demo.test/api/swaps/swp_private123"),
+      env,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "swap not found" });
+    expect(gatewayFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects user-defined swap terms before it creates a deposit", async () => {
     expect((await demo.fetch(createSwapRequest({ amount: "0.51" }), env)).status).toBe(400);
     expect((await demo.fetch(createSwapRequest({ outputAmount: "5" }), env)).status).toBe(400);

@@ -645,7 +645,8 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
           "UPDATE withdrawal_transactions SET last_error = ?, updated_at = ? WHERE id = ?",
         ).bind(error, now, joined.id),
         env.DB.prepare(
-          "UPDATE withdrawal_intents SET last_error = ?, updated_at = ? WHERE id = ?",
+          `UPDATE withdrawal_intents SET last_error = ?,
+            updated_at = CASE WHEN status = 'failed' THEN updated_at ELSE ? END WHERE id = ?`,
         ).bind(error, now, joined.withdrawal_id),
       ]);
       continue;
@@ -673,14 +674,6 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
           throw new Error(`RPC chain ID mismatch for ${network.name}`);
         verifiedChains.add(joined.chain);
       }
-      if (joined.status === "prepared") {
-        await broadcast(joined.raw_tx, joined.tx_hash, network, client);
-        await env.DB.prepare(
-          "UPDATE withdrawal_transactions SET status = 'submitted', last_error = '', updated_at = ? WHERE id = ?",
-        )
-          .bind(unixNow(), joined.id)
-          .run();
-      }
       if (joined.status === "replaced") {
         await reconcileReplacedTransaction(env.DB, withdrawal, joined, network, client);
         continue;
@@ -692,7 +685,8 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
           "UPDATE withdrawal_transactions SET last_error = ?, updated_at = ? WHERE id = ?",
         ).bind(safeError(error), unixNow(), joined.id),
         env.DB.prepare(
-          "UPDATE withdrawal_intents SET last_error = ?, updated_at = ? WHERE id = ?",
+          `UPDATE withdrawal_intents SET last_error = ?,
+            updated_at = CASE WHEN status = 'failed' THEN updated_at ELSE ? END WHERE id = ?`,
         ).bind(safeError(error), unixNow(), withdrawal.id),
       ]);
     }
@@ -794,11 +788,12 @@ async function reconcileTransaction(
     await db.batch([
       db
         .prepare(`UPDATE withdrawal_transactions SET status = 'failed', block_number = ?, block_hash = ?,
-          fee_wei = ?, last_error = 'transaction reverted', updated_at = ? WHERE id = ?`)
+          fee_wei = ?, last_error = 'transaction reverted',
+          updated_at = CASE WHEN status = 'failed' THEN updated_at ELSE ? END WHERE id = ?`)
         .bind(Number(receipt.blockNumber), receipt.blockHash, fee, now, transaction.id),
       db
         .prepare(`UPDATE withdrawal_intents SET status = 'failed', last_error = 'transaction reverted',
-          updated_at = ? WHERE id = ?`)
+          updated_at = CASE WHEN status = 'failed' THEN updated_at ELSE ? END WHERE id = ?`)
         .bind(now, withdrawal.id),
     ]);
     return;
@@ -807,11 +802,12 @@ async function reconcileTransaction(
     await db.batch([
       db
         .prepare(`UPDATE withdrawal_transactions SET status = 'failed', block_number = ?, block_hash = ?,
-          fee_wei = ?, last_error = 'token transfer event mismatch', updated_at = ? WHERE id = ?`)
+          fee_wei = ?, last_error = 'token transfer event mismatch',
+          updated_at = CASE WHEN status = 'failed' THEN updated_at ELSE ? END WHERE id = ?`)
         .bind(Number(receipt.blockNumber), receipt.blockHash, fee, now, transaction.id),
       db
         .prepare(`UPDATE withdrawal_intents SET status = 'failed', last_error = 'token transfer event mismatch',
-          updated_at = ? WHERE id = ?`)
+          updated_at = CASE WHEN status = 'failed' THEN updated_at ELSE ? END WHERE id = ?`)
         .bind(now, withdrawal.id),
     ]);
     return;

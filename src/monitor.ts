@@ -61,6 +61,10 @@ async function scheduledScanChains(
       WHERE ? = 1
          OR i.status IN ('pending', 'underpaid', 'confirming', 'reorged')
          OR (i.status = 'paid' AND EXISTS (
+              SELECT 1 FROM swaps x WHERE x.deposit_intent = i.id
+                AND x.status NOT IN ('complete', 'refunded', 'reorged')
+            ))
+         OR (i.status = 'paid' AND EXISTS (
               SELECT 1 FROM deposit_transfers t
                WHERE t.deposit_intent = i.id AND t.canonical = 1
                  AND (s.last_scanned IS NULL OR t.block_number >= s.last_scanned - ?)
