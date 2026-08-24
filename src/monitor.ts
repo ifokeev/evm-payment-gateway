@@ -611,7 +611,6 @@ async function updatePayment(
         depositIntent: {
           id: intent.id,
           externalId: intent.external_id,
-          kind: intent.kind,
           purpose: intent.purpose,
           chain: intent.chain,
           chainId: intent.chain_id,

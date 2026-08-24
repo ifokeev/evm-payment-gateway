@@ -335,7 +335,6 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   if (!idempotencyKey || idempotencyKey.length > 200)
     throw new HttpError(400, "Idempotency-Key is required and must be at most 200 characters");
   const body = await readObject(request, [
-    "kind",
     "purpose",
     "externalId",
     "chain",
@@ -344,14 +343,11 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     "expiresInSeconds",
     "metadata",
   ]);
-  const kind = requiredString(body, "kind").trim();
   const purpose = requiredString(body, "purpose").trim();
   const externalId = requiredString(body, "externalId").trim();
   const chainName = requiredString(body, "chain").trim();
   const asset = requiredString(body, "asset").trim().toUpperCase();
   const rawAmount = requiredString(body, "amount");
-  if (kind !== "payment" && kind !== "invoice")
-    throw new HttpError(400, "kind must be payment or invoice");
   if (purpose !== "deposit" && purpose !== "swap")
     throw new HttpError(400, "purpose must be deposit or swap");
   if (!externalId || externalId.length > 200)
@@ -398,7 +394,6 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   if (new TextEncoder().encode(metadataJson).length > 65_536)
     throw new HttpError(400, "metadata is too large");
   const normalized = {
-    kind,
     purpose,
     externalId,
     chain: chainName,
@@ -446,7 +441,6 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     id: randomId("di"),
     idempotency_key: idempotencyKey,
     request_hash: requestHash,
-    kind,
     purpose,
     external_id: externalId,
     chain: chainName,
@@ -473,16 +467,15 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   };
   try {
     await env.DB.prepare(`INSERT INTO deposit_intents
-      (id, idempotency_key, request_hash, kind, purpose, external_id, chain, chain_id, asset, token_address, decimals,
+      (id, idempotency_key, request_hash, purpose, external_id, chain, chain_id, asset, token_address, decimals,
        expected_amount, expected_units, received_units, confirmed_units, treasury_address, deposit_address, intent_salt,
        factory_address, forwarder_init_code_hash,
        start_block, confirmations, status, expires_at, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`)
       .bind(
         intent.id,
         idempotencyKey,
         requestHash,
-        kind,
         purpose,
         externalId,
         chainName,
@@ -548,7 +541,6 @@ async function intentResponse(
       : `data:image/svg+xml;base64,${btoa(renderSVG(topUpPaymentUri, { ecc: "M", pixelSize: 4, border: 4 }))}`;
   return {
     id: intent.id,
-    kind: intent.kind,
     purpose: intent.purpose,
     externalId: intent.external_id,
     chain: intent.chain,
@@ -900,7 +892,7 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
     const now = unixNow();
     const job =
       await this.env.DB.prepare(`SELECT j.attempts, j.deposit_intent, j.observed_units, j.collected_units,
-      i.external_id, i.kind, i.purpose, i.chain, i.chain_id, i.asset, i.expected_amount, i.expected_units,
+      i.external_id, i.purpose, i.chain, i.chain_id, i.asset, i.expected_amount, i.expected_units,
       i.deposit_address, i.status AS deposit_status, i.expires_at
       FROM sweep_jobs j JOIN deposit_intents i ON i.id = j.deposit_intent WHERE j.id = ?`)
         .bind(jobId)
@@ -910,7 +902,6 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
           observed_units: string;
           collected_units: string;
           external_id: string;
-          kind: IntentRow["kind"];
           purpose: IntentRow["purpose"];
           chain: string;
           chain_id: number;
@@ -976,7 +967,6 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
           depositIntent: {
             id: job.deposit_intent,
             externalId: job.external_id,
-            kind: job.kind,
             purpose: job.purpose,
             chain: job.chain,
             chainId: job.chain_id,

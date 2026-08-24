@@ -70,6 +70,11 @@ type WithdrawalTransactionRow = {
   updated_at: number;
 };
 
+type SignerInboxRow = WithdrawalRow & {
+  swap_id: string | null;
+  deposit_intent: string | null;
+};
+
 export async function routeWithdrawal(
   request: Request,
   url: URL,
@@ -80,6 +85,8 @@ export async function routeWithdrawal(
   const match = url.pathname.match(
     new RegExp(`^${collection}/([A-Za-z0-9_-]+)(?:/(proposal|transaction))?$`),
   );
+  if (request.method === "GET" && url.pathname === collection)
+    return handle(() => listWithdrawals(url, env));
   if (request.method === "POST" && url.pathname === collection)
     return handle(() => createWithdrawal(request, env));
   if (!match) return null;
@@ -280,6 +287,57 @@ async function getWithdrawal(id: string, env: ApiEnv, proposal: boolean): Promis
   const network = loadNetworks(env.NETWORKS_JSON).get(row.chain);
   if (!network) throw new Error(`network ${row.chain} is no longer configured`);
   return json(await withdrawalResponse(env, row, network, proposal));
+}
+
+async function listWithdrawals(url: URL, env: ApiEnv): Promise<Response> {
+  if ([...url.searchParams.keys()].some((key) => !["status", "cursor", "limit"].includes(key)))
+    throw new WithdrawalHttpError(400, "invalid query parameters");
+  const status = url.searchParams.get("status") ?? "awaiting_signature";
+  if (status !== "awaiting_signature")
+    throw new WithdrawalHttpError(400, "status must be awaiting_signature");
+  const rawLimit = url.searchParams.get("limit") ?? "50";
+  if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100)
+    throw new WithdrawalHttpError(400, "limit must be between 1 and 100");
+  const cursor = url.searchParams.get("cursor");
+  const match = cursor?.match(/^(\d+):(wd_[A-Za-z0-9_-]+)$/);
+  if (cursor && !match) throw new WithdrawalHttpError(400, "invalid cursor");
+
+  const now = unixNow();
+  await expireUnavailableWithdrawals(env.DB, now);
+  const limit = Number(rawLimit);
+  const rows = await all<SignerInboxRow>(
+    env.DB,
+    `SELECT w.*, s.id AS swap_id, s.deposit_intent
+     FROM withdrawal_intents w
+     LEFT JOIN swaps s ON s.withdrawal_intent = w.id OR s.refund_withdrawal = w.id
+     WHERE w.status = 'awaiting_signature' AND w.expires_at >= ?
+       AND (w.created_at > ? OR (w.created_at = ? AND w.id > ?))
+     ORDER BY w.created_at, w.id LIMIT ?`,
+    now,
+    match ? Number(match[1]) : 0,
+    match ? Number(match[1]) : 0,
+    match?.[2] ?? "",
+    limit + 1,
+  );
+  const items = rows.slice(0, limit).map((row) => ({
+    id: row.id,
+    purpose: row.purpose,
+    externalId: row.external_id,
+    chain: row.chain,
+    chainId: row.chain_id,
+    asset: row.asset,
+    amount: row.amount,
+    amountUnits: row.amount_units,
+    sourceAddress: row.source_address,
+    destinationAddress: row.destination_address,
+    status: row.status,
+    expiresAt: new Date(row.expires_at * 1_000).toISOString(),
+    ...(row.swap_id ? { swapId: row.swap_id, depositIntentId: row.deposit_intent } : {}),
+    createdAt: new Date(row.created_at * 1_000).toISOString(),
+    updatedAt: new Date(row.updated_at * 1_000).toISOString(),
+  }));
+  const last = rows.length > limit ? rows[limit - 1] : null;
+  return json({ items, nextCursor: last ? `${last.created_at}:${last.id}` : null });
 }
 
 async function submitTransaction(id: string, request: Request, env: ApiEnv): Promise<Response> {
@@ -542,11 +600,7 @@ async function submitTransaction(id: string, request: Request, env: ApiEnv): Pro
 
 export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
   const now = unixNow();
-  await env.DB.prepare(
-    "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE status = 'awaiting_signature' AND expires_at < ?",
-  )
-    .bind(now, now)
-    .run();
+  await expireUnavailableWithdrawals(env.DB, now);
   // ponytail: keep seven days of terminal transactions under reorg watch; use a chain indexer if deeper reorg monitoring is required.
   const rows = await all<WithdrawalTransactionRow & WithdrawalRow>(
     env.DB,
@@ -643,6 +697,26 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
       ]);
     }
   }
+}
+
+async function expireUnavailableWithdrawals(db: D1Database, now: number): Promise<void> {
+  await db.batch([
+    db
+      .prepare(
+        "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE status = 'awaiting_signature' AND expires_at < ?",
+      )
+      .bind(now, now),
+    db
+      .prepare(`UPDATE withdrawal_intents SET status = 'expired', updated_at = ?
+        WHERE status = 'awaiting_signature' AND id IN (
+          SELECT s.withdrawal_intent FROM swaps s JOIN deposit_intents d ON d.id = s.deposit_intent
+          WHERE s.withdrawal_intent IS NOT NULL AND (s.status = 'reorged' OR d.status = 'reorged')
+          UNION
+          SELECT s.refund_withdrawal FROM swaps s JOIN deposit_intents d ON d.id = s.deposit_intent
+          WHERE s.refund_withdrawal IS NOT NULL AND (s.status = 'reorged' OR d.status = 'reorged')
+        )`)
+      .bind(now),
+  ]);
 }
 
 async function reconcileTransaction(

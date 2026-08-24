@@ -3,7 +3,6 @@ import demo, { type DemoEnv } from "../demo/worker";
 
 const intent = {
   id: "di_demo123",
-  kind: "payment",
   purpose: "deposit",
   externalId: "demo_123",
   chain: "base-sepolia",
@@ -259,6 +258,20 @@ beforeEach(() => {
           const { proposal: _, internalSecret: __, ...created } = withdrawal;
           return Response.json(created, { status: 201 });
         }
+        if (request.method === "GET" && path.endsWith("/withdrawals")) {
+          return Response.json({
+            items: [
+              { ...withdrawal, proposal: undefined },
+              {
+                ...swapWithdrawal,
+                proposal: undefined,
+                swapId: swap.id,
+                depositIntentId: swapIntent.id,
+              },
+            ],
+            nextCursor: null,
+          });
+        }
         if (request.method === "GET" && path.endsWith(`/withdrawals/${withdrawal.id}/proposal`)) {
           return Response.json(withdrawal);
         }
@@ -324,7 +337,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("public demo", () => {
-  it("creates an exact user-chosen payment without exposing backend fields", async () => {
+  it("creates an exact user-chosen deposit without exposing backend fields", async () => {
     const response = await demo.fetch(createRequest({ amount: "1.250000" }), env);
     expect(response.status).toBe(201);
     const body = await response.json<{
@@ -333,7 +346,6 @@ describe("public demo", () => {
     }>();
     expect(body.intent).toMatchObject({
       id: intent.id,
-      kind: "payment",
       expectedAmount: "1.25",
     });
     expect(body.intent).not.toHaveProperty("metadata");
@@ -343,7 +355,6 @@ describe("public demo", () => {
     expect(gatewayRequest.headers.get("Authorization")).toBe(`Bearer ${env.PAYMENT_API_KEY}`);
     expect(gatewayRequest.headers.get("Idempotency-Key")).toMatch(/^demo:/);
     expect(gatewayRequest.body).toMatchObject({
-      kind: "payment",
       purpose: "deposit",
       chain: "base-sepolia",
       asset: "USDC",
@@ -448,6 +459,59 @@ describe("public demo", () => {
     expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
       `Bearer ${env.PAYMENT_API_KEY}`,
     );
+  });
+
+  it("lists and submits testnet proposals through the signer inbox", async () => {
+    const inbox = await demo.fetch(
+      new Request("https://demo.test/api/signer/withdrawals", {
+        headers: { "CF-Connecting-IP": "192.0.2.10" },
+      }),
+      env,
+    );
+    expect(inbox.status).toBe(200);
+    const body = await inbox.json<{ items: Array<Record<string, unknown>> }>();
+    expect(body.items).toHaveLength(2);
+    expect(body.items[1]).toMatchObject({
+      id: swapWithdrawal.id,
+      purpose: "swap",
+      swapId: swap.id,
+      depositIntentId: swapIntent.id,
+    });
+    expect(body.items[0]).not.toHaveProperty("proposal");
+    expect(body.items[0]).not.toHaveProperty("internalSecret");
+    expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
+      `Bearer ${env.PAYMENT_API_KEY}`,
+    );
+
+    const proposal = await demo.fetch(
+      new Request(`https://demo.test/api/signer/withdrawals/${swapWithdrawal.id}/proposal`, {
+        headers: { "CF-Connecting-IP": "192.0.2.10" },
+      }),
+      env,
+    );
+    expect(await proposal.json()).toMatchObject({
+      withdrawal: { id: swapWithdrawal.id, proposal: { chainId: 11155111 } },
+    });
+
+    const rawTransaction = `0x${"12".repeat(100)}`;
+    const submitted = await demo.fetch(
+      new Request(`https://demo.test/api/signer/withdrawals/${swapWithdrawal.id}/transaction`, {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": "192.0.2.10",
+          "Content-Type": "application/json",
+          Origin: "https://demo.test",
+        },
+        body: JSON.stringify({ rawTransaction }),
+      }),
+      env,
+    );
+    expect(submitted.status).toBe(202);
+    expect(gatewayRequests.at(-1)).toMatchObject({
+      method: "POST",
+      path: `/api/v1/withdrawals/${swapWithdrawal.id}/transaction`,
+      body: { rawTransaction },
+    });
   });
 
   it("creates, polls, and signs a fixed cross-chain swap", async () => {
@@ -711,6 +775,8 @@ describe("public demo", () => {
     expect(await asset.text()).toBe("/");
     const analyticsPage = await demo.fetch(new Request("https://demo.test/analytics"), env);
     expect(await analyticsPage.text()).toBe("/analytics.html");
+    const signerPage = await demo.fetch(new Request("https://demo.test/signer"), env);
+    expect(await signerPage.text()).toBe("/signer.html");
   });
 
   it("exposes only aggregate analytics for configured demo assets", async () => {

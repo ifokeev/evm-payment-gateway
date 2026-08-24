@@ -28,7 +28,7 @@ Your application remains the system of record for orders and entitlements. The
 gateway detects payments and collects funds. It does not fulfill orders or
 grant entitlements.
 
-All payment endpoints use the `/api/v1` prefix and require
+All API routes use the `/api/v1` prefix and require
 `Authorization: Bearer <PAYMENT_API_KEY>`. Only `GET /health` is public.
 
 | Method | Path | Purpose |
@@ -38,12 +38,13 @@ All payment endpoints use the `/api/v1` prefix and require
 | `GET` | `/deposits/{id}/transactions` | Read deposit transfers only. |
 | `GET` | `/deposits/{id}/sweep` | Inspect treasury collection progress. |
 | `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
+| `GET` | `/withdrawals?status=awaiting_signature` | List proposals for signer approval. |
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
 | `POST` | `/swaps` | Link an exact swap deposit to an output proposal. |
 | `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
-| `GET` | `/analytics/summary` | Read aggregate payment and collection metrics. |
+| `GET` | `/analytics/summary` | Read aggregate settlement metrics. |
 | `GET` | `/health` | Read successful scan progress and stale active chains. |
 
 Errors use `{ "error": "message" }`. The API does not support lookup by
@@ -74,7 +75,6 @@ export async function createCryptoCheckout(order: {
       "Idempotency-Key": `payment:${order.paymentAttemptId}`,
     },
     body: JSON.stringify({
-      kind: "payment",
       purpose: "deposit",
       externalId: order.id,
       chain: "base",
@@ -99,17 +99,15 @@ than 32 nested levels.
 
 Keep `metadata` small. Store sensitive application data in your own database.
 
-Use `payment` for a one-time charge and `invoice` for a payable invoice. The
-gateway processes both types identically. Set `purpose` to `deposit` for a
-normal deposit. Use `swap` only for an input that the swap coordinator manages.
-Store the business use case in `externalId` or `metadata`.
+Set `purpose` to `deposit` for a normal deposit. Use `swap` only for an input
+that the swap coordinator manages. Store the business use case in `externalId`,
+`metadata`, or your application database.
 
 The response includes the fields needed by your checkout:
 
 ```json
 {
   "id": "di_example",
-  "kind": "payment",
   "purpose": "deposit",
   "externalId": "order_123",
   "chain": "base",
@@ -237,11 +235,8 @@ Handle excess funds through your support or refund policy.
 
 For donations, stored-value deposits, or account top-ups, let the user choose
 an amount in your UI. Validate the permitted range, chain, and asset on your
-backend. Create the same generic `payment` intent. Describe the application
-purpose in metadata.
-
-A separate intent kind is not necessary because settlement behavior is
-identical.
+backend. Create the same deposit intent. Describe the application use case in
+metadata.
 
 ```mermaid
 sequenceDiagram
@@ -262,7 +257,6 @@ sequenceDiagram
 
 ```json
 {
-  "kind": "payment",
   "purpose": "deposit",
   "externalId": "topup_attempt_123",
   "chain": "base",
@@ -329,7 +323,6 @@ Example event:
     "depositIntent": {
       "id": "di_example",
       "externalId": "order_123",
-      "kind": "payment",
       "purpose": "deposit",
       "chain": "base",
       "chainId": 8453,
@@ -456,6 +449,26 @@ Content-Type: application/json
   "expiresInSeconds": 1800
 }
 ```
+
+The signer polls the withdrawal inbox. The same inbox contains direct
+withdrawals, swap outputs, and refunds:
+
+```http
+GET /api/v1/withdrawals?status=awaiting_signature&limit=50
+```
+
+Each item includes `purpose`, `externalId`, the amount, the source and
+destination addresses, and `expiresAt`. A swap output or refund also includes
+`swapId` and `depositIntentId`. Use `nextCursor` in the next request when it is
+not `null`:
+
+```http
+GET /api/v1/withdrawals?status=awaiting_signature&limit=50&cursor={nextCursor}
+```
+
+The inbox is the durable approval queue. It excludes expired proposals and
+unsigned proposals whose swap input was reorganized. A notification can tell
+the signer to poll sooner, but it is not the source of truth.
 
 Get the exact transaction fields from the proposal endpoint:
 
@@ -607,9 +620,9 @@ Stop automatic approval. Reconcile the loss from the treasury ledger.
 
 ## Recurring billing
 
-For any recurring product, create a new `invoice` intent for every billing
-period. Use a new external ID and idempotency key for each period. After its own
-`deposit.succeeded` event, fulfill the invoice.
+For a recurring product, create a new deposit intent for each billing period.
+Use a new external ID and idempotency key for each period. Fulfill the business
+invoice after its `deposit.succeeded` event.
 
 The gateway never stores an allowance or withdraws from the customer's wallet
 automatically.

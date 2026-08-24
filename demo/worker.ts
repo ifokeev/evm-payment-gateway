@@ -56,8 +56,15 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics`) {
     return getDemoAnalytics(request, env);
   }
+  if (request.method === "GET" && url.pathname === `${API_ROOT}/signer/withdrawals`) {
+    return getSignerInbox(request, url, env);
+  }
   if (request.method === "GET" && url.pathname === "/analytics") {
     url.pathname = "/analytics.html";
+    return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
+  }
+  if (request.method === "GET" && url.pathname === "/signer") {
+    url.pathname = "/signer.html";
     return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
   }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`) {
@@ -81,6 +88,15 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   }
   if (request.method === "POST" && withdrawalMatch?.[2] === "transaction") {
     return submitDemoWithdrawal(request, env, withdrawalMatch[1]);
+  }
+  const signerMatch = url.pathname.match(
+    /^\/api\/signer\/withdrawals\/(wd_[A-Za-z0-9_-]+)\/(proposal|transaction)$/,
+  );
+  if (request.method === "GET" && signerMatch?.[2] === "proposal") {
+    return getSignerWithdrawal(request, env, signerMatch[1]);
+  }
+  if (request.method === "POST" && signerMatch?.[2] === "transaction") {
+    return submitSignerWithdrawal(request, env, signerMatch[1]);
   }
   const swapMatch = url.pathname.match(/^\/api\/swaps\/(swp_[A-Za-z0-9_-]+)(?:\/(transaction))?$/);
   if (request.method === "GET" && swapMatch && !swapMatch[2]) {
@@ -138,7 +154,6 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
         "Idempotency-Key": `demo:${idempotencyKey}`,
       },
       body: JSON.stringify({
-        kind: "payment",
         purpose: "deposit",
         externalId: `demo_${idempotencyKey}`,
         chain: option.chain,
@@ -310,7 +325,6 @@ async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response>
         "Idempotency-Key": `demo:swap:deposit:${idempotencyKey}`,
       },
       body: JSON.stringify({
-        kind: "payment",
         purpose: "swap",
         externalId: `demo_swap_${idempotencyKey}`,
         chain: input.chain,
@@ -386,6 +400,22 @@ async function getDemoWithdrawal(
   withdrawalId: string,
 ): Promise<Response> {
   await requireAccess(request, withdrawalId, env);
+  return getWithdrawalProposal(env, withdrawalId);
+}
+
+async function getSignerWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `signer:${ip}` })).success) {
+    throw new DemoError(429, "signer inbox refresh limit reached; try again in a minute");
+  }
+  return getWithdrawalProposal(env, withdrawalId);
+}
+
+async function getWithdrawalProposal(env: DemoEnv, withdrawalId: string): Promise<Response> {
   const response = await env.GATEWAY.fetch(
     new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${withdrawalId}/proposal`, {
       headers: gatewayAuthorization(env),
@@ -403,6 +433,23 @@ async function submitDemoWithdrawal(
 ): Promise<Response> {
   enforceSameOrigin(request);
   await requireAccess(request, withdrawalId, env);
+  return submitSignedWithdrawal(request, env, withdrawalId);
+}
+
+async function submitSignerWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  enforceSameOrigin(request);
+  return submitSignedWithdrawal(request, env, withdrawalId);
+}
+
+async function submitSignedWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.DEMO_RATE_LIMITER.limit({ key: `withdrawal-submit:${ip}` })).success) {
     throw new DemoError(429, "too many signed transaction attempts; try again in a minute");
@@ -425,6 +472,30 @@ async function submitDemoWithdrawal(
     );
   }
   return json({ withdrawal: publicWithdrawal(responseBody) }, response.status);
+}
+
+async function getSignerInbox(request: Request, url: URL, env: DemoEnv): Promise<Response> {
+  if ([...url.searchParams.keys()].some((key) => !["cursor"].includes(key))) {
+    throw new DemoError(400, "invalid signer inbox query");
+  }
+  const cursor = url.searchParams.get("cursor");
+  if (cursor && !/^\d+:wd_[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new DemoError(400, "invalid signer inbox cursor");
+  }
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `signer:${ip}` })).success) {
+    throw new DemoError(429, "signer inbox refresh limit reached; try again in a minute");
+  }
+  const query = new URLSearchParams({ status: "awaiting_signature", limit: "50" });
+  if (cursor) query.set("cursor", cursor);
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals?${query}`, {
+      headers: gatewayAuthorization(env),
+    }),
+  );
+  const body = await responseObject(response, 2_000_000);
+  if (!response.ok) throw new DemoError(502, "gateway signer inbox is unavailable");
+  return json(publicSignerInbox(body));
 }
 
 async function getDemoSwap(request: Request, env: DemoEnv, swapId: string): Promise<Response> {
@@ -697,7 +768,6 @@ function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
   }
   const fields = [
     "id",
-    "kind",
     "purpose",
     "externalId",
     "chain",
@@ -806,6 +876,8 @@ function publicWithdrawal(value: Record<string, unknown>): Record<string, unknow
     "lastError",
     "createdAt",
     "updatedAt",
+    "swapId",
+    "depositIntentId",
   ]);
   if (isObject(value.proposal)) {
     result.proposal = publicFields(value.proposal, [
@@ -834,6 +906,21 @@ function publicWithdrawal(value: Record<string, unknown>): Record<string, unknow
       ])
     : null;
   return result;
+}
+
+function publicSignerInbox(value: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(value.items)) throw new DemoError(502, "gateway returned an invalid inbox");
+  const nextCursor = value.nextCursor;
+  if (nextCursor !== null && !/^\d+:wd_[A-Za-z0-9_-]+$/.test(String(nextCursor))) {
+    throw new DemoError(502, "gateway returned an invalid inbox");
+  }
+  return {
+    items: value.items.map((item) => {
+      if (!isObject(item)) throw new DemoError(502, "gateway returned an invalid inbox");
+      return publicWithdrawal(item);
+    }),
+    nextCursor,
+  };
 }
 
 function swapPayoutId(swap: Record<string, unknown>): string {

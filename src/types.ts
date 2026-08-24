@@ -49,7 +49,6 @@ export type IntentRow = {
   id: string;
   idempotency_key: string;
   request_hash: string;
-  kind: "payment" | "invoice";
   purpose: "deposit" | "swap";
   external_id: string;
   chain: string;

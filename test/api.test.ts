@@ -84,8 +84,8 @@ beforeEach(() => {
   rpcResponder = undefined;
 });
 
-describe("payment API", () => {
-  it("keeps health public and every payment read private", async () => {
+describe("deposit API", () => {
+  it("keeps health public and every deposit read private", async () => {
     expect((await api.fetch(new Request("https://gateway.test/health"))).status).toBe(200);
     expect(
       (await api.fetch(new Request("https://gateway.test/api/v1/deposits/missing"))).status,
@@ -148,7 +148,7 @@ describe("payment API", () => {
     const first = await create(key, { amount: "0010.250000", metadata: { z: 1, a: 2 } });
     expect(first.status).toBe(201);
     const body = await first.json<Record<string, unknown>>();
-    expect(body.kind).toBe("payment");
+    expect(body).not.toHaveProperty("kind");
     expect(body.expectedAmount).toBe("10.25");
     expect(body.expectedUnits).toBe("10250000");
     expect(body.remainingAmount).toBe("10.25");
@@ -290,7 +290,7 @@ describe("payment API", () => {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
       body: JSON.stringify({
-        kind: "payment",
+        purpose: "deposit",
         externalId: "order",
         chain: "test",
         asset: "USDC",
@@ -316,32 +316,27 @@ describe("payment API", () => {
     const deeplyNested = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
-      body: `{"kind":"payment","purpose":"deposit","externalId":"deep","chain":"test","asset":"USDC","amount":"1","metadata":${'{"next":'.repeat(depth)}null${"}".repeat(depth)}}`,
+      body: `{"purpose":"deposit","externalId":"deep","chain":"test","asset":"USDC","amount":"1","metadata":${'{"next":'.repeat(depth)}null${"}".repeat(depth)}}`,
     });
     const deepResponse = await api.fetch(deeplyNested);
     expect(deepResponse.status).toBe(400);
     expect(await deepResponse.json()).toEqual({ error: "metadata is too deeply nested" });
   });
 
-  it("accepts only supported deposit kinds and purposes", async () => {
-    const invoice = await create(randomId("idem"), {
+  it("accepts only supported deposit purposes", async () => {
+    const swap = await create(randomId("idem"), {
       amount: "1",
       metadata: {},
-      kind: "invoice",
       purpose: "swap",
     });
-    expect(invoice.status).toBe(201);
-    const invoiceBody = await invoice.json<{ id: string; kind: string; purpose: string }>();
-    expect(invoiceBody).toMatchObject({
-      kind: "invoice",
-      purpose: "swap",
-    });
+    expect(swap.status).toBe(201);
+    expect(await swap.json<{ purpose: string }>()).toMatchObject({ purpose: "swap" });
 
     const invalid = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
       body: JSON.stringify({
-        kind: "custom",
+        kind: "payment",
         purpose: "deposit",
         externalId: "unsupported-kind",
         chain: "test",
@@ -350,7 +345,7 @@ describe("payment API", () => {
       }),
     });
     expect(await (await api.fetch(invalid)).json()).toEqual({
-      error: "kind must be payment or invoice",
+      error: "invalid JSON body",
     });
     const invalidPurpose = await create(randomId("idem"), {
       amount: "1",
@@ -363,7 +358,7 @@ describe("payment API", () => {
     const schema = await bindings.DB.prepare(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deposit_intents'",
     ).first<{ sql: string }>();
-    expect(schema?.sql).toContain("kind IN ('payment', 'invoice')");
+    expect(schema?.sql).not.toContain("kind");
     expect(schema?.sql).toContain("purpose IN ('deposit', 'swap')");
     expect(
       (
@@ -398,6 +393,72 @@ describe("payment API", () => {
 });
 
 describe("withdrawal API", () => {
+  it("pages the signer inbox and removes expired proposals", async () => {
+    const created = await Promise.all(
+      ["first", "second"].map(async (name, index) => {
+        const response = await createWithdrawal(randomId(`signer-${name}`), {
+          externalId: `signer-${name}`,
+          asset: "USDC",
+          amount: String(index + 1),
+          destinationAddress: `0x${String(index + 5).repeat(40)}`,
+        });
+        expect(response.status).toBe(201);
+        return response.json<{ id: string }>();
+      }),
+    );
+
+    const firstPage = await (
+      await api.fetch(
+        authorizedRequest(
+          "https://gateway.test/api/v1/withdrawals?status=awaiting_signature&limit=1",
+        ),
+      )
+    ).json<{ items: Array<Record<string, unknown>>; nextCursor: string | null }>();
+    expect(firstPage.items).toHaveLength(1);
+    expect(firstPage.items[0]).toMatchObject({ status: "awaiting_signature" });
+    expect(firstPage.items[0]).not.toHaveProperty("proposal");
+    expect(firstPage.nextCursor).toMatch(/^\d+:wd_/);
+
+    const secondPage = await (
+      await api.fetch(
+        authorizedRequest(
+          `https://gateway.test/api/v1/withdrawals?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor!)}`,
+        ),
+      )
+    ).json<{ items: Array<{ id: string }>; nextCursor: string | null }>();
+    expect(secondPage.items).toHaveLength(1);
+    expect(new Set([firstPage.items[0].id, secondPage.items[0].id])).toEqual(
+      new Set(created.map((row) => row.id)),
+    );
+    expect(secondPage.nextCursor).toBeNull();
+
+    await bindings.DB.prepare("UPDATE withdrawal_intents SET expires_at = ? WHERE id = ?")
+      .bind(unixNow() - 1, created[0].id)
+      .run();
+    const refreshed = await (
+      await api.fetch(authorizedRequest("https://gateway.test/api/v1/withdrawals"))
+    ).json<{ items: Array<{ id: string }> }>();
+    expect(refreshed.items.map((row) => row.id)).not.toContain(created[0].id);
+    expect(
+      await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
+        .bind(created[0].id)
+        .first(),
+    ).toEqual({ status: "expired" });
+
+    expect(
+      (
+        await api.fetch(
+          authorizedRequest("https://gateway.test/api/v1/withdrawals?status=complete"),
+        )
+      ).status,
+    ).toBe(400);
+    await Promise.all(
+      created.map((row) =>
+        bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?").bind(row.id).run(),
+      ),
+    );
+  });
+
   it("reserves swap output and refund purposes for the linked swap coordinator", async () => {
     const swap = await createWithdrawal(randomId("withdrawal-purpose"), {
       externalId: "swap-output",
@@ -1248,11 +1309,11 @@ describe("swap API", () => {
     await bindings.DB.batch(
       idle.map((row, index) =>
         bindings.DB.prepare(`INSERT INTO deposit_intents
-          (id,idempotency_key,request_hash,kind,purpose,external_id,chain,chain_id,asset,
+          (id,idempotency_key,request_hash,purpose,external_id,chain,chain_id,asset,
            token_address,decimals,expected_amount,expected_units,treasury_address,deposit_address,
            intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,
            expires_at,metadata,created_at,updated_at)
-          VALUES (?,?,?,'payment','swap',?,'test',1337,'USDC',?,6,'1','1000000',?,?,?,?,?,1,2,
+          VALUES (?,?,?,'swap',?,'test',1337,'USDC',?,6,'1','1000000',?,?,?,?,?,1,2,
             'pending',?,'{}',1,1)`).bind(
           row.depositId,
           `${prefix}-deposit-${index}`,
@@ -1454,6 +1515,16 @@ describe("swap API", () => {
         )
       ).json(),
     ).toMatchObject({ swapId: swap.id, depositIntentId: deposit.id });
+    const signerInbox = await (
+      await api.fetch(
+        authorizedRequest("https://gateway.test/api/v1/withdrawals?status=awaiting_signature"),
+      )
+    ).json<{ items: Array<Record<string, unknown>> }>();
+    expect(signerInbox.items.find((item) => item.id === settled.withdrawalIntentId)).toMatchObject({
+      purpose: "swap",
+      swapId: swap.id,
+      depositIntentId: deposit.id,
+    });
     expect(
       await bindings.DB.prepare(
         "SELECT COUNT(*) AS count FROM withdrawal_intents WHERE idempotency_key = ?",
@@ -2155,10 +2226,10 @@ describe("sweep coordinator", () => {
     const valid = intentFields("91", testToken);
     const insertIntent = (id: string, fields: ReturnType<typeof intentFields>) =>
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,
          expected_amount,expected_units,deposit_address,intent_salt,factory_address,forwarder_init_code_hash,
          start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-        VALUES (?,?,?,'payment','historical','test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,
+        VALUES (?,?,?,'historical','test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,
           'paid',?,'{}',?,?)`).bind(
         id,
         randomId("idem"),
@@ -2204,9 +2275,9 @@ describe("sweep coordinator", () => {
     const fields = intentFields("90", testToken, snapshottedTreasury);
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          treasury_address,deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,?,?,?,?,1,2,'paid',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,?,?,?,?,1,2,'paid',?,'{}',?,?)`).bind(
         intentId,
         randomId("idem"),
         "a".repeat(64),
@@ -2263,10 +2334,10 @@ describe("sweep coordinator", () => {
     const fields = intentFields("95", testToken);
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          received_units,confirmed_units,deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,
          expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','partial-order','test',1337,'USDC',?,6,'0.0001','100','40','40',?,?,?,?,1,2,'underpaid',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'partial-order','test',1337,'USDC',?,6,'0.0001','100','40','40',?,?,?,?,1,2,'underpaid',?,'{}',?,?)`).bind(
         intentId,
         randomId("idem"),
         "f".repeat(64),
@@ -2331,10 +2402,10 @@ describe("analytics", () => {
     const received = "900719925474099300001";
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          received_units,confirmed_units,deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,
          expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','analytics-order','analytics',31337,'TOK','',18,?,?,?, ?,?,?,?,?,1,1,'paid',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'analytics-order','analytics',31337,'TOK','',18,?,?,?, ?,?,?,?,?,1,1,'paid',?,'{}',?,?)`).bind(
         intentId,
         randomId("idem"),
         "9".repeat(64),
@@ -2475,9 +2546,9 @@ describe("chain scanner", () => {
     const secondToken = intentFields("c3", testToken);
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','batch-native','batch-test',1337,'ETH','',18,'0.0000000000000001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'batch-native','batch-test',1337,'ETH','',18,'0.0000000000000001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
         nativeId,
         randomId("idem"),
         "d".repeat(64),
@@ -2490,9 +2561,9 @@ describe("chain scanner", () => {
         now,
       ),
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','batch-token','batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'batch-token','batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
         tokenId,
         randomId("idem"),
         "e".repeat(64),
@@ -2506,9 +2577,9 @@ describe("chain scanner", () => {
         now,
       ),
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','batch-token-2','batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'batch-token-2','batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
         secondTokenId,
         randomId("idem"),
         "f".repeat(64),
@@ -2528,9 +2599,9 @@ describe("chain scanner", () => {
         const salt = `0x${(index + 1).toString(16).padStart(64, "0")}` as `0x${string}`;
         const fields = counterfactualAddress(testFactory, salt, testTreasury, testToken);
         return bindings.DB.prepare(`INSERT INTO deposit_intents
-          (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+          (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
            deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-           VALUES (?,?,?,'payment',?,'batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+           VALUES (?,?,?,?,'batch-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
           id,
           randomId("idem"),
           "1".repeat(64),
@@ -2713,9 +2784,9 @@ describe("chain scanner", () => {
         const salt = `0x${(index + 1_000).toString(16).padStart(64, "0")}` as `0x${string}`;
         const fields = counterfactualAddress(testFactory, salt, testTreasury, testToken);
         return bindings.DB.prepare(`INSERT INTO deposit_intents
-          (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+          (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
            deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-           VALUES (?,?,?,'payment',?,'scale-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
+           VALUES (?,?,?,?,'scale-test',1337,'USDC',?,6,'0.0001','100',?,?,?,?,1,2,'pending',?,'{}',?,?)`).bind(
           randomId("di"),
           randomId("idem"),
           "2".repeat(64),
@@ -2766,9 +2837,9 @@ describe("confirmation and reorg state", () => {
     const fields = intentFields("89", "");
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','collection-reorg','test',1337,'ETH','',18,'1','100',?,?,?,?,1,2,'paid',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'collection-reorg','test',1337,'ETH','',18,'1','100',?,?,?,?,1,2,'paid',?,'{}',?,?)`).bind(
         intentId,
         randomId("idem"),
         "a".repeat(64),
@@ -2836,9 +2907,9 @@ describe("confirmation and reorg state", () => {
     const intentId = randomId("di");
     const fields = intentFields("91", "");
     await bindings.DB.prepare(`INSERT INTO deposit_intents
-      (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+      (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
        deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-       VALUES (?,?,?,'invoice','expired-order','test',1337,'ETH','',18,'1','100',?,?,?,?,10,2,'pending',?,'{}',?,?)`)
+       VALUES (?,?,?,'expired-order','test',1337,'ETH','',18,'1','100',?,?,?,?,10,2,'pending',?,'{}',?,?)`)
       .bind(
         intentId,
         randomId("idem"),
@@ -2867,9 +2938,9 @@ describe("confirmation and reorg state", () => {
     const intentId = randomId("di");
     const fields = intentFields("92", "");
     await bindings.DB.prepare(`INSERT INTO deposit_intents
-      (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+      (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
        deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-       VALUES (?,?,?,'payment','reorg-order','test',1337,'ETH','',18,'0.0000000000000001','100',?,?,?,?,10,2,'pending',?,'{}',?,?)`)
+       VALUES (?,?,?,'reorg-order','test',1337,'ETH','',18,'0.0000000000000001','100',?,?,?,?,10,2,'pending',?,'{}',?,?)`)
       .bind(
         intentId,
         randomId("idem"),
@@ -2967,9 +3038,9 @@ describe("confirmation and reorg state", () => {
     const fields = intentFields("93", testToken);
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'payment','late-order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,?,?,?,1,2,'expired',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'late-order','test',1337,'USDC','0x9999999999999999999999999999999999999999',6,'0.0001','100',?,?,?,?,1,2,'expired',?,'{}',?,?)`).bind(
         intentId,
         randomId("idem"),
         "e".repeat(64),
@@ -3181,9 +3252,9 @@ describe("webhook delivery", () => {
     const fields = intentFields("94", "");
     await bindings.DB.batch([
       bindings.DB.prepare(`INSERT INTO deposit_intents
-        (id,idempotency_key,request_hash,kind,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
+        (id,idempotency_key,request_hash,external_id,chain,chain_id,asset,token_address,decimals,expected_amount,expected_units,
          deposit_address,intent_salt,factory_address,forwarder_init_code_hash,start_block,confirmations,status,expires_at,metadata,created_at,updated_at)
-         VALUES (?,?,?,'invoice','dispatch-test','test',1337,'ETH','',18,'1','1',?,?,?,?,1,2,'paid',?,'{}',?,?)`).bind(
+         VALUES (?,?,?,'dispatch-test','test',1337,'ETH','',18,'1','1',?,?,?,?,1,2,'paid',?,'{}',?,?)`).bind(
         intentId,
         randomId("idem"),
         "d".repeat(64),
@@ -3298,7 +3369,6 @@ function create(
   overrides: {
     amount: string;
     metadata: Record<string, unknown>;
-    kind?: "payment" | "invoice";
     purpose?: string;
   },
 ): Promise<Response> {
@@ -3307,7 +3377,6 @@ function create(
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({
-        kind: "payment",
         purpose: "deposit",
         externalId: idempotencyKey,
         chain: "test",

@@ -2,14 +2,15 @@
 
 # EVM Payment Gateway
 
-**Serverless CREATE2 crypto payments in your own Cloudflare account.**
+**Self-hosted EVM settlement for deposits, withdrawals, and cross-chain swaps.**
 
-The gateway creates exact deposit intents with deterministic keyless addresses.
-It waits for EVM confirmations, sends signed webhooks, and collects funds in
-your treasury. You do not operate servers or manage deposit keys.
+The gateway creates keyless deposit addresses and collects confirmed funds in
+your treasury. It prepares exact withdrawals, swap outputs, and refunds for an
+external treasury signer. It also sends signed webhooks and reports settlement
+analytics. The treasury key never enters Cloudflare.
 
 [Live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
-[Quick start](#quick-start) · [How it works](#how-it-works) · [API](#api) ·
+[Quick start](#quick-start) · [Architecture](#how-it-works) · [API](#api) ·
 [Security](#security) · [Integration guide](INTEGRATION.md)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ifokeev/evm-payment-gateway/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/ifokeev/evm-payment-gateway/actions/workflows/ci.yml)
@@ -21,10 +22,10 @@ your treasury. You do not operate servers or manage deposit keys.
 </div>
 
 > [!IMPORTANT]
-> The gateway detects and collects payments. Your application remains
-> responsible for orders, credits, subscriptions, donations, refunds, and every
-> other form of fulfillment. Recurring payments require a new manual invoice.
-> The gateway never withdraws from a payer's wallet.
+> The gateway coordinates settlement. It does not authorize business
+> operations, calculate swap prices, provide liquidity, or hold treasury keys.
+> Your application remains responsible for orders, credits, subscriptions,
+> donations, and fulfillment. The external signer approves treasury transfers.
 
 > [!WARNING]
 > The contracts have extensive automated tests but no external audit. Use
@@ -35,8 +36,8 @@ your treasury. You do not operate servers or manage deposit keys.
 
 | Capability | Behavior |
 | --- | --- |
-| Exact checkout | Unique CREATE2 address, decimal amount, EIP-681 wallet link, and SVG QR code per intent. |
-| Payment state | Polling, expiry, partial payments, remaining-amount top-ups, confirmations, overpayments, and transaction history. |
+| Deposit intake | Unique CREATE2 address, decimal amount, EIP-681 wallet link, and SVG QR code per intent. |
+| Deposit state | Polling, expiry, partial payments, remaining-amount top-ups, confirmations, overpayments, and transaction history. |
 | Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting. Then the scanner retries. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
 | Withdrawal coordination | The API validates and broadcasts exact transactions that an external treasury signer approves. |
@@ -64,9 +65,10 @@ The included BNB token example has contract symbol `USDT`, but it is the
 ```mermaid
 flowchart LR
     App["Application backend"]
-    Payer["Payer wallet"]
+    User["User wallet"]
+    Signer["External treasury signer"]
     Webhook["Webhook receiver"]
-    Chain["EVM network"]
+    Chain["EVM networks"]
     Factory["Immutable factory"]
     Forwarder["CREATE2 forwarder"]
     Treasury["Treasury wallet"]
@@ -74,23 +76,38 @@ flowchart LR
     subgraph CF["Your Cloudflare account"]
         API["API Worker"]
         DB[(D1)]
-        Cron["Cron scanner"]
+        Scanner["Chain scanner"]
         Queue[[Collection queue]]
         Relayer["Private relayer Worker"]
     end
 
-    App -->|"Create and poll intent"| API
+    App -->|"Create deposits, withdrawals, and swaps"| API
     API <--> DB
     API -->|"Signed event"| Webhook
-    Cron --> API
+    Scanner --> API
     API <-->|"Read canonical blocks"| Chain
-    Payer -->|"Send exact amount"| Forwarder
+    User -->|"Deposit or swap input"| Forwarder
     API --> Queue --> Relayer
     Relayer -->|"deployAndCollect"| Factory
     Factory --> Forwarder
     Forwarder -->|"Only destination"| Treasury
     Factory --> Chain
+    API -->|"Exact transaction proposal"| Signer
+    Signer -->|"Signed raw transaction"| API
+    API -->|"Broadcast withdrawal, swap output, or refund"| Chain
+    Chain -->|"Payout"| User
 ```
+
+The API Worker coordinates every flow and stores its state in D1. The chain
+scanner updates deposits, withdrawals, swaps, and reorganization history.
+
+Deposit collection uses a separate low-balance relayer. Withdrawal and swap
+transactions use the configured payout wallet and an external signer.
+
+The gateway does not calculate market prices or provide liquidity. The
+application sets exact swap amounts. The payout wallet supplies output assets.
+
+### Deposit collection
 
 1. The API generates a random salt and calculates the CREATE2 address committed
    to the factory, treasury, and asset. No private key exists for this address.
@@ -125,6 +142,23 @@ stateDiagram-v2
     paid --> reorged: Transfer becomes non-canonical
     reorged --> paid: Payment reconfirmed
 ```
+
+### Withdrawals, swaps, and refunds
+
+A withdrawal request creates an exact transaction proposal. The external
+signer approves that proposal and returns a signed raw transaction. The API
+validates every field before broadcast.
+
+A swap links one exact deposit input to one exact output. The input and output
+can use different configured EVM chains. The output starts only after the input
+reaches the treasury.
+
+If a swap cannot finish, the coordinator creates an exact refund proposal. The
+external signer finds it in the withdrawal inbox and approves it from the
+configured payout wallet. Inbox rows identify the proposal as a withdrawal,
+swap output, or refund. Swap rows also include the related swap and deposit IDs.
+
+These cross-chain swaps are coordinated transfers, not atomic bridge swaps.
 
 ## Quick start
 
@@ -248,7 +282,7 @@ limits operations on idle queues.
 
 ## API
 
-All payment routes use `/api/v1`. Only `GET /health` is public. Every
+All API routes use `/api/v1`. Only `GET /health` is public. Every
 other route requires the server-side bearer key.
 
 ```bash
@@ -257,7 +291,6 @@ curl -X POST "$GATEWAY_URL/api/v1/deposits" \
   -H "Idempotency-Key: payment-attempt-001" \
   -H "Content-Type: application/json" \
   -d '{
-    "kind": "payment",
     "purpose": "deposit",
     "externalId": "order-001",
     "chain": "base-sepolia",
@@ -268,10 +301,12 @@ curl -X POST "$GATEWAY_URL/api/v1/deposits" \
   }'
 ```
 
-`kind` is the settlement behavior: `payment` or `invoice`. Set `purpose` to
-`deposit` for a normal deposit or `swap` for a swap input. Store the business
-use case in `externalId` or `metadata`. Direct withdrawal requests use
-`withdrawal`. The swap coordinator creates `swap` withdrawals.
+Set `purpose` to `deposit` for a normal deposit. Use `swap` only for an input
+that the swap coordinator manages. Store the business use case in `externalId`,
+`metadata`, or your application database.
+
+Direct withdrawal requests use `withdrawal`. The swap coordinator creates
+`swap` and `refund` withdrawals.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -280,6 +315,7 @@ use case in `externalId` or `metadata`. Direct withdrawal requests use
 | `GET` | `/deposits/{id}/transactions` | Read deposit transfer history. |
 | `GET` | `/deposits/{id}/sweep` | Read treasury-collection history. |
 | `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
+| `GET` | `/withdrawals?status=awaiting_signature` | List proposals for signer approval. |
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for the external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
@@ -288,7 +324,7 @@ use case in `externalId` or `metadata`. Direct withdrawal requests use
 | `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, swap, and webhook metrics. |
 | `GET` | `/health` | Read successful scan progress and stale active chains. |
 
-Successful payments emit `deposit.succeeded`. An orphaned success emits
+Successful deposits emit `deposit.succeeded`. An orphaned success emits
 `deposit.reorged`. Collected expired underpayments emit the
 informational `deposit.recovered` event but never become paid. See the
 [application integration guide](INTEGRATION.md) for webhook verification,
@@ -302,11 +338,14 @@ demo uses one user wallet for the swap output and possible refund. The core API
 keeps these addresses separate. The demo follows signed webhooks, treasury
 collection, outputs, and refunds.
 
-The withdrawal and swap views show exact proposals and accept signed raw
-transactions. The treasury signer stays outside Cloudflare. A private service
-binding keeps the API key out of browser code.
+The demo has a signer inbox for withdrawals, swap outputs, and refunds. It
+shows exact proposals and accepts signed raw transactions. The treasury signer
+stays outside Cloudflare. A private service binding keeps the API key out of
+browser code.
 
-[Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev)
+[Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
+[Open the testnet signer inbox](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/signer) ·
+[View testnet analytics](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/analytics)
 
 ```bash
 cp .demo.secrets.example .demo.secrets
