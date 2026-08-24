@@ -44,6 +44,7 @@ All payment endpoints use the `/api/payments/v1` prefix and require
 | `POST` | `/swaps` | Link an exact swap deposit to an output proposal. |
 | `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
 | `GET` | `/analytics/summary` | Read aggregate payment and collection metrics. |
+| `GET` | `/health` | Read successful scan progress and stale active chains. |
 
 Errors use `{ "error": "message" }`. The API does not support lookup by
 `externalId`.
@@ -396,8 +397,41 @@ GET /api/payments/v1/analytics/summary
 ```
 
 It groups requested, received, confirmed, and collected units by chain and
-asset, plus collection fees and webhook counts. Use your configured token
-decimals to convert units only at the display boundary.
+asset. It also returns collection fees, withdrawal fees, withdrawal statuses,
+swap statuses, and webhook counts. Use your configured token decimals to
+convert units only at the display boundary.
+
+### Scanner health
+
+The health endpoint does not require the bearer key:
+
+```http
+GET /api/payments/v1/health
+```
+
+```json
+{
+  "ok": true,
+  "time": "2026-08-24T07:00:00.000Z",
+  "activeWithdrawals": 1,
+  "activeSwaps": 2,
+  "staleChains": [],
+  "networks": {
+    "base": {
+      "lastScannedBlock": 34567890,
+      "lastScanAt": "2026-08-24T06:59:30.000Z"
+    }
+  }
+}
+```
+
+If more than 300 seconds pass without a successful scan on an active deposit
+chain, `ok` is `false`. Only a successful block scan updates `lastScanAt`.
+Lease acquisition and failed scans do not update it.
+
+Before the first successful scan, `lastScannedBlock` and `lastScanAt` are
+`null`. If `ok` is `false`, alert the operator. Stop time-sensitive settlement
+decisions until the scanner advances again.
 
 ## Treasury withdrawals
 
@@ -467,9 +501,24 @@ nonce that belongs to a different withdrawal.
 If a transaction is stuck, submit a replacement for the same withdrawal. The
 replacement must use the same nonce and a higher fee cap.
 
-Poll the withdrawal until its status is `complete`. The first version supports
-direct transactions from an externally owned treasury account. It does not
-parse transactions that a Safe contract executes.
+The withdrawal has these statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `awaiting_signature` | The proposal is ready for signer approval until `expiresAt`. |
+| `submitted` | The gateway stored and broadcast the signed transaction. |
+| `confirming` | The transaction is canonical but does not have the required confirmations. |
+| `complete` | The transaction has the required confirmations. |
+| `failed` | The transaction reverted or failed receipt validation. Reconcile the ledger before a new proposal. |
+| `expired` | The unsigned proposal expired or the linked swap invalidated it. |
+
+Poll until the status is `complete`, `failed`, or `expired`. The gateway
+rechecks a `complete` withdrawal for seven days. A receipt reorg returns the
+withdrawal to `submitted` and clears its completion time.
+
+Continue independent ledger reconciliation during this seven-day window. The
+first version supports direct transactions from an externally owned treasury
+account. It does not parse transactions that a Safe contract executes.
 
 ## Custodial swaps
 
@@ -524,6 +573,23 @@ The gateway creates the output withdrawal after these events occur:
 - The relayer collects the exact input in the treasury.
 - The input transaction was mined before the quote expiry.
 
+The swap has these statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `awaiting_input` | The gateway waits for the exact input. |
+| `input_confirming` | The exact input is present but does not have all confirmations. |
+| `input_confirmed` | The input is confirmed, but treasury collection is not finished. |
+| `awaiting_signature` | The output proposal is ready for signer approval. |
+| `output_submitted` | The output transaction is submitted or confirming. |
+| `complete` | The output transaction has the required confirmations. |
+| `expired` | The quote expired without usable input. A later scan can reopen it for a timely exact transfer. |
+| `refund_required` | The gateway waits for exact collection or operator action before it creates a refund proposal. |
+| `refund_awaiting_signature` | The refund proposal is ready for signer approval. |
+| `refund_submitted` | The refund transaction is submitted or confirming. |
+| `refunded` | The refund transaction has the required confirmations. |
+| `reorged` | The input or a linked payout changed after coordination. Reconcile the incident manually. |
+
 The external signer must validate the swap against an independent ledger and
 an independent RPC provider. The signer must validate the collected input,
 quoted output, destination, chain, asset, and amount before approval.
@@ -533,8 +599,11 @@ collected input. The signer must reject a refund when the output can still
 complete.
 
 Input and output transactions are not atomic across chains. If the input
-reorganizes after output submission, the swap enters `reorged`. Stop automatic
-approval and reconcile the loss from the treasury ledger.
+reorganizes before signature, the gateway expires unsigned output and refund
+proposals. It also rejects transaction submissions for these proposals.
+
+If the input reorganizes after output submission, the swap enters `reorged`.
+Stop automatic approval. Reconcile the loss from the treasury ledger.
 
 ## Recurring billing
 
@@ -563,3 +632,5 @@ Before production, complete these tasks:
 - Route `deposit.recovered` to reconciliation.
 - Never treat `deposit.recovered` as payment success.
 - Never make fulfillment depend on asynchronous treasury collection.
+- Monitor `/health` and alert on stale active chains.
+- Reconcile withdrawal and swap terminal states against an independent ledger.

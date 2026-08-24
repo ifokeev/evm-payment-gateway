@@ -284,8 +284,8 @@ requests use `withdrawal`. The swap coordinator creates `swap` withdrawals.
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
 | `POST` | `/swaps` | Link an exact swap deposit to a same-chain or cross-chain output. |
 | `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
-| `GET` | `/analytics/summary` | Read exact aggregate payment and collection metrics. |
-| `GET` | `/health` | Read scanner progress by network. |
+| `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, swap, and webhook metrics. |
+| `GET` | `/health` | Read successful scan progress and stale active chains. |
 
 Successful payments emit `deposit.succeeded`. An orphaned success emits
 `deposit.reorged`. Collected expired underpayments emit the
@@ -325,6 +325,8 @@ The gateway uses these security controls:
   for real funds.
 - The withdrawal API accepts only a transaction from the configured withdrawal source.
   It validates the chain, asset, amount, destination, fee, gas, and nonce.
+- An input reorg expires unsigned swap-output and refund proposals. The API
+  rejects later transaction submissions for these proposals.
 - The relayer key can spend only its own native balance. It cannot sign for a
   deposit address or redirect a forwarder. A low balance limits its exposure.
 - The API rejects relayer private keys and independently validates registered
