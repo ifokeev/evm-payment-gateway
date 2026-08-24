@@ -12,7 +12,6 @@ export interface DemoEnv {
   DEMO_RATE_LIMITER: RateLimit;
   PAYMENT_API_KEY: string;
   PAYMENT_WEBHOOK_SECRET: string;
-  DEMO_SESSION_SECRET: string;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET_KEY: string;
   DEMO_OPTIONS_JSON: string;
@@ -65,6 +64,13 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   }
   if (request.method === "GET" && url.pathname === "/signer") {
     url.pathname = "/signer.html";
+    return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
+  }
+  if (
+    request.method === "GET" &&
+    /^\/(?:deposits\/di_|withdrawals\/wd_|swaps\/swp_)[A-Za-z0-9_-]+$/.test(url.pathname)
+  ) {
+    url.pathname = "/index.html";
     return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
   }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`) {
@@ -176,14 +182,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
       "gateway rejected the payment",
     );
   const intent = publicIntent(gatewayBody);
-  const expiresAt = Date.now() + 24 * 60 * 60 * 1_000;
-  return json(
-    {
-      intent,
-      accessToken: await issueAccessToken(intent.id as string, expiresAt, env.DEMO_SESSION_SECRET),
-    },
-    gateway.status,
-  );
+  return json({ intent }, gateway.status);
 }
 
 async function createDemoWithdrawal(request: Request, env: DemoEnv): Promise<Response> {
@@ -255,17 +254,7 @@ async function createDemoWithdrawal(request: Request, env: DemoEnv): Promise<Res
     );
   }
   const withdrawal = publicWithdrawal(gatewayBody);
-  return json(
-    {
-      withdrawal,
-      accessToken: await issueAccessToken(
-        withdrawal.id as string,
-        Date.now() + 24 * 60 * 60 * 1_000,
-        env.DEMO_SESSION_SECRET,
-      ),
-    },
-    gateway.status,
-  );
+  return json({ withdrawal }, gateway.status);
 }
 
 async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response> {
@@ -384,22 +373,16 @@ async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response>
       sweep: null,
       webhookEvent: null,
       payout: null,
-      accessToken: await issueAccessToken(
-        swap.id as string,
-        Date.now() + 24 * 60 * 60 * 1_000,
-        env.DEMO_SESSION_SECRET,
-      ),
     },
     swapResponse.status,
   );
 }
 
 async function getDemoWithdrawal(
-  request: Request,
+  _request: Request,
   env: DemoEnv,
   withdrawalId: string,
 ): Promise<Response> {
-  await requireAccess(request, withdrawalId, env);
   return getWithdrawalProposal(env, withdrawalId);
 }
 
@@ -422,8 +405,17 @@ async function getWithdrawalProposal(env: DemoEnv, withdrawalId: string): Promis
     }),
   );
   const body = await responseObject(response, 2_000_000);
-  if (!response.ok) throw new DemoError(502, "gateway withdrawal status is unavailable");
-  return json({ withdrawal: publicWithdrawal(body) });
+  if (!response.ok) {
+    throw new DemoError(
+      response.status === 404 ? 404 : 502,
+      response.status === 404 ? "withdrawal not found" : "gateway withdrawal status is unavailable",
+    );
+  }
+  const withdrawal = publicWithdrawal(body);
+  if (withdrawal.id !== withdrawalId || !demoResource(withdrawal)) {
+    throw new DemoError(404, "withdrawal not found");
+  }
+  return json({ withdrawal });
 }
 
 async function submitDemoWithdrawal(
@@ -432,7 +424,6 @@ async function submitDemoWithdrawal(
   withdrawalId: string,
 ): Promise<Response> {
   enforceSameOrigin(request);
-  await requireAccess(request, withdrawalId, env);
   return submitSignedWithdrawal(request, env, withdrawalId);
 }
 
@@ -498,8 +489,7 @@ async function getSignerInbox(request: Request, url: URL, env: DemoEnv): Promise
   return json(publicSignerInbox(body));
 }
 
-async function getDemoSwap(request: Request, env: DemoEnv, swapId: string): Promise<Response> {
-  await requireAccess(request, swapId, env);
+async function getDemoSwap(_request: Request, env: DemoEnv, swapId: string): Promise<Response> {
   return json(await demoSwapState(env, swapId));
 }
 
@@ -509,7 +499,6 @@ async function submitDemoSwapTransaction(
   swapId: string,
 ): Promise<Response> {
   enforceSameOrigin(request);
-  await requireAccess(request, swapId, env);
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.DEMO_RATE_LIMITER.limit({ key: `swap-submit:${ip}` })).success) {
     throw new DemoError(429, "too many signed transaction attempts; try again in a minute");
@@ -523,9 +512,14 @@ async function submitDemoSwapTransaction(
     }),
   );
   const swapBody = await responseObject(swapResponse, 2_000_000);
-  if (!swapResponse.ok) throw new DemoError(502, "gateway swap status is unavailable");
+  if (!swapResponse.ok) {
+    throw new DemoError(
+      swapResponse.status === 404 ? 404 : 502,
+      swapResponse.status === 404 ? "swap not found" : "gateway swap status is unavailable",
+    );
+  }
   const swap = publicSwap(swapBody);
-  if (swap.id !== swapId) throw new DemoError(502, "gateway returned an invalid swap");
+  if (swap.id !== swapId || !demoResource(swap)) throw new DemoError(404, "swap not found");
   const payoutId = awaitingSwapPayoutId(swap);
   const response = await env.GATEWAY.fetch(
     new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${payoutId}/transaction`, {
@@ -612,8 +606,7 @@ async function getDemoAnalytics(request: Request, env: DemoEnv): Promise<Respons
   return json(publicAnalytics(body, env));
 }
 
-async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): Promise<Response> {
-  await requireAccess(request, intentId, env);
+async function getDemoIntent(_request: Request, env: DemoEnv, intentId: string): Promise<Response> {
   const headers = gatewayAuthorization(env);
   const [intentResponse, sweepResponse, webhookEvent] = await Promise.all([
     env.GATEWAY.fetch(
@@ -630,9 +623,19 @@ async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): 
     responseObject(intentResponse, 2_000_000),
     responseObject(sweepResponse, 1_000_000),
   ]);
-  if (!intentResponse.ok || !sweepResponse.ok)
-    throw new DemoError(502, "gateway status is unavailable");
-  return json({ intent: publicIntent(intent), sweep, webhookEvent });
+  if (!intentResponse.ok || !sweepResponse.ok) {
+    throw new DemoError(
+      intentResponse.status === 404 || sweepResponse.status === 404 ? 404 : 502,
+      intentResponse.status === 404 || sweepResponse.status === 404
+        ? "deposit not found"
+        : "gateway status is unavailable",
+    );
+  }
+  const publicValue = publicIntent(intent);
+  if (publicValue.id !== intentId || !demoResource(publicValue)) {
+    throw new DemoError(404, "deposit not found");
+  }
+  return json({ intent: publicValue, sweep, webhookEvent });
 }
 
 async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response> {
@@ -915,12 +918,18 @@ function publicSignerInbox(value: Record<string, unknown>): Record<string, unkno
     throw new DemoError(502, "gateway returned an invalid inbox");
   }
   return {
-    items: value.items.map((item) => {
-      if (!isObject(item)) throw new DemoError(502, "gateway returned an invalid inbox");
-      return publicWithdrawal(item);
-    }),
+    items: value.items
+      .map((item) => {
+        if (!isObject(item)) throw new DemoError(502, "gateway returned an invalid inbox");
+        return publicWithdrawal(item);
+      })
+      .filter(demoResource),
     nextCursor,
   };
+}
+
+function demoResource(value: Record<string, unknown>): boolean {
+  return typeof value.externalId === "string" && value.externalId.startsWith("demo_");
 }
 
 function swapPayoutId(swap: Record<string, unknown>): string {
@@ -1158,57 +1167,6 @@ function analyticsUnits(value: unknown): bigint {
   return BigInt(value);
 }
 
-async function issueAccessToken(
-  intentId: string,
-  expiresAt: number,
-  secret: string,
-): Promise<string> {
-  const payload = base64Url(new TextEncoder().encode(JSON.stringify({ intentId, expiresAt })));
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    await hmacKey(requiredSecret(secret, "DEMO_SESSION_SECRET", 32)),
-    new TextEncoder().encode(payload),
-  );
-  return `${payload}.${base64Url(new Uint8Array(signature))}`;
-}
-
-async function validAccessToken(token: string, intentId: string, secret: string): Promise<boolean> {
-  if (token.length > 4_096) return false;
-  const [payload, encodedSignature, extra] = token.split(".");
-  if (!payload || !encodedSignature || extra) return false;
-  let signature: ArrayBuffer;
-  let parsed: unknown;
-  try {
-    signature = fromBase64Url(encodedSignature);
-    parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(payload)));
-  } catch {
-    return false;
-  }
-  if (
-    !isObject(parsed) ||
-    parsed.intentId !== intentId ||
-    typeof parsed.expiresAt !== "number" ||
-    !Number.isSafeInteger(parsed.expiresAt) ||
-    parsed.expiresAt < Date.now()
-  ) {
-    return false;
-  }
-  return crypto.subtle.verify(
-    "HMAC",
-    await hmacKey(requiredSecret(secret, "DEMO_SESSION_SECRET", 32)),
-    signature,
-    new TextEncoder().encode(payload),
-  );
-}
-
-async function requireAccess(request: Request, resourceId: string, env: DemoEnv): Promise<void> {
-  const authorization = request.headers.get("Authorization") ?? "";
-  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  if (!(await validAccessToken(token, resourceId, env.DEMO_SESSION_SECRET))) {
-    throw new DemoError(401, "invalid demo access token");
-  }
-}
-
 function gatewayAuthorization(env: DemoEnv): Record<string, string> {
   return {
     Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
@@ -1331,23 +1289,6 @@ function hexBytes(value: string): ArrayBuffer {
   for (let index = 0; index < bytes.length; index++) {
     bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
   }
-  return bytes.buffer;
-}
-
-function base64Url(value: Uint8Array): string {
-  let binary = "";
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(value: string): ArrayBuffer {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid base64url");
-  const padded =
-    value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - (value.length % 4)) % 4);
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  if (base64Url(bytes) !== value) throw new Error("non-canonical base64url");
   return bytes.buffer;
 }
 

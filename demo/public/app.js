@@ -33,11 +33,12 @@ const rawTransaction = document.querySelector("#raw-transaction");
 const rawTransactionError = document.querySelector("#raw-transaction-error");
 const submitTransaction = document.querySelector("#submit-transaction");
 const copyProposal = document.querySelector("#copy-proposal");
+const createAnother = document.querySelector("#create-another");
+const withdrawalCreateAnother = document.querySelector("#withdrawal-create-another");
 
+const initialResource = resourceRoute(window.location.pathname);
 let config;
-let flow = ["deposit", "withdrawal", "swap"].includes(sessionStorage.getItem("demo:flow"))
-  ? sessionStorage.getItem("demo:flow")
-  : "deposit";
+let flow = initialResource?.flow ?? "deposit";
 let turnstileToken = "";
 let turnstileWidget;
 let submitting = false;
@@ -45,19 +46,18 @@ let pollTimer;
 let pollAttempts = 0;
 let openingWallet = false;
 let walletPaymentUri = "";
-let currentIntentId = sessionStorage.getItem("demo:intentId") ?? "";
-let accessToken = sessionStorage.getItem("demo:accessToken") ?? "";
-let currentWithdrawalId = sessionStorage.getItem("demo:withdrawalId") ?? "";
-let withdrawalAccessToken = sessionStorage.getItem("demo:withdrawalAccessToken") ?? "";
-let currentSwapId = sessionStorage.getItem("demo:swapId") ?? "";
-let swapAccessToken = sessionStorage.getItem("demo:swapAccessToken") ?? "";
+let currentIntentId = initialResource?.flow === "deposit" ? initialResource.id : "";
+let currentWithdrawalId = initialResource?.flow === "withdrawal" ? initialResource.id : "";
+let currentSwapId = initialResource?.flow === "swap" ? initialResource.id : "";
 let currentProposal;
 let currentProposalId = "";
 let currentSignerPath = "";
-let currentSignerToken = "";
-let idempotencyKey = sessionStorage.getItem("demo:idempotencyKey") ?? crypto.randomUUID();
+let idempotencyKey = crypto.randomUUID();
 
-for (const tab of flowTabs) tab.addEventListener("click", () => setFlow(tab.dataset.flow));
+for (const tab of flowTabs) tab.addEventListener("click", () => openForm(tab.dataset.flow));
+createAnother.addEventListener("click", () => openForm(flow));
+withdrawalCreateAnother.addEventListener("click", () => openForm("withdrawal"));
+window.addEventListener("popstate", restoreResource);
 
 network.addEventListener("change", () => {
   populateAssets();
@@ -151,7 +151,6 @@ form.addEventListener("submit", async (event) => {
   globalError.hidden = true;
   setStage("loading");
   updateCreateButton();
-  sessionStorage.setItem("demo:idempotencyKey", idempotencyKey);
 
   try {
     const withdrawing = flow === "withdrawal";
@@ -183,41 +182,34 @@ form.addEventListener("submit", async (event) => {
         body.error ??
           (withdrawing ? "Withdrawal failed" : swapping ? "Swap failed" : "Payment failed"),
       );
-    sessionStorage.removeItem("demo:idempotencyKey");
     idempotencyKey = crypto.randomUUID();
     if (withdrawing) {
       currentWithdrawalId = body.withdrawal.id;
-      withdrawalAccessToken = body.accessToken;
-      sessionStorage.setItem("demo:withdrawalId", currentWithdrawalId);
-      sessionStorage.setItem("demo:withdrawalAccessToken", withdrawalAccessToken);
+      setResourcePath("withdrawal", currentWithdrawalId);
       renderWithdrawal(body.withdrawal);
       startWithdrawalPolling(true);
     } else if (swapping) {
       currentSwapId = body.swap.id;
-      swapAccessToken = body.accessToken;
-      sessionStorage.setItem("demo:swapId", currentSwapId);
-      sessionStorage.setItem("demo:swapAccessToken", swapAccessToken);
+      setResourcePath("swap", currentSwapId);
       renderSwap(body);
       startSwapPolling();
     } else {
       currentIntentId = body.intent.id;
-      accessToken = body.accessToken;
-      sessionStorage.setItem("demo:intentId", currentIntentId);
-      sessionStorage.setItem("demo:accessToken", accessToken);
+      setResourcePath("deposit", currentIntentId);
       renderPayment({ intent: body.intent, sweep: null, webhookEvent: null });
       startPolling();
     }
   } catch (error) {
     setStage(
       flow === "withdrawal"
-        ? currentWithdrawalId && withdrawalAccessToken
+        ? currentWithdrawalId
           ? "withdrawal"
           : "empty"
         : flow === "swap"
-          ? currentSwapId && swapAccessToken
+          ? currentSwapId
             ? "intent"
             : "empty"
-          : currentIntentId && accessToken
+          : currentIntentId
             ? "intent"
             : "empty",
     );
@@ -237,7 +229,7 @@ form.addEventListener("submit", async (event) => {
 
 signedTransactionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!currentSignerPath || !currentSignerToken || submitting) return;
+  if (!currentSignerPath || submitting) return;
   submitting = true;
   rawTransactionError.textContent = "";
   globalError.hidden = true;
@@ -246,10 +238,7 @@ signedTransactionForm.addEventListener("submit", async (event) => {
   try {
     const response = await fetch(currentSignerPath, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${currentSignerToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rawTransaction: rawTransaction.value.trim() }),
     });
     const body = await response.json();
@@ -288,10 +277,15 @@ async function initialize() {
     updateSelection();
     network.disabled = false;
     asset.disabled = false;
-    await loadTurnstile(config.turnstileSiteKey);
     setFlow(flow, true);
   } catch (error) {
     showGlobalError(error instanceof Error ? error.message : "Demo is unavailable");
+    return;
+  }
+  try {
+    await loadTurnstile(config.turnstileSiteKey);
+  } catch (error) {
+    showGlobalError(error instanceof Error ? error.message : "Security check could not load");
   }
 }
 
@@ -458,7 +452,6 @@ function setFlow(next, initializing = false) {
   const changed = flow !== next;
   flow = next;
   pageShell.dataset.flow = flow;
-  sessionStorage.setItem("demo:flow", flow);
   clearTimeout(pollTimer);
   for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
   outputFields.hidden = flow !== "swap";
@@ -571,10 +564,9 @@ function setFlow(next, initializing = false) {
     if (window.turnstile && turnstileWidget !== undefined) window.turnstile.reset(turnstileWidget);
   }
   updateCreateButton();
-  if (flow === "deposit" && currentIntentId && accessToken) startPolling(true);
-  else if (flow === "withdrawal" && currentWithdrawalId && withdrawalAccessToken)
-    startWithdrawalPolling(true);
-  else if (flow === "swap" && currentSwapId && swapAccessToken) startSwapPolling(true);
+  if (flow === "deposit" && currentIntentId) startPolling(true);
+  else if (flow === "withdrawal" && currentWithdrawalId) startWithdrawalPolling(true);
+  else if (flow === "swap" && currentSwapId) startSwapPolling(true);
   else setStage("empty");
 }
 
@@ -646,6 +638,7 @@ function renderPayment(state) {
     paymentQr.removeAttribute("src");
     text("#payment-closed-title", action.title);
     text("#payment-closed-detail", action.detail);
+    text("#create-another", flow === "swap" ? "Create new swap" : "Create new deposit");
   }
 
   const transactions = Array.isArray(intent.transactions) ? intent.transactions : [];
@@ -707,7 +700,7 @@ function renderSwap(state) {
   text("#expiry-time", formatExpiry(swap.quoteExpiresAt));
   text("#transactions-title", "Swap input");
   renderSwapOutput(swap, payout);
-  renderSigner(payout, `/api/swaps/${encodeURIComponent(swap.id)}/transaction`, swapAccessToken);
+  renderSigner(payout, `/api/swaps/${encodeURIComponent(swap.id)}/transaction`);
 }
 
 function renderWithdrawal(withdrawal) {
@@ -742,11 +735,8 @@ function renderWithdrawal(withdrawal) {
   text("#withdrawal-created", formatDate(withdrawal.createdAt));
   text("#withdrawal-expiry", formatExpiry(withdrawal.expiresAt));
 
-  renderSigner(
-    withdrawal,
-    `/api/withdrawals/${encodeURIComponent(withdrawal.id)}/transaction`,
-    withdrawalAccessToken,
-  );
+  renderSigner(withdrawal, `/api/withdrawals/${encodeURIComponent(withdrawal.id)}/transaction`);
+  withdrawalCreateAnother.hidden = !["complete", "failed", "expired"].includes(status);
 
   setActivityState("#proposal-activity", "#proposal-badge", "success", "Ready");
   const signatureState =
@@ -795,12 +785,11 @@ function renderWithdrawal(withdrawal) {
   }
 }
 
-function renderSigner(withdrawal, path, token) {
+function renderSigner(withdrawal, path) {
   if (!withdrawal) {
     currentProposal = undefined;
     currentProposalId = "";
     currentSignerPath = "";
-    currentSignerToken = "";
     signerPanel.hidden = true;
     return;
   }
@@ -813,7 +802,6 @@ function renderSigner(withdrawal, path, token) {
   }
   const awaitingSignature = withdrawal.status === "awaiting_signature";
   currentSignerPath = currentProposal && awaitingSignature ? path : "";
-  currentSignerToken = currentSignerPath ? token : "";
   signerPanel.hidden = !currentProposal;
   signedTransactionForm.hidden = !awaitingSignature;
   copyProposal.disabled = !currentProposal;
@@ -1054,17 +1042,12 @@ function startPolling(immediate = false) {
   clearTimeout(pollTimer);
   pollAttempts = 0;
   const poll = async () => {
-    if (flow !== "deposit" || !currentIntentId || !accessToken || pollAttempts >= 360) return;
+    if (flow !== "deposit" || !currentIntentId || pollAttempts >= 360) return;
     pollAttempts += 1;
     try {
-      const response = await fetch(`/api/deposits/${encodeURIComponent(currentIntentId)}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const response = await fetch(`/api/deposits/${encodeURIComponent(currentIntentId)}`);
       const body = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) clearStoredPayment();
-        throw new Error(body.error ?? "Deposit status is unavailable");
-      }
+      if (!response.ok) throw new Error(body.error ?? "Deposit status is unavailable");
       if (flow !== "deposit") return;
       renderPayment(body);
       const done =
@@ -1083,23 +1066,12 @@ function startWithdrawalPolling(immediate = false) {
   clearTimeout(pollTimer);
   pollAttempts = 0;
   const poll = async () => {
-    if (
-      flow !== "withdrawal" ||
-      !currentWithdrawalId ||
-      !withdrawalAccessToken ||
-      pollAttempts >= 360
-    )
-      return;
+    if (flow !== "withdrawal" || !currentWithdrawalId || pollAttempts >= 360) return;
     pollAttempts += 1;
     try {
-      const response = await fetch(`/api/withdrawals/${encodeURIComponent(currentWithdrawalId)}`, {
-        headers: { Authorization: `Bearer ${withdrawalAccessToken}` },
-      });
+      const response = await fetch(`/api/withdrawals/${encodeURIComponent(currentWithdrawalId)}`);
       const body = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) clearStoredWithdrawal();
-        throw new Error(body.error ?? "Withdrawal status is unavailable");
-      }
+      if (!response.ok) throw new Error(body.error ?? "Withdrawal status is unavailable");
       if (flow !== "withdrawal") return;
       renderWithdrawal(body.withdrawal);
       if (["complete", "failed", "expired"].includes(body.withdrawal.status)) return;
@@ -1115,20 +1087,15 @@ function startSwapPolling(immediate = false) {
   clearTimeout(pollTimer);
   pollAttempts = 0;
   const poll = async () => {
-    if (flow !== "swap" || !currentSwapId || !swapAccessToken || pollAttempts >= 360) return;
+    if (flow !== "swap" || !currentSwapId || pollAttempts >= 360) return;
     pollAttempts += 1;
     try {
-      const response = await fetch(`/api/swaps/${encodeURIComponent(currentSwapId)}`, {
-        headers: { Authorization: `Bearer ${swapAccessToken}` },
-      });
+      const response = await fetch(`/api/swaps/${encodeURIComponent(currentSwapId)}`);
       const body = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) clearStoredSwap();
-        throw new Error(body.error ?? "Swap status is unavailable");
-      }
+      if (!response.ok) throw new Error(body.error ?? "Swap status is unavailable");
       if (flow !== "swap") return;
       renderSwap(body);
-      if (["complete", "refunded", "reorged"].includes(body.swap.status)) return;
+      if (["complete", "expired", "refunded", "reorged"].includes(body.swap.status)) return;
     } catch (error) {
       showGlobalError(error instanceof Error ? error.message : "Swap status is unavailable");
     }
@@ -1137,25 +1104,47 @@ function startSwapPolling(immediate = false) {
   pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
 }
 
-function clearStoredPayment() {
+function clearResources() {
   currentIntentId = "";
-  accessToken = "";
-  sessionStorage.removeItem("demo:intentId");
-  sessionStorage.removeItem("demo:accessToken");
-}
-
-function clearStoredWithdrawal() {
   currentWithdrawalId = "";
-  withdrawalAccessToken = "";
-  sessionStorage.removeItem("demo:withdrawalId");
-  sessionStorage.removeItem("demo:withdrawalAccessToken");
+  currentSwapId = "";
+  currentProposal = undefined;
+  currentProposalId = "";
+  currentSignerPath = "";
 }
 
-function clearStoredSwap() {
-  currentSwapId = "";
-  swapAccessToken = "";
-  sessionStorage.removeItem("demo:swapId");
-  sessionStorage.removeItem("demo:swapAccessToken");
+function resourceRoute(pathname) {
+  const match = pathname.match(/^\/(deposits|withdrawals|swaps)\/([^/]+)$/);
+  if (!match) return null;
+  const definitions = {
+    deposits: ["deposit", /^di_[A-Za-z0-9_-]+$/],
+    withdrawals: ["withdrawal", /^wd_[A-Za-z0-9_-]+$/],
+    swaps: ["swap", /^swp_[A-Za-z0-9_-]+$/],
+  };
+  const [resourceFlow, idPattern] = definitions[match[1]];
+  return idPattern.test(match[2]) ? { flow: resourceFlow, id: match[2] } : null;
+}
+
+function setResourcePath(resourceFlow, id) {
+  const collections = { deposit: "deposits", withdrawal: "withdrawals", swap: "swaps" };
+  window.history.pushState(null, "", `/${collections[resourceFlow]}/${encodeURIComponent(id)}`);
+}
+
+function openForm(nextFlow) {
+  const wasResource = Boolean(resourceRoute(window.location.pathname));
+  clearResources();
+  window.history[wasResource ? "pushState" : "replaceState"](null, "", "/");
+  setFlow(nextFlow);
+}
+
+function restoreResource() {
+  clearResources();
+  const resource = resourceRoute(window.location.pathname);
+  flow = resource?.flow ?? "deposit";
+  if (resource?.flow === "deposit") currentIntentId = resource.id;
+  if (resource?.flow === "withdrawal") currentWithdrawalId = resource.id;
+  if (resource?.flow === "swap") currentSwapId = resource.id;
+  setFlow(flow, true);
 }
 
 function showGlobalError(message) {

@@ -268,6 +268,12 @@ beforeEach(() => {
                 swapId: swap.id,
                 depositIntentId: swapIntent.id,
               },
+              {
+                ...withdrawal,
+                id: "wd_private123",
+                externalId: "private_withdrawal",
+                proposal: undefined,
+              },
             ],
             nextCursor: null,
           });
@@ -322,7 +328,6 @@ beforeEach(() => {
     },
     PAYMENT_API_KEY: "test-api-key-at-least-24-characters",
     PAYMENT_WEBHOOK_SECRET: "test-webhook-secret-at-least-24-characters",
-    DEMO_SESSION_SECRET: "test-demo-session-secret-at-least-32-characters",
     TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     DEMO_OPTIONS_JSON: JSON.stringify(options),
@@ -342,14 +347,13 @@ describe("public demo", () => {
     expect(response.status).toBe(201);
     const body = await response.json<{
       intent: Record<string, unknown>;
-      accessToken: string;
     }>();
     expect(body.intent).toMatchObject({
       id: intent.id,
       expectedAmount: "1.25",
     });
     expect(body.intent).not.toHaveProperty("metadata");
-    expect(body.accessToken.split(".")).toHaveLength(2);
+    expect(body).not.toHaveProperty("accessToken");
 
     const gatewayRequest = gatewayRequests[0];
     expect(gatewayRequest.headers.get("Authorization")).toBe(`Bearer ${env.PAYMENT_API_KEY}`);
@@ -366,26 +370,13 @@ describe("public demo", () => {
       `intent:${intent.id}`,
       JSON.stringify({ id: "evt_demo", type: "deposit.succeeded" }),
     );
-    const poll = await demo.fetch(
-      new Request(`https://demo.test/api/deposits/${intent.id}`, {
-        headers: { Authorization: `Bearer ${body.accessToken}` },
-      }),
-      env,
-    );
+    const poll = await demo.fetch(new Request(`https://demo.test/api/deposits/${intent.id}`), env);
     expect(poll.status).toBe(200);
     expect(await poll.json()).toMatchObject({
       intent: { id: intent.id },
       sweep: { status: "not_queued" },
       webhookEvent: { id: "evt_demo", type: "deposit.succeeded" },
     });
-
-    const unrelated = await demo.fetch(
-      new Request("https://demo.test/api/deposits/di_other", {
-        headers: { Authorization: `Bearer ${body.accessToken}` },
-      }),
-      env,
-    );
-    expect(unrelated.status).toBe(401);
   });
 
   it("creates, reveals, and submits an externally signed withdrawal", async () => {
@@ -393,7 +384,6 @@ describe("public demo", () => {
     expect(created.status).toBe(201);
     const body = await created.json<{
       withdrawal: Record<string, unknown>;
-      accessToken: string;
     }>();
     expect(body.withdrawal).toMatchObject({
       id: withdrawal.id,
@@ -417,9 +407,7 @@ describe("public demo", () => {
     expect(gatewayRequests[0].headers.get("Idempotency-Key")).toMatch(/^demo:withdrawal:/);
 
     const status = await demo.fetch(
-      new Request(`https://demo.test/api/withdrawals/${withdrawal.id}`, {
-        headers: { Authorization: `Bearer ${body.accessToken}` },
-      }),
+      new Request(`https://demo.test/api/withdrawals/${withdrawal.id}`),
       env,
     );
     expect(await status.json()).toMatchObject({
@@ -438,7 +426,6 @@ describe("public demo", () => {
       new Request(`https://demo.test/api/withdrawals/${withdrawal.id}/transaction`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${body.accessToken}`,
           "CF-Connecting-IP": "192.0.2.10",
           "Content-Type": "application/json",
           Origin: "https://demo.test",
@@ -520,7 +507,6 @@ describe("public demo", () => {
     const body = await created.json<{
       swap: Record<string, unknown>;
       intent: Record<string, unknown>;
-      accessToken: string;
     }>();
     expect(body).toMatchObject({
       swap: {
@@ -555,12 +541,7 @@ describe("public demo", () => {
       },
     });
 
-    const polled = await demo.fetch(
-      new Request(`https://demo.test/api/swaps/${swap.id}`, {
-        headers: { Authorization: `Bearer ${body.accessToken}` },
-      }),
-      env,
-    );
+    const polled = await demo.fetch(new Request(`https://demo.test/api/swaps/${swap.id}`), env);
     expect(await polled.json()).toMatchObject({
       swap: { id: swap.id, status: "awaiting_signature" },
       intent: { id: swapIntent.id },
@@ -572,7 +553,6 @@ describe("public demo", () => {
       new Request(`https://demo.test/api/swaps/${swap.id}/transaction`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${body.accessToken}`,
           "CF-Connecting-IP": "192.0.2.10",
           "Content-Type": "application/json",
           Origin: "https://demo.test",
@@ -666,7 +646,7 @@ describe("public demo", () => {
     expect(gatewayRequests).toHaveLength(0);
   });
 
-  it("rejects malformed requests and invalid intent access tokens", async () => {
+  it("rejects malformed requests and invalid resource paths", async () => {
     const malformed = new Request("https://demo.test/api/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -678,31 +658,12 @@ describe("public demo", () => {
       }),
     });
     expect((await demo.fetch(malformed, env)).status).toBe(400);
-
-    const created = await demo.fetch(createRequest({ amount: "1" }), env);
-    const { accessToken } = await created.json<{ accessToken: string }>();
-    const tamperedToken = `${accessToken.slice(0, -1)}${accessToken.endsWith("a") ? "b" : "a"}`;
-    const tampered = await demo.fetch(
-      new Request(`https://demo.test/api/deposits/${intent.id}`, {
-        headers: { Authorization: `Bearer ${tamperedToken}` },
-      }),
-      env,
-    );
-    expect(tampered.status).toBe(401);
-
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1_000 + 1);
-      const expired = await demo.fetch(
-        new Request(`https://demo.test/api/deposits/${intent.id}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }),
-        env,
-      );
-      expect(expired.status).toBe(401);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(
+      (await demo.fetch(new Request("https://demo.test/api/deposits/not-an-id"), env)).status,
+    ).toBe(404);
+    expect(
+      (await demo.fetch(new Request("https://demo.test/api/deposits/di_other"), env)).status,
+    ).toBe(404);
   });
 
   it("accepts authentic idempotent webhooks and rejects tampering", async () => {
@@ -777,6 +738,14 @@ describe("public demo", () => {
     expect(await analyticsPage.text()).toBe("/analytics.html");
     const signerPage = await demo.fetch(new Request("https://demo.test/signer"), env);
     expect(await signerPage.text()).toBe("/signer.html");
+    for (const path of [
+      `/deposits/${intent.id}`,
+      `/withdrawals/${withdrawal.id}`,
+      `/swaps/${swap.id}`,
+    ]) {
+      const resourcePage = await demo.fetch(new Request(`https://demo.test${path}`), env);
+      expect(await resourcePage.text()).toBe("/index.html");
+    }
   });
 
   it("exposes only aggregate analytics for configured demo assets", async () => {

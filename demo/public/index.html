@@ -249,6 +249,9 @@
             <div id="payment-closed" class="payment-closed" hidden>
               <strong id="payment-closed-title">Payment link unavailable</strong>
               <p id="payment-closed-detail">Create a new deposit intent to continue.</p>
+              <button id="create-another" class="secondary-button" type="button">
+                Create new deposit
+              </button>
             </div>
           </div>
 
@@ -344,7 +347,14 @@
                 <div><dt>User destination</dt><dd><code id="withdrawal-destination"></code></dd></div>
               </dl>
             </div>
-
+            <button
+              id="withdrawal-create-another"
+              class="secondary-button terminal-action"
+              type="button"
+              hidden
+            >
+              Create new withdrawal
+            </button>
           </div>
 
           <div class="activity-list">

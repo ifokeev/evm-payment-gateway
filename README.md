@@ -343,6 +343,16 @@ shows exact proposals and accepts signed raw transactions. The treasury signer
 stays outside Cloudflare. A private service binding keeps the API key out of
 browser code.
 
+Each testnet resource has a direct URL:
+
+- `/deposits/{id}`
+- `/withdrawals/{id}`
+- `/swaps/{id}`
+
+The demo restores the resource from this URL. It does not store resource state
+in browser storage. Anyone with the URL can read the sanitized state for that
+demo resource.
+
 [Open the live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
 [Open the testnet signer inbox](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/signer) ·
 [View testnet analytics](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/analytics)

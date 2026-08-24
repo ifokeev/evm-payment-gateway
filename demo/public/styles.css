@@ -945,6 +945,16 @@ button:disabled {
   color: var(--muted);
 }
 
+.payment-closed .secondary-button {
+  min-width: 210px;
+  margin: 24px auto 0;
+}
+
+.terminal-action {
+  min-width: 210px;
+  margin-top: 28px;
+}
+
 .withdrawal-summary {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(300px, 1.3fr);

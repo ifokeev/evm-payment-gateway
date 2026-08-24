@@ -8,7 +8,7 @@
   "assets": {
     "directory": "./demo/public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/webhooks/*"]
+    "run_worker_first": ["/api/*", "/webhooks/*", "/deposits/*", "/withdrawals/*", "/swaps/*"]
   },
   "services": [
     {
@@ -34,7 +34,6 @@
         "required": [
           "PAYMENT_API_KEY",
           "PAYMENT_WEBHOOK_SECRET",
-          "DEMO_SESSION_SECRET",
           "TURNSTILE_SITE_KEY",
           "TURNSTILE_SECRET_KEY"
         ]
