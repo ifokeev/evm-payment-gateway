@@ -291,6 +291,22 @@ async function submitTransaction(id: string, request: Request, env: ApiEnv): Pro
     .bind(id)
     .first<WithdrawalRow>();
   if (!withdrawal) throw new WithdrawalHttpError(404, "withdrawal not found");
+  if (
+    withdrawal.purpose !== "withdrawal" &&
+    (await env.DB.prepare(`SELECT 1 FROM swaps s
+      JOIN deposit_intents d ON d.id = s.deposit_intent
+      WHERE (s.withdrawal_intent = ? OR s.refund_withdrawal = ?)
+        AND (s.status = 'reorged' OR d.status = 'reorged')`)
+      .bind(id, id)
+      .first())
+  ) {
+    await env.DB.prepare(
+      "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'awaiting_signature'",
+    )
+      .bind(unixNow(), id)
+      .run();
+    throw new WithdrawalHttpError(409, "linked swap input was reorganized");
+  }
   if (withdrawal.status === "awaiting_signature" && withdrawal.expires_at < unixNow()) {
     await env.DB.prepare(
       "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'awaiting_signature'",

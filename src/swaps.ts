@@ -319,7 +319,16 @@ export async function reconcileSwaps(env: ApiEnv): Promise<void> {
 
 async function reconcileSwap(env: ApiEnv, row: ReconcileRow, now: number): Promise<void> {
   if (row.deposit_status === "reorged") {
-    await setStatus(env.DB, row.id, "reorged", "input deposit was reorganized");
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE withdrawal_intents SET status = 'expired', updated_at = ?
+        WHERE status = 'awaiting_signature' AND id IN (?, ?)`).bind(
+        now,
+        row.withdrawal_intent,
+        row.refund_withdrawal,
+      ),
+      env.DB.prepare(`UPDATE swaps SET status = 'reorged', last_error = ?, completed_at = NULL,
+        updated_at = ? WHERE id = ?`).bind("input deposit was reorganized", now, row.id),
+    ]);
     return;
   }
   const expected = BigInt(row.expected_units);

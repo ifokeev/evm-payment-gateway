@@ -94,6 +94,57 @@ describe("payment API", () => {
     ).toBe(401);
   });
 
+  it("reports an active chain stale when failed scans do not advance it", async () => {
+    const created = await create(randomId("health-scan"), { amount: "1", metadata: {} });
+    const intent = await created.json<{ id: string }>();
+    const stored = await bindings.DB.prepare("SELECT start_block FROM deposit_intents WHERE id = ?")
+      .bind(intent.id)
+      .first<{ start_block: number }>();
+    const chain = "health-failure";
+    const staleAt = unixNow() - 301;
+    const network = {
+      ...loadNetworks(bindings.NETWORKS_JSON).get("test")!,
+      name: chain,
+      rpcUrls: ["https://rpc.batch"],
+    } satisfies NetworkConfig;
+    try {
+      await bindings.DB.batch([
+        bindings.DB.prepare("UPDATE deposit_intents SET chain = ? WHERE id = ?").bind(
+          chain,
+          intent.id,
+        ),
+        bindings.DB.prepare(`INSERT INTO chain_states
+          (chain,last_scanned,lock_owner,locked_until,updated_at) VALUES (?,?,'',0,?)
+          ON CONFLICT(chain) DO UPDATE SET last_scanned = excluded.last_scanned,
+            lock_owner = '', locked_until = 0, updated_at = excluded.updated_at`).bind(
+          chain,
+          stored!.start_block - 1,
+          staleAt,
+        ),
+      ]);
+      batchRpcResponder = async () => {
+        throw new Error("RPC unavailable");
+      };
+      await expect(syncChain(bindings, network)).rejects.toThrow("RPC unavailable");
+      expect(
+        await bindings.DB.prepare(
+          "SELECT updated_at, lock_owner, locked_until FROM chain_states WHERE chain = ?",
+        )
+          .bind(chain)
+          .first(),
+      ).toEqual({ updated_at: staleAt, lock_owner: "", locked_until: 0 });
+
+      const response = await api.fetch(new Request("https://gateway.test/api/payments/v1/health"));
+      expect(await response.json()).toMatchObject({ ok: false, staleChains: [chain] });
+    } finally {
+      await bindings.DB.batch([
+        bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(intent.id),
+        bindings.DB.prepare("DELETE FROM chain_blocks WHERE chain = ?").bind(chain),
+        bindings.DB.prepare("DELETE FROM chain_states WHERE chain = ?").bind(chain),
+      ]);
+    }
+  });
+
   it("creates, polls, and safely replays an exact deposit intent", async () => {
     const key = randomId("idem");
     const first = await create(key, { amount: "0010.250000", metadata: { z: 1, a: 2 } });
@@ -2092,6 +2143,23 @@ describe("swap API", () => {
       expect(
         await bindings.DB.prepare("SELECT status FROM swaps WHERE id = ?").bind(swap.id).first(),
       ).toEqual({ status: "reorged" });
+      expect(
+        await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
+          .bind(refundId)
+          .first(),
+      ).toEqual({ status: "expired" });
+      const rejected = await api.fetch(
+        authorizedRequest(
+          `https://gateway.test/api/payments/v1/withdrawals/${refundId}/transaction`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rawTransaction: "0x01" }),
+          },
+        ),
+      );
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toEqual({ error: "linked swap input was reorganized" });
     } finally {
       if (swapId) await bindings.DB.prepare("DELETE FROM swaps WHERE id = ?").bind(swapId).run();
       if (withdrawalId)

@@ -85,9 +85,9 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
   const earliest = Math.min(...intents.map((intent) => intent.start_block));
   const lease = await env.DB.prepare(`
     INSERT INTO chain_states (chain, last_scanned, lock_owner, locked_until, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(chain) DO UPDATE SET lock_owner = excluded.lock_owner, locked_until = excluded.locked_until, updated_at = excluded.updated_at
-    WHERE chain_states.locked_until <= excluded.updated_at
+    VALUES (?, ?, ?, ?, 0)
+    ON CONFLICT(chain) DO UPDATE SET lock_owner = excluded.lock_owner, locked_until = excluded.locked_until
+    WHERE chain_states.locked_until <= ?
     RETURNING last_scanned
   `)
     .bind(network.name, Math.max(-1, earliest - 1), owner, now + 55, now)
@@ -260,9 +260,9 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
         .run();
   } finally {
     await env.DB.prepare(
-      "UPDATE chain_states SET lock_owner = '', locked_until = 0, updated_at = ? WHERE chain = ? AND lock_owner = ?",
+      "UPDATE chain_states SET lock_owner = '', locked_until = 0 WHERE chain = ? AND lock_owner = ?",
     )
-      .bind(unixNow(), network.name, owner)
+      .bind(network.name, owner)
       .run();
   }
 }
@@ -324,8 +324,8 @@ async function rewindIfNeeded(
       fromBlock,
     ),
     env.DB.prepare(
-      "UPDATE chain_states SET last_scanned = ?, updated_at = ? WHERE chain = ? AND lock_owner = ?",
-    ).bind(ancestor, unixNow(), network.name, owner),
+      "UPDATE chain_states SET last_scanned = ? WHERE chain = ? AND lock_owner = ?",
+    ).bind(ancestor, network.name, owner),
   ]);
   return ancestor;
 }

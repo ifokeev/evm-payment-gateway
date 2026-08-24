@@ -151,8 +151,8 @@ async function health(env: ApiEnv): Promise<Response> {
         return [
           name,
           {
-            lastScannedBlock: state?.last_scanned ?? null,
-            lastScanAt: state ? new Date(state.updated_at * 1_000).toISOString() : null,
+            lastScannedBlock: state?.updated_at ? state.last_scanned : null,
+            lastScanAt: state?.updated_at ? new Date(state.updated_at * 1_000).toISOString() : null,
           },
         ];
       }),
