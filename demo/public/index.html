@@ -8,6 +8,7 @@
       content="Try testnet deposits, withdrawals, and cross-chain swaps on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/app.js"></script>
   </head>
@@ -21,6 +22,7 @@
         </span>
       </a>
       <nav class="header-actions" aria-label="Demo links">
+        <a class="header-nav-link" href="/analytics">Analytics</a>
         <span class="environment-label">Testnet</span>
         <a
           class="header-link"
@@ -160,39 +162,6 @@
       </section>
 
       <section class="payment-stage" aria-label="Gateway flow status">
-        <section
-          id="analytics-panel"
-          class="analytics-panel"
-          aria-labelledby="analytics-title"
-          data-state="loading"
-        >
-          <header class="analytics-heading">
-            <div>
-              <h2 id="analytics-title">Live testnet totals</h2>
-              <p id="analytics-context">Aggregate activity for this deployment.</p>
-            </div>
-            <p id="analytics-updated" role="status">Loading totals...</p>
-          </header>
-          <dl id="analytics-grid" class="analytics-grid" aria-busy="true">
-            <div>
-              <dt>Deposit intents</dt>
-              <dd id="analytics-intents">...</dd>
-            </div>
-            <div>
-              <dt>Paid intents</dt>
-              <dd id="analytics-paid">...</dd>
-            </div>
-            <div>
-              <dt>Confirmed volume</dt>
-              <dd><span id="analytics-confirmed">...</span> <small>USDC</small></dd>
-            </div>
-            <div>
-              <dt>Treasury collected</dt>
-              <dd><span id="analytics-collected">...</span> <small>USDC</small></dd>
-            </div>
-          </dl>
-        </section>
-
         <div id="empty-state" class="empty-state">
           <h2 id="lifecycle-title" class="lifecycle-title">Deposit lifecycle</h2>
           <div class="empty-heading">

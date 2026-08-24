@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="View aggregate testnet deposit, withdrawal, and swap activity."
+    />
+    <title>EVM Payment Gateway - Testnet analytics</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/analytics.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-copy">
+          <strong>EVM Payment Gateway</strong>
+          <small>Live testnet demo</small>
+        </span>
+      </a>
+      <nav class="header-actions" aria-label="Demo links">
+        <a class="header-nav-link" href="/">Demo</a>
+        <span class="environment-label">Testnet</span>
+        <a
+          class="header-link"
+          href="https://github.com/ifokeev/evm-payment-gateway"
+          rel="noreferrer"
+        >
+          GitHub
+        </a>
+      </nav>
+    </header>
+
+    <main id="analytics-main" class="analytics-page" aria-busy="true">
+      <header class="analytics-intro">
+        <h1>Testnet analytics.</h1>
+        <p>Aggregate settlement activity across configured networks.</p>
+        <p id="analytics-updated" class="analytics-updated" role="status">Loading totals...</p>
+      </header>
+
+      <p id="analytics-error" class="analytics-error" role="alert" hidden></p>
+
+      <dl class="analytics-summary" aria-label="Flow totals">
+        <div>
+          <dt>Deposit intents</dt>
+          <dd id="deposit-total">...</dd>
+        </div>
+        <div>
+          <dt>Paid deposits</dt>
+          <dd id="paid-total">...</dd>
+        </div>
+        <div>
+          <dt>Withdrawals</dt>
+          <dd id="withdrawal-total">...</dd>
+        </div>
+        <div>
+          <dt>Swaps</dt>
+          <dd id="swap-total">...</dd>
+        </div>
+      </dl>
+
+      <section class="analytics-section" aria-labelledby="settlement-title">
+        <h2 id="settlement-title">Asset settlement</h2>
+        <div class="analytics-table-wrap">
+          <table class="analytics-table">
+            <thead>
+              <tr>
+                <th scope="col">Network</th>
+                <th scope="col">Asset</th>
+                <th scope="col">Intents</th>
+                <th scope="col">Paid</th>
+                <th scope="col">Confirmed</th>
+                <th scope="col">Collected</th>
+              </tr>
+            </thead>
+            <tbody id="settlement-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="analytics-status-grid">
+        <section class="analytics-section analytics-status" aria-labelledby="withdrawal-title">
+          <h2 id="withdrawal-title">Withdrawal status</h2>
+          <dl id="withdrawal-statuses"></dl>
+        </section>
+        <section class="analytics-section analytics-status" aria-labelledby="swap-title">
+          <h2 id="swap-title">Swap status</h2>
+          <dl id="swap-statuses"></dl>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

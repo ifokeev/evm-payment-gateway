@@ -264,15 +264,25 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
       env.DB,
       "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
     ),
-    all<{ status: string; count: number }>(
+    all<{ purpose: string; status: string; count: number }>(
       env.DB,
-      "SELECT status, COUNT(*) AS count FROM withdrawal_intents GROUP BY status",
+      "SELECT purpose, status, COUNT(*) AS count FROM withdrawal_intents GROUP BY purpose, status",
     ),
     all<{ status: string; count: number }>(
       env.DB,
       "SELECT status, COUNT(*) AS count FROM swaps GROUP BY status",
     ),
   ]);
+  const withdrawalStatuses: Record<string, number> = {};
+  const withdrawalsByPurpose: Record<string, Record<string, number>> = {
+    withdrawal: {},
+    swap: {},
+    refund: {},
+  };
+  for (const row of withdrawalRows) {
+    withdrawalStatuses[row.status] = (withdrawalStatuses[row.status] ?? 0) + row.count;
+    withdrawalsByPurpose[row.purpose][row.status] = row.count;
+  }
   const withdrawalFees: Record<string, bigint> = {};
   cursor = "";
   for (;;) {
@@ -311,7 +321,8 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     withdrawalFeesWei: Object.fromEntries(
       Object.entries(withdrawalFees).map(([chain, amount]) => [chain, amount.toString()]),
     ),
-    withdrawals: Object.fromEntries(withdrawalRows.map((row) => [row.status, row.count])),
+    withdrawals: withdrawalStatuses,
+    withdrawalsByPurpose,
     swaps: Object.fromEntries(swapRows.map((row) => [row.status, row.count])),
     webhooks: webhookRows,
   };

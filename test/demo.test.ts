@@ -160,6 +160,13 @@ const analytics = {
       collectedUnits: "500000000000",
     },
   ],
+  withdrawals: { awaiting_signature: 1, confirming: 1, complete: 1 },
+  withdrawalsByPurpose: {
+    withdrawal: { awaiting_signature: 1, confirming: 1, complete: 1 },
+    swap: {},
+    refund: {},
+  },
+  swaps: { awaiting_input: 1, awaiting_signature: 1, complete: 2 },
   collectionFeesWei: { "base-sepolia": "secret-operational-detail" },
   webhooks: [{ type: "deposit.succeeded", status: "delivered", count: 9 }],
 };
@@ -221,7 +228,10 @@ beforeEach(() => {
   rateLimitSuccess = true;
   env = {
     ASSETS: {
-      fetch: vi.fn(async () => new Response("demo asset")),
+      fetch: vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        return new Response(url.pathname);
+      }),
     } as unknown as Fetcher,
     GATEWAY: {
       fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -698,7 +708,9 @@ describe("public demo", () => {
       turnstileSiteKey: "1x00000000000000000000AA",
     });
     const asset = await demo.fetch(new Request("https://demo.test/"), env);
-    expect(await asset.text()).toBe("demo asset");
+    expect(await asset.text()).toBe("/");
+    const analyticsPage = await demo.fetch(new Request("https://demo.test/analytics"), env);
+    expect(await analyticsPage.text()).toBe("/analytics.html");
   });
 
   it("exposes only aggregate analytics for configured demo assets", async () => {
@@ -731,6 +743,8 @@ describe("public demo", () => {
           collectedAmount: "0",
         },
       ],
+      withdrawals: analytics.withdrawals,
+      swaps: analytics.swaps,
       generatedAt: analytics.generatedAt,
     });
     expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(

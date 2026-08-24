@@ -2441,6 +2441,7 @@ describe("analytics", () => {
       assets: Array<Record<string, unknown>>;
       collectionFeesWei: Record<string, string>;
       withdrawalFeesWei: Record<string, string>;
+      withdrawalsByPurpose: Record<string, Record<string, number>>;
     }>();
     expect(body.assets.find((item) => item.chain === "analytics" && item.asset === "TOK")).toEqual({
       chain: "analytics",
@@ -2456,6 +2457,7 @@ describe("analytics", () => {
     });
     expect(body.collectionFeesWei.analytics).toBe("123");
     expect(body.withdrawalFeesWei["fee-analytics"]).toBe("1030");
+    expect(body.withdrawalsByPurpose.withdrawal).toEqual({ failed: 1 });
     await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
       .bind(withdrawalId)
       .run();

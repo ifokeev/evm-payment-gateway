@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>EVM Payment Gateway</title>
+  <path
+    fill="#e4e1da"
+    fill-rule="evenodd"
+    d="M18 2h28l16 16v28L46 62H18L2 46V18L18 2Zm5 14-7 7v18l7 7h18l7-7V23l-7-7H23Z"
+  />
+</svg>

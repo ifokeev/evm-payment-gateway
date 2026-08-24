@@ -28,8 +28,6 @@ const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
 const copyLabel = document.querySelector("#copy-label");
 const walletLink = document.querySelector("#wallet-link");
-const analyticsPanel = document.querySelector("#analytics-panel");
-const analyticsGrid = document.querySelector("#analytics-grid");
 const signedTransactionForm = document.querySelector("#signed-transaction-form");
 const rawTransaction = document.querySelector("#raw-transaction");
 const rawTransactionError = document.querySelector("#raw-transaction-error");
@@ -37,7 +35,6 @@ const submitTransaction = document.querySelector("#submit-transaction");
 const copyProposal = document.querySelector("#copy-proposal");
 
 let config;
-let analytics;
 let flow = ["deposit", "withdrawal", "swap"].includes(sessionStorage.getItem("demo:flow"))
   ? sessionStorage.getItem("demo:flow")
   : "deposit";
@@ -291,30 +288,10 @@ async function initialize() {
     updateSelection();
     network.disabled = false;
     asset.disabled = false;
-    void loadAnalytics();
     await loadTurnstile(config.turnstileSiteKey);
     setFlow(flow, true);
   } catch (error) {
     showGlobalError(error instanceof Error ? error.message : "Demo is unavailable");
-  }
-}
-
-async function loadAnalytics() {
-  analyticsPanel.dataset.state = "loading";
-  analyticsGrid.setAttribute("aria-busy", "true");
-  try {
-    const response = await fetch("/api/analytics");
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error ?? "Live totals are unavailable");
-    analytics = body;
-    renderAnalytics();
-    text("#analytics-updated", formatAnalyticsTime(body.generatedAt));
-    analyticsPanel.dataset.state = "ready";
-  } catch {
-    analyticsPanel.dataset.state = "error";
-    text("#analytics-updated", "Totals unavailable. Try again soon.");
-  } finally {
-    analyticsGrid.setAttribute("aria-busy", "false");
   }
 }
 
@@ -400,8 +377,6 @@ function updateSelection() {
   outputAmount.value = selectedOutput?.defaultAmount ?? "";
   outputAssetLabel.textContent = selectedOutput?.asset ?? "";
   text("#header-context", "Live testnet demo");
-  text("#analytics-context", `${option.chainLabel} ${option.asset} activity in this deployment.`);
-  renderAnalytics();
 }
 
 function selectedOption() {
@@ -414,20 +389,6 @@ function selectedOutputOption() {
   return config?.options.find(
     (option) => option.chain === outputNetwork.value && option.asset === outputAsset.value,
   );
-}
-
-function renderAnalytics() {
-  const option = selectedOption();
-  const row = analytics?.assets?.find(
-    (item) => item.chain === option?.chain && item.asset === option?.asset,
-  );
-  if (!option || !row) return;
-  text("#analytics-intents", new Intl.NumberFormat().format(row.intents));
-  text("#analytics-paid", new Intl.NumberFormat().format(row.paidIntents));
-  text("#analytics-confirmed", row.confirmedAmount);
-  text("#analytics-collected", row.collectedAmount);
-  for (const element of document.querySelectorAll("#analytics-grid dd small"))
-    element.textContent = option.asset;
 }
 
 function loadTurnstile(siteKey) {
@@ -506,7 +467,6 @@ function setFlow(next, initializing = false) {
   destinationField.hidden = flow === "deposit";
   destinationAddress.disabled = !config || flow === "deposit";
   amount.disabled = !config || flow === "swap";
-  analyticsPanel.hidden = flow !== "deposit";
   text("#network-label", flow === "swap" ? "Input network" : "Network");
   text("#asset-title", flow === "swap" ? "Input asset" : "Asset");
   text("#amount-title", flow === "swap" ? "Fixed input amount" : "Amount");
@@ -1110,10 +1070,7 @@ function startPolling(immediate = false) {
       const done =
         ["complete", "external"].includes(body.sweep?.status) &&
         ["deposit.succeeded", "deposit.reorged"].includes(body.webhookEvent?.type);
-      if (done) {
-        await loadAnalytics();
-        return;
-      }
+      if (done) return;
     } catch (error) {
       showGlobalError(error instanceof Error ? error.message : "Deposit status is unavailable");
     }
@@ -1171,10 +1128,7 @@ function startSwapPolling(immediate = false) {
       }
       if (flow !== "swap") return;
       renderSwap(body);
-      if (["complete", "refunded", "reorged"].includes(body.swap.status)) {
-        await loadAnalytics();
-        return;
-      }
+      if (["complete", "refunded", "reorged"].includes(body.swap.status)) return;
     } catch (error) {
       showGlobalError(error instanceof Error ? error.message : "Swap status is unavailable");
     }
@@ -1227,17 +1181,6 @@ function formatExpiry(value) {
   if (seconds === 0) return "Expired";
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function formatAnalyticsTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return "Updated recently";
-  return `Updated ${date.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
-  })}`;
 }
 
 function text(selector, value) {

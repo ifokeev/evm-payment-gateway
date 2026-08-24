@@ -56,6 +56,10 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics`) {
     return getDemoAnalytics(request, env);
   }
+  if (request.method === "GET" && url.pathname === "/analytics") {
+    url.pathname = "/analytics.html";
+    return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
+  }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`) {
     return createDemoIntent(request, env);
   }
@@ -906,11 +910,30 @@ function publicAnalytics(value: Record<string, unknown>, env: DemoEnv): Record<s
         collectedAmount: formatUnits(analyticsUnits(row.collectedUnits), option.decimals),
       };
     }),
+    withdrawals: analyticsWithdrawalStatuses(value.withdrawalsByPurpose),
+    swaps: analyticsStatuses(value.swaps),
     generatedAt:
       typeof value.generatedAt === "string" && Number.isFinite(Date.parse(value.generatedAt))
         ? value.generatedAt
         : new Date().toISOString(),
   };
+}
+
+function analyticsStatuses(value: unknown): Record<string, number> {
+  if (!isObject(value)) throw new DemoError(502, "gateway returned invalid analytics");
+  return Object.fromEntries(
+    Object.entries(value).map(([status, count]) => {
+      if (!/^[a-z_]{1,40}$/.test(status)) {
+        throw new DemoError(502, "gateway returned invalid analytics");
+      }
+      return [status, analyticsInteger(count)];
+    }),
+  );
+}
+
+function analyticsWithdrawalStatuses(value: unknown): Record<string, number> {
+  if (!isObject(value)) throw new DemoError(502, "gateway returned invalid analytics");
+  return analyticsStatuses(value.withdrawal);
 }
 
 function demoOption(env: DemoEnv, chain: string, asset: string): DemoOption {
