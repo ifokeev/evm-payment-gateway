@@ -1,7 +1,8 @@
 import { paymentAction, walletPayment } from "./wallet.js";
 
 const form = document.querySelector("#payment-form");
-const flowTabs = document.querySelectorAll("[data-flow]");
+const pageShell = document.querySelector(".page-shell");
+const flowTabs = document.querySelectorAll(".flow-tab[data-flow]");
 const network = document.querySelector("#network");
 const asset = document.querySelector("#asset");
 const outputFields = document.querySelector("#output-fields");
@@ -409,7 +410,7 @@ function updateSelection() {
   const selectedOutput = selectedOutputOption();
   outputAmount.value = selectedOutput?.defaultAmount ?? "";
   outputAssetLabel.textContent = selectedOutput?.asset ?? "";
-  text("#header-context", `Live ${option.chainLabel} ${flow} demo`);
+  text("#header-context", "Live testnet demo");
   text("#analytics-context", `${option.chainLabel} ${option.asset} activity in this deployment.`);
   renderAnalytics();
 }
@@ -485,15 +486,16 @@ function updateCreateButton() {
       ? "Creating withdrawal..."
       : flow === "swap"
         ? "Creating swap..."
-        : "Creating payment..."
+        : "Creating deposit..."
     : flow === "withdrawal"
       ? "Create withdrawal"
       : flow === "swap"
         ? "Create swap"
-        : "Create payment";
+        : "Create deposit";
 }
 
 function setStage(stage) {
+  pageShell.dataset.stage = stage;
   emptyState.hidden = stage !== "empty";
   loadingState.hidden = stage !== "loading";
   intentState.hidden = stage !== "intent";
@@ -505,6 +507,7 @@ function setFlow(next, initializing = false) {
   if (submitting || !["deposit", "withdrawal", "swap"].includes(next)) return;
   const changed = flow !== next;
   flow = next;
+  pageShell.dataset.flow = flow;
   sessionStorage.setItem("demo:flow", flow);
   clearTimeout(pollTimer);
   for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
@@ -520,70 +523,93 @@ function setFlow(next, initializing = false) {
   text("#network-label", flow === "swap" ? "Input network" : "Network");
   text("#asset-title", flow === "swap" ? "Input asset" : "Asset");
   text("#amount-title", flow === "swap" ? "Fixed input amount" : "Amount");
+  text(
+    "#form-title",
+    flow === "deposit"
+      ? "Create deposit"
+      : flow === "withdrawal"
+        ? "Create withdrawal"
+        : "Fixed testnet quote",
+  );
+  text(
+    "#lifecycle-title",
+    flow === "deposit"
+      ? "Deposit lifecycle"
+      : flow === "withdrawal"
+        ? "Withdrawal lifecycle"
+        : "Swap lifecycle",
+  );
   text("#destination-label", flow === "swap" ? "Your wallet address" : "Destination address");
   text(
     "#destination-help",
     flow === "swap"
       ? "The demo sends the swap output or a refund to this address."
-      : "The external signer must approve this exact recipient.",
+      : "Review this recipient before you approve the withdrawal.",
   );
   text(
     "#page-title",
     flow === "deposit"
-      ? "Deposit crypto. See each step."
+      ? "Deposit crypto."
       : flow === "withdrawal"
-        ? "Withdraw crypto. Keep the key."
-        : "Swap across chains. Track both sides.",
+        ? "Withdraw crypto."
+        : "Swap across chains.",
   );
   text(
     "#intro-copy",
     flow === "deposit"
       ? "Create an exact testnet payment and follow it to treasury collection."
       : flow === "withdrawal"
-        ? "Create an exact proposal, approve it outside Cloudflare, and follow it to settlement."
+        ? "Create an exact proposal, approve it, and follow it to settlement."
         : "Use a fixed testnet quote and follow the input, collection, and treasury output.",
   );
   text(
     "#empty-title",
     flow === "deposit"
-      ? "Payment activity will appear here."
+      ? "Receive funds at a unique address."
       : flow === "withdrawal"
-        ? "Withdrawal activity will appear here."
-        : "Swap activity will appear here.",
+        ? "Review each withdrawal before approval."
+        : "Send the output or refund to one wallet.",
   );
   text(
     "#empty-detail",
     flow === "deposit"
       ? "Create an intent to receive a unique address, QR code, and wallet link."
       : flow === "withdrawal"
-        ? "Create a proposal to see the exact fields your external signer must approve."
+        ? "Create a proposal to review its exact transaction fields."
         : "Create a fixed quote to receive the input address and exact output terms.",
   );
   const depositSteps = [
-    ["On-chain activity", "Waiting for payment"],
-    ["Signed webhook", "Waiting for confirmation"],
-    ["Treasury collection", "Waiting for settlement"],
+    ["Create deposit", "Ready"],
+    ["Waiting for payment", "Pending"],
+    ["Confirmations", "Pending"],
+    ["Treasury collection", "Pending"],
+    ["Complete", "Pending"],
   ];
   const withdrawalSteps = [
-    ["Withdrawal proposal", "Exact route and amount"],
-    ["External signature", "Private key stays outside Cloudflare"],
-    ["Network settlement", "Waiting for broadcast"],
+    ["Create proposal", "Ready"],
+    ["Approve transaction", "Pending"],
+    ["Broadcast", "Pending"],
+    ["Confirmations", "Pending"],
+    ["Complete", "Pending"],
   ];
   const swapSteps = [
-    ["Swap input", "Waiting for payment"],
-    ["Treasury collection", "Waiting for settlement"],
-    ["Swap output", "Waiting for signature"],
+    ["Create quote", "Ready"],
+    ["Waiting for input", "Pending"],
+    ["Treasury collection", "Pending"],
+    ["Approve output", "Pending"],
+    ["Complete", "Pending"],
   ];
   const steps =
     flow === "deposit" ? depositSteps : flow === "withdrawal" ? withdrawalSteps : swapSteps;
+  const stepNames = ["one", "two", "three", "four", "five"];
   for (const [index, [title, detail]] of steps.entries()) {
-    text(`#empty-step-${["one", "two", "three"][index]}`, title);
-    text(`#empty-step-${["one", "two", "three"][index]}-detail`, detail);
+    text(`#empty-step-${stepNames[index]}`, title);
+    text(`#empty-step-${stepNames[index]}-detail`, detail);
   }
   text(
     "#loading-message",
     flow === "deposit"
-      ? "Allocating a dedicated payment address..."
+      ? "Allocating a dedicated deposit address..."
       : flow === "withdrawal"
         ? "Locking the withdrawal proposal..."
         : "Locking the input and output terms...",
@@ -612,9 +638,9 @@ function renderPayment(state) {
   swapRouteSummary.hidden = true;
   document.querySelector("#swap-output-activity").hidden = true;
   text("#transactions-title", "On-chain activity");
-  text("#delivery-title", "Signed webhook");
+  text("#delivery-title", "Payment update");
   text("#sweep-title", "Treasury collection");
-  text("#intent-id-label", "Payment ID");
+  text("#intent-id-label", "Deposit ID");
   const status = String(intent.status ?? "pending");
   const titles = {
     pending: "Waiting for payment",
@@ -706,13 +732,13 @@ function renderSwap(state) {
   const details = {
     awaiting_input: "Send the exact token input before the quote expires.",
     input_confirming: "The input waits for the required network confirmations.",
-    input_confirmed: "The relayer collects the confirmed input into the treasury.",
-    awaiting_signature: "The external signer must approve the exact output proposal.",
+    input_confirmed: "The confirmed input moves to the treasury.",
+    awaiting_signature: "Approve the exact output proposal to continue.",
     output_submitted: "The output transaction waits for network confirmation.",
     complete: "The input and output reached their required confirmation depths.",
     expired: "The quote expired without usable input.",
-    refund_required: "The gateway prepares a refund for collected input.",
-    refund_awaiting_signature: "The external signer must approve the exact refund proposal.",
+    refund_required: "The app prepares a refund for the collected input.",
+    refund_awaiting_signature: "Approve the exact refund proposal to continue.",
     refund_submitted: "The refund transaction waits for network confirmation.",
     refunded: "The refund reached the required confirmation depth.",
     reorged: "A linked transaction changed after swap coordination.",
@@ -750,7 +776,7 @@ function renderWithdrawal(withdrawal) {
     expired: "Withdrawal expired",
   };
   const details = {
-    awaiting_signature: "Approve the exact proposal with the external treasury signer.",
+    awaiting_signature: "Review and approve the exact proposal.",
     submitted: "The signed transaction was validated and broadcast.",
     confirming: `Waiting for ${withdrawal.requiredConfirmations} network confirmations.`,
     complete: "The withdrawal reached the required confirmation depth.",
@@ -788,10 +814,10 @@ function renderWithdrawal(withdrawal) {
   signatureStatus.replaceChildren(
     paragraph(
       status === "awaiting_signature"
-        ? "Waiting for the treasury signer."
+        ? "Waiting for transaction approval."
         : status === "expired"
           ? "No signature was registered before expiry."
-          : "The gateway recovered and validated the treasury signer.",
+          : "The app verified the transaction signature.",
       "muted",
     ),
   );
@@ -847,10 +873,10 @@ function renderSigner(withdrawal, path, token) {
   text(
     "#signer-title",
     withdrawal.purpose === "refund"
-      ? "External refund signer"
+      ? "Approve refund"
       : withdrawal.purpose === "swap"
-        ? "External output signer"
-        : "External treasury signer",
+        ? "Approve swap output"
+        : "Approve withdrawal",
   );
   if (!currentProposal) return;
   text("#proposal-chain", currentProposal.chainId);
@@ -867,12 +893,12 @@ function renderSwapOutput(swap, payout) {
   const states = {
     awaiting_input: ["idle", "Waiting", "The output starts after treasury collection."],
     input_confirming: ["idle", "Waiting", "The input waits for network confirmation."],
-    input_confirmed: ["active", "Collecting", "The relayer collects the input."],
+    input_confirmed: ["active", "Collecting", "The input moves to the treasury."],
     awaiting_signature: ["active", "Signature", "The output proposal waits for approval."],
     output_submitted: ["detected", "Submitted", "The output transaction is on the network."],
     complete: ["success", "Complete", "The output reached the required confirmation depth."],
     expired: ["idle", "Expired", "The quote expired without usable input."],
-    refund_required: ["warning", "Refund", "The gateway prepares the refund proposal."],
+    refund_required: ["warning", "Refund", "The app prepares the refund proposal."],
     refund_awaiting_signature: ["active", "Signature", "The refund proposal waits for approval."],
     refund_submitted: ["detected", "Submitted", "The refund transaction is on the network."],
     refunded: ["success", "Refunded", "The refund reached the required confirmation depth."],

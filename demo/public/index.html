@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Try testnet deposits, externally signed withdrawals, and cross-chain swaps on EVM networks."
+      content="Try testnet deposits, withdrawals, and cross-chain swaps on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -13,12 +13,13 @@
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/" aria-label="EVM Payment Gateway demo home">
+      <a class="brand" href="/">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>EVM Payment Gateway</span>
+        <span class="brand-copy">
+          <strong>EVM Payment Gateway</strong>
+          <small id="header-context">Live testnet demo</small>
+        </span>
       </a>
-      <span class="header-divider" aria-hidden="true"></span>
-      <p id="header-context" class="header-context">Live multichain demo</p>
       <nav class="header-actions" aria-label="Demo links">
         <span class="environment-label">Testnet</span>
         <a
@@ -26,14 +27,21 @@
           href="https://github.com/ifokeev/evm-payment-gateway"
           rel="noreferrer"
         >
-          Self-hosted
+          GitHub
         </a>
       </nav>
     </header>
 
-    <main class="page-shell">
+    <main class="page-shell" data-flow="deposit" data-stage="empty">
       <section class="intro" aria-labelledby="page-title">
         <div class="intro-content">
+          <div>
+            <h1 id="page-title">Deposit crypto.</h1>
+            <p id="intro-copy" class="intro-copy">
+              Create an exact testnet payment and follow it to treasury collection.
+            </p>
+          </div>
+
           <div class="flow-tabs" role="tablist" aria-label="Gateway flow">
             <button class="flow-tab" type="button" role="tab" data-flow="deposit" aria-selected="true">
               Deposit
@@ -45,15 +53,9 @@
               Swap
             </button>
           </div>
-          <div>
-            <h1 id="page-title"><span>Pay crypto.</span><span>See each step.</span></h1>
-            <p id="intro-copy" class="intro-copy">
-              Create an exact testnet payment on Base, Ethereum, or BNB Chain and follow it to
-              treasury collection.
-            </p>
-          </div>
 
           <form id="payment-form" class="payment-form" novalidate>
+            <h2 id="form-title" class="form-title">Create deposit</h2>
             <div class="network-fields">
               <div class="field">
                 <label id="network-label" for="network">Network</label>
@@ -128,12 +130,12 @@
                 disabled
               />
               <p id="destination-help" class="field-help">
-                The external signer must approve this exact recipient.
+                Review this recipient before you approve the withdrawal.
               </p>
               <p id="destination-error" class="field-error" role="alert"></p>
             </div>
 
-            <div class="field">
+            <div id="amount-field" class="field">
               <label id="amount-title" for="amount">Amount</label>
               <div class="amount-control">
                 <input
@@ -159,14 +161,14 @@
               aria-label="Security check"
             ></fieldset>
             <button id="create-button" class="primary-button" type="submit" disabled>
-              Create payment
+              Create deposit
             </button>
-          </form>
 
-          <div class="testnet-note">
-            <span class="note-icon" aria-hidden="true">i</span>
-            <p>Testnet assets have no monetary value</p>
-          </div>
+            <div class="testnet-note">
+              <span class="note-icon" aria-hidden="true">i</span>
+              <p>Testnet assets have no monetary value</p>
+            </div>
+          </form>
         </div>
       </section>
 
@@ -205,15 +207,18 @@
         </section>
 
         <div id="empty-state" class="empty-state">
+          <h2 id="lifecycle-title" class="lifecycle-title">Deposit lifecycle</h2>
           <div class="empty-heading">
-            <p class="status-label">Demo ready</p>
-            <h2 id="empty-title">Payment activity will appear here.</h2>
+            <p class="status-label">Ready to create</p>
+            <h2 id="empty-title">Receive funds at a unique address.</h2>
             <p id="empty-detail">Create an intent to receive a unique address, QR code, and wallet link.</p>
           </div>
           <div class="empty-flow">
-            <div><strong id="empty-step-one">On-chain activity</strong><span id="empty-step-one-detail">Waiting for payment</span></div>
-            <div><strong id="empty-step-two">Signed webhook</strong><span id="empty-step-two-detail">Waiting for confirmation</span></div>
-            <div><strong id="empty-step-three">Treasury collection</strong><span id="empty-step-three-detail">Waiting for settlement</span></div>
+            <div><strong id="empty-step-one">Create deposit</strong><span id="empty-step-one-detail">Ready</span></div>
+            <div><strong id="empty-step-two">Waiting for payment</strong><span id="empty-step-two-detail">Pending</span></div>
+            <div><strong id="empty-step-three">Confirmations</strong><span id="empty-step-three-detail">Pending</span></div>
+            <div><strong id="empty-step-four">Treasury collection</strong><span id="empty-step-four-detail">Pending</span></div>
+            <div><strong id="empty-step-five">Complete</strong><span id="empty-step-five-detail">Pending</span></div>
           </div>
         </div>
 
@@ -225,7 +230,7 @@
               <span></span><strong></strong><span></span><span></span>
             </div>
           </div>
-          <p id="loading-message">Allocating a dedicated payment address...</p>
+          <p id="loading-message">Allocating a dedicated deposit address...</p>
         </div>
 
         <div id="intent-state" hidden>
@@ -310,7 +315,7 @@
               <div class="activity-body">
                 <div class="activity-heading">
                   <div class="activity-title">
-                    <h3 id="delivery-title">Signed webhook</h3>
+                    <h3 id="delivery-title">Payment update</h3>
                     <span id="delivery-badge" class="activity-status">Waiting</span>
                   </div>
                 </div>
@@ -351,7 +356,7 @@
 
           <dl class="intent-meta">
             <div><dt>Network</dt><dd id="metadata-network">Base Sepolia</dd></div>
-            <div><dt id="intent-id-label">Payment ID</dt><dd id="intent-id"></dd></div>
+            <div><dt id="intent-id-label">Deposit ID</dt><dd id="intent-id"></dd></div>
             <div><dt>Created</dt><dd id="created-time"></dd></div>
             <div><dt>Expires in</dt><dd id="expiry-time"></dd></div>
           </dl>
@@ -362,9 +367,9 @@
             <div id="withdrawal-header" class="intent-header">
               <span class="status-orbit" aria-hidden="true"></span>
               <div>
-                <h2 id="withdrawal-status-title" class="status-label">Signature required</h2>
+                <h2 id="withdrawal-status-title" class="status-label">Approval required</h2>
                 <p id="withdrawal-status-detail" class="status-detail">
-                  The treasury signer must approve the exact proposal.
+                  Review and approve the exact proposal.
                 </p>
               </div>
             </div>
@@ -402,11 +407,11 @@
               <span class="activity-marker" aria-hidden="true"></span>
               <div class="activity-body">
                 <div class="activity-title">
-                  <h3>External signature</h3>
+                  <h3>Transaction approval</h3>
                   <span id="signature-badge" class="activity-status">Waiting</span>
                 </div>
                 <div id="signature-status" class="activity-content">
-                  <p class="muted">Waiting for the treasury signer.</p>
+                  <p class="muted">Waiting for transaction approval.</p>
                 </div>
               </div>
             </section>
@@ -435,8 +440,8 @@
         <section id="signer-panel" class="signer-panel" aria-labelledby="signer-title" hidden>
           <header>
             <div>
-              <h3 id="signer-title">External treasury signer</h3>
-              <p>Compare this proposal with your ledger. The private key never enters Cloudflare.</p>
+              <h3 id="signer-title">Transaction approval</h3>
+              <p>Compare this proposal with your records before you sign it.</p>
             </div>
             <button id="copy-proposal" class="secondary-button" type="button">Copy proposal</button>
           </header>
@@ -459,7 +464,7 @@
               aria-describedby="raw-transaction-help raw-transaction-error"
             ></textarea>
             <p id="raw-transaction-help" class="signer-help">
-              Sign outside this demo, then paste the serialized transaction here.
+              Sign the proposal, then paste the serialized transaction here.
             </p>
             <p id="raw-transaction-error" class="field-error" role="alert"></p>
             <button id="submit-transaction" class="primary-button" type="submit">
