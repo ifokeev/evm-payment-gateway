@@ -1,18 +1,18 @@
 :root {
   color-scheme: light;
-  --paper: #f2f0ea;
-  --paper-strong: #faf9f6;
-  --ink: #101211;
-  --ink-soft: #171a18;
-  --ink-strong: #0b0d0c;
-  --text: #f3f1eb;
-  --muted: #a9aaa6;
-  --paper-muted: #65645f;
-  --paper-line: #c8c5bd;
-  --line: #3a3d3a;
-  --accent: #f45b1b;
-  --accent-hover: #ff6b2d;
-  --success: #59ad62;
+  --paper: #232522;
+  --paper-strong: #2b2d2a;
+  --ink: #151715;
+  --ink-soft: #1f221f;
+  --ink-strong: #101210;
+  --text: #e4e1da;
+  --muted: #9b9d97;
+  --paper-muted: #a5a69f;
+  --paper-line: #444741;
+  --line: #3e423d;
+  --accent: #dd7950;
+  --accent-hover: #e2865f;
+  --success: #69a36d;
   --error: #e76258;
   --radius: 5px;
   font-family: Arial, Helvetica, sans-serif;
@@ -32,8 +32,8 @@ body {
   min-height: 100dvh;
   margin: 0;
   background:
-    radial-gradient(circle at 48% 2%, rgb(255 255 255 / 52%), transparent 38rem), var(--paper);
-  color: var(--ink);
+    radial-gradient(circle at 48% 2%, rgb(255 255 255 / 5%), transparent 38rem), var(--paper);
+  color: var(--text);
 }
 
 button,
@@ -62,7 +62,7 @@ code {
   border-bottom: 1px solid var(--paper-line);
   display: flex;
   align-items: center;
-  background: rgb(250 249 246 / 78%);
+  background: rgb(38 40 37 / 94%);
   backdrop-filter: blur(18px);
 }
 
@@ -70,7 +70,7 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 16px;
-  color: var(--ink);
+  color: var(--text);
   text-decoration: none;
 }
 
@@ -78,7 +78,7 @@ code {
   position: relative;
   width: 42px;
   height: 42px;
-  background: var(--ink);
+  background: var(--text);
   clip-path: polygon(29% 0, 71% 0, 100% 29%, 100% 71%, 71% 100%, 29% 100%, 0 71%, 0 29%);
 }
 
@@ -121,7 +121,7 @@ code {
   padding: 0 20px;
   display: inline-flex;
   align-items: center;
-  color: var(--ink);
+  color: var(--text);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -212,7 +212,7 @@ h1 {
   border-bottom: 0;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  background: rgb(250 249 246 / 58%);
+  background: var(--paper-strong);
 }
 
 .flow-tab {
@@ -222,7 +222,7 @@ h1 {
   border: 0;
   border-bottom: 1px solid var(--paper-line);
   background: transparent;
-  color: var(--ink);
+  color: var(--text);
   font-size: 12px;
   font-weight: 750;
   cursor: pointer;
