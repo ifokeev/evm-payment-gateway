@@ -86,11 +86,9 @@ beforeEach(() => {
 
 describe("payment API", () => {
   it("keeps health public and every payment read private", async () => {
+    expect((await api.fetch(new Request("https://gateway.test/health"))).status).toBe(200);
     expect(
-      (await api.fetch(new Request("https://gateway.test/api/payments/v1/health"))).status,
-    ).toBe(200);
-    expect(
-      (await api.fetch(new Request("https://gateway.test/api/payments/v1/intents/missing"))).status,
+      (await api.fetch(new Request("https://gateway.test/api/v1/deposits/missing"))).status,
     ).toBe(401);
   });
 
@@ -134,7 +132,7 @@ describe("payment API", () => {
           .first(),
       ).toEqual({ updated_at: staleAt, lock_owner: "", locked_until: 0 });
 
-      const response = await api.fetch(new Request("https://gateway.test/api/payments/v1/health"));
+      const response = await api.fetch(new Request("https://gateway.test/health"));
       expect(await response.json()).toMatchObject({ ok: false, staleChains: [chain] });
     } finally {
       await bindings.DB.batch([
@@ -185,7 +183,7 @@ describe("payment API", () => {
     expect((await create(key, { amount: "10.26", metadata: { a: 2, z: 1 } })).status).toBe(409);
 
     const poll = await api.fetch(
-      authorizedRequest(`https://gateway.test/api/payments/v1/intents/${body.id}`),
+      authorizedRequest(`https://gateway.test/api/v1/deposits/${body.id}`),
     );
     expect(poll.status).toBe(200);
     expect((await poll.json<{ status: string }>()).status).toBe("pending");
@@ -196,7 +194,7 @@ describe("payment API", () => {
       .bind(body.id)
       .run();
     const partial = await (
-      await api.fetch(authorizedRequest(`https://gateway.test/api/payments/v1/intents/${body.id}`))
+      await api.fetch(authorizedRequest(`https://gateway.test/api/v1/deposits/${body.id}`))
     ).json<Record<string, unknown>>();
     expect(partial).toMatchObject({
       status: "underpaid",
@@ -212,7 +210,7 @@ describe("payment API", () => {
       .bind(unixNow() - 1, body.id)
       .run();
     const expired = await (
-      await api.fetch(authorizedRequest(`https://gateway.test/api/payments/v1/intents/${body.id}`))
+      await api.fetch(authorizedRequest(`https://gateway.test/api/v1/deposits/${body.id}`))
     ).json<Record<string, unknown>>();
     expect(expired).toMatchObject({
       expired: true,
@@ -228,7 +226,7 @@ describe("payment API", () => {
       .bind(body.id)
       .run();
     const overpaid = await (
-      await api.fetch(authorizedRequest(`https://gateway.test/api/payments/v1/intents/${body.id}`))
+      await api.fetch(authorizedRequest(`https://gateway.test/api/v1/deposits/${body.id}`))
     ).json<Record<string, unknown>>();
     expect(overpaid).toMatchObject({ remainingAmount: "0", remainingUnits: "0" });
     expect(overpaid.topUpPaymentUri).toBeNull();
@@ -288,7 +286,7 @@ describe("payment API", () => {
   });
 
   it("rejects boundary bypasses and unknown JSON fields", async () => {
-    const request = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+    const request = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
       body: JSON.stringify({
@@ -301,13 +299,13 @@ describe("payment API", () => {
       }),
     });
     expect((await api.fetch(request)).status).toBe(400);
-    const wrongType = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+    const wrongType = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "text/plain", "Idempotency-Key": randomId("idem") },
       body: "{}",
     });
     expect((await api.fetch(wrongType)).status).toBe(415);
-    const jsonp = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+    const jsonp = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/jsonp", "Idempotency-Key": randomId("idem") },
       body: "{}",
@@ -315,7 +313,7 @@ describe("payment API", () => {
     expect((await api.fetch(jsonp)).status).toBe(415);
 
     const depth = 5_000;
-    const deeplyNested = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+    const deeplyNested = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
       body: `{"kind":"payment","purpose":"checkout","externalId":"deep","chain":"test","asset":"USDC","amount":"1","metadata":${'{"next":'.repeat(depth)}null${"}".repeat(depth)}}`,
@@ -339,7 +337,7 @@ describe("payment API", () => {
       purpose: "swap",
     });
 
-    const invalid = authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+    const invalid = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": randomId("idem") },
       body: JSON.stringify({
@@ -414,7 +412,7 @@ describe("withdrawal API", () => {
     });
 
     const invalid = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/withdrawals", {
+      authorizedRequest("https://gateway.test/api/v1/withdrawals", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -484,9 +482,7 @@ describe("withdrawal API", () => {
     });
 
     const proposalResponse = await api.fetch(
-      authorizedRequest(
-        `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/proposal`,
-      ),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/proposal`),
     );
     expect(proposalResponse.status).toBe(200);
     const proposal = await proposalResponse.json<{
@@ -522,14 +518,11 @@ describe("withdrawal API", () => {
     ]);
     for (const rawTransaction of tampered) {
       const rejected = await api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rawTransaction }),
-          },
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/transaction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rawTransaction }),
+        }),
       );
       expect(rejected.status).toBe(400);
     }
@@ -539,14 +532,11 @@ describe("withdrawal API", () => {
       v: 2709n,
     });
     const invalidSignatureResponse = await api.fetch(
-      authorizedRequest(
-        `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rawTransaction: invalidSignature }),
-        },
-      ),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/transaction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawTransaction: invalidSignature }),
+      }),
     );
     expect(invalidSignatureResponse.status).toBe(400);
     expect(await invalidSignatureResponse.json()).toEqual({
@@ -627,14 +617,11 @@ describe("withdrawal API", () => {
     };
 
     const submitted = await api.fetch(
-      authorizedRequest(
-        `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rawTransaction: raw }),
-        },
-      ),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/transaction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawTransaction: raw }),
+      }),
     );
     expect(submitted.status).toBe(202);
     expect(await submitted.json()).toMatchObject({
@@ -644,7 +631,7 @@ describe("withdrawal API", () => {
 
     await reconcileWithdrawals(bindings);
     const confirming = await api.fetch(
-      authorizedRequest(`https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}`),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}`),
     );
     expect(await confirming.json()).toMatchObject({
       status: "confirming",
@@ -655,7 +642,7 @@ describe("withdrawal API", () => {
     canonicalBlockHash = staleBlockHash;
     await reconcileWithdrawals(bindings);
     const reorged = await api.fetch(
-      authorizedRequest(`https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}`),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}`),
     );
     expect(await reorged.json()).toMatchObject({
       status: "submitted",
@@ -665,7 +652,7 @@ describe("withdrawal API", () => {
     canonicalBlockHash = blockHash;
     await reconcileWithdrawals(bindings);
     const complete = await api.fetch(
-      authorizedRequest(`https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}`),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}`),
     );
     expect(await complete.json()).toMatchObject({
       status: "complete",
@@ -728,9 +715,7 @@ describe("withdrawal API", () => {
     const withdrawal = await created.json<{ id: string }>();
     const proposal = await (
       await api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/proposal`,
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/proposal`),
       )
     ).json<{ proposal: { to: `0x${string}`; data: Hex } }>();
     const raw = await treasury.signTransaction({
@@ -757,14 +742,11 @@ describe("withdrawal API", () => {
     };
 
     const submitted = await api.fetch(
-      authorizedRequest(
-        `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rawTransaction: raw }),
-        },
-      ),
+      authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/transaction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawTransaction: raw }),
+      }),
     );
     expect(submitted.status).toBe(202);
     expect(await submitted.json()).toMatchObject({
@@ -801,9 +783,7 @@ describe("withdrawal API", () => {
     const withdrawal = await created.json<{ id: string }>();
     const proposal = await (
       await api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/proposal`,
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/proposal`),
       )
     ).json<{ proposal: { to: `0x${string}`; data: Hex } }>();
     const raws = await Promise.all(
@@ -839,7 +819,7 @@ describe("withdrawal API", () => {
       raws.map((raw) =>
         api.fetch(
           authorizedRequest(
-            `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
+            `https://gateway.test/api/v1/withdrawals/${withdrawal.id}/transaction`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -872,7 +852,7 @@ describe("withdrawal API", () => {
     const secondProposal = await (
       await api.fetch(
         authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${secondWithdrawal.id}/proposal`,
+          `https://gateway.test/api/v1/withdrawals/${secondWithdrawal.id}/proposal`,
         ),
       )
     ).json<{ proposal: { to: `0x${string}`; data: Hex } }>();
@@ -890,7 +870,7 @@ describe("withdrawal API", () => {
       (
         await api.fetch(
           authorizedRequest(
-            `https://gateway.test/api/payments/v1/withdrawals/${secondWithdrawal.id}/transaction`,
+            `https://gateway.test/api/v1/withdrawals/${secondWithdrawal.id}/transaction`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -916,9 +896,7 @@ describe("withdrawal API", () => {
     const withdrawal = await created.json<{ id: string }>();
     const proposal = await (
       await api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/proposal`,
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/proposal`),
       )
     ).json<{ proposal: { to: `0x${string}`; data: Hex } }>();
     const sign = (nonce: number, gasPrice: bigint, gas = 80_000n) =>
@@ -948,14 +926,11 @@ describe("withdrawal API", () => {
     };
     const submit = (rawTransaction: Hex) =>
       api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rawTransaction }),
-          },
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/transaction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rawTransaction }),
+        }),
       );
     const firstRaw = await sign(30, 1n);
     expect((await submit(firstRaw)).status).toBe(202);
@@ -1072,9 +1047,7 @@ describe("withdrawal API", () => {
     const withdrawal = await created.json<{ id: string }>();
     const proposal = await (
       await api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${withdrawal.id}/proposal`,
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${withdrawal.id}/proposal`),
       )
     ).json<{ proposal: { to: `0x${string}`; data: Hex } }>();
     const raw = await treasury.signTransaction({
@@ -1201,7 +1174,7 @@ describe("swap API", () => {
       .bind(deposit.id)
       .run();
     const response = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1228,7 +1201,7 @@ describe("swap API", () => {
       await create(`${prefix}-target`, { amount: "1", metadata: {}, purpose: "swap" })
     ).json<{ id: string }>();
     const created = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1377,7 +1350,7 @@ describe("swap API", () => {
     ).json<{ id: string; externalId: string }>();
     const key = randomId("swap");
     const invalid = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1398,7 +1371,7 @@ describe("swap API", () => {
 
     const request = () =>
       api.fetch(
-        authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+        authorizedRequest("https://gateway.test/api/v1/swaps", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Idempotency-Key": key },
           body: JSON.stringify({
@@ -1447,7 +1420,7 @@ describe("swap API", () => {
     await Promise.all([reconcileSwaps(bindings), reconcileSwaps(bindings)]);
 
     const settled = await (
-      await api.fetch(authorizedRequest(`https://gateway.test/api/payments/v1/swaps/${swap.id}`))
+      await api.fetch(authorizedRequest(`https://gateway.test/api/v1/swaps/${swap.id}`))
     ).json<{
       status: string;
       withdrawalIntentId: string;
@@ -1476,7 +1449,7 @@ describe("swap API", () => {
       await (
         await api.fetch(
           authorizedRequest(
-            `https://gateway.test/api/payments/v1/withdrawals/${settled.withdrawalIntentId}/proposal`,
+            `https://gateway.test/api/v1/withdrawals/${settled.withdrawalIntentId}/proposal`,
           ),
         )
       ).json(),
@@ -1548,7 +1521,7 @@ describe("swap API", () => {
       })
     ).json<{ id: string }>();
     const created = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1593,7 +1566,7 @@ describe("swap API", () => {
       })
     ).json<{ id: string }>();
     const created = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1662,7 +1635,7 @@ describe("swap API", () => {
       await (
         await api.fetch(
           authorizedRequest(
-            `https://gateway.test/api/payments/v1/withdrawals/${refund!.refund_withdrawal}/proposal`,
+            `https://gateway.test/api/v1/withdrawals/${refund!.refund_withdrawal}/proposal`,
           ),
         )
       ).json(),
@@ -1775,7 +1748,7 @@ describe("swap API", () => {
       })
     ).json<{ id: string }>();
     const created = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1951,7 +1924,7 @@ describe("swap API", () => {
       })
     ).json<{ id: string }>();
     const created = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+      authorizedRequest("https://gateway.test/api/v1/swaps", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2060,7 +2033,7 @@ describe("swap API", () => {
       ).json<{ id: string }>();
       depositId = deposit.id;
       const created = await api.fetch(
-        authorizedRequest("https://gateway.test/api/payments/v1/swaps", {
+        authorizedRequest("https://gateway.test/api/v1/swaps", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -2149,14 +2122,11 @@ describe("swap API", () => {
           .first(),
       ).toEqual({ status: "expired" });
       const rejected = await api.fetch(
-        authorizedRequest(
-          `https://gateway.test/api/payments/v1/withdrawals/${refundId}/transaction`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rawTransaction: "0x01" }),
-          },
-        ),
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${refundId}/transaction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rawTransaction: "0x01" }),
+        }),
       );
       expect(rejected.status).toBe(409);
       expect(await rejected.json()).toEqual({ error: "linked swap input was reorganized" });
@@ -2464,7 +2434,7 @@ describe("analytics", () => {
     }
 
     const response = await api.fetch(
-      authorizedRequest("https://gateway.test/api/payments/v1/analytics/summary"),
+      authorizedRequest("https://gateway.test/api/v1/analytics/summary"),
     );
     expect(response.status).toBe(200);
     const body = await response.json<{
@@ -3331,7 +3301,7 @@ function create(
   },
 ): Promise<Response> {
   return api.fetch(
-    authorizedRequest("https://gateway.test/api/payments/v1/intents", {
+    authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({
@@ -3358,7 +3328,7 @@ function createWithdrawal(
   },
 ): Promise<Response> {
   return api.fetch(
-    authorizedRequest("https://gateway.test/api/payments/v1/withdrawals", {
+    authorizedRequest("https://gateway.test/api/v1/withdrawals", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
       body: JSON.stringify({

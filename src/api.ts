@@ -43,7 +43,7 @@ import type {
 } from "./types";
 import { routeWithdrawal } from "./withdrawals";
 
-const API_ROOT = "/api/payments/v1";
+const API_ROOT = "/api/v1";
 const MAX_COLLECTION_GAS = 1_000_000n;
 
 export default {
@@ -85,11 +85,11 @@ export default {
 
 async function route(request: Request, env: ApiEnv): Promise<Response> {
   const url = new URL(request.url);
-  if (request.method === "GET" && url.pathname === `${API_ROOT}/health`) return health(env);
+  if (request.method === "GET" && url.pathname === "/health") return health(env);
   if (!(await authorized(request, env.PAYMENT_API_KEY)))
     throw new HttpError(401, "invalid API key");
 
-  if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`)
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`)
     return createIntent(request, env);
   const withdrawal = await routeWithdrawal(request, url, env, API_ROOT);
   if (withdrawal) return withdrawal;
@@ -98,7 +98,7 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics/summary`)
     return json(await analyticsSummary(env));
   const match = url.pathname.match(
-    /^\/api\/payments\/v1\/intents\/([A-Za-z0-9_-]+)(?:\/(transactions|sweep))?$/,
+    /^\/api\/v1\/deposits\/([A-Za-z0-9_-]+)(?:\/(transactions|sweep))?$/,
   );
   if (!match || request.method !== "GET") throw new HttpError(404, "not found");
   const intent = await env.DB.prepare("SELECT * FROM deposit_intents WHERE id = ?")

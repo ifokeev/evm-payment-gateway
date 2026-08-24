@@ -180,7 +180,7 @@ beforeEach(() => {
             { status: 202 },
           );
         }
-        if (request.method === "POST" && path.endsWith("/intents")) {
+        if (request.method === "POST" && path.endsWith("/deposits")) {
           return Response.json(intent, { status: 201 });
         }
         if (path.endsWith("/analytics/summary")) return Response.json(analytics);
@@ -254,7 +254,7 @@ describe("public demo", () => {
       JSON.stringify({ id: "evt_demo", type: "deposit.succeeded" }),
     );
     const poll = await demo.fetch(
-      new Request(`https://demo.test/api/intents/${intent.id}`, {
+      new Request(`https://demo.test/api/deposits/${intent.id}`, {
         headers: { Authorization: `Bearer ${body.accessToken}` },
       }),
       env,
@@ -267,7 +267,7 @@ describe("public demo", () => {
     });
 
     const unrelated = await demo.fetch(
-      new Request("https://demo.test/api/intents/di_other", {
+      new Request("https://demo.test/api/deposits/di_other", {
         headers: { Authorization: `Bearer ${body.accessToken}` },
       }),
       env,
@@ -292,7 +292,7 @@ describe("public demo", () => {
     expect(body.withdrawal).not.toHaveProperty("internalSecret");
     expect(gatewayRequests[0]).toMatchObject({
       method: "POST",
-      path: "/api/payments/v1/withdrawals",
+      path: "/api/v1/withdrawals",
       body: {
         purpose: "withdrawal",
         chain: "base-sepolia",
@@ -340,7 +340,7 @@ describe("public demo", () => {
     });
     expect(gatewayRequests.at(-1)).toMatchObject({
       method: "POST",
-      path: `/api/payments/v1/withdrawals/${withdrawal.id}/transaction`,
+      path: `/api/v1/withdrawals/${withdrawal.id}/transaction`,
       body: { rawTransaction },
     });
     expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
@@ -400,7 +400,7 @@ describe("public demo", () => {
   });
 
   it("rejects malformed requests and invalid intent access tokens", async () => {
-    const malformed = new Request("https://demo.test/api/intents", {
+    const malformed = new Request("https://demo.test/api/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -417,7 +417,7 @@ describe("public demo", () => {
     const { accessToken } = await created.json<{ accessToken: string }>();
     const tamperedToken = `${accessToken.slice(0, -1)}${accessToken.endsWith("a") ? "b" : "a"}`;
     const tampered = await demo.fetch(
-      new Request(`https://demo.test/api/intents/${intent.id}`, {
+      new Request(`https://demo.test/api/deposits/${intent.id}`, {
         headers: { Authorization: `Bearer ${tamperedToken}` },
       }),
       env,
@@ -428,7 +428,7 @@ describe("public demo", () => {
     try {
       vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1_000 + 1);
       const expired = await demo.fetch(
-        new Request(`https://demo.test/api/intents/${intent.id}`, {
+        new Request(`https://demo.test/api/deposits/${intent.id}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         }),
         env,
@@ -553,7 +553,7 @@ function createRequest(input: {
   amount: string;
   purpose: string;
 }): Request {
-  return new Request("https://demo.test/api/intents", {
+  return new Request("https://demo.test/api/deposits", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

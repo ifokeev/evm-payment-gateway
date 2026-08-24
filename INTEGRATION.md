@@ -28,15 +28,15 @@ Your application remains the system of record for orders and entitlements. The
 gateway detects payments and collects funds. It does not fulfill orders or
 grant entitlements.
 
-All payment endpoints use the `/api/payments/v1` prefix and require
+All payment endpoints use the `/api/v1` prefix and require
 `Authorization: Bearer <PAYMENT_API_KEY>`. Only `GET /health` is public.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/intents` | Create or idempotently replay a deposit intent. |
-| `GET` | `/intents/{id}` | Poll status and the included transaction history. |
-| `GET` | `/intents/{id}/transactions` | Read deposit transfers only. |
-| `GET` | `/intents/{id}/sweep` | Inspect treasury collection progress. |
+| `POST` | `/deposits` | Create or idempotently replay a deposit intent. |
+| `GET` | `/deposits/{id}` | Poll status and the included transaction history. |
+| `GET` | `/deposits/{id}/transactions` | Read deposit transfers only. |
+| `GET` | `/deposits/{id}/sweep` | Inspect treasury collection progress. |
 | `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
@@ -66,7 +66,7 @@ export async function createCryptoCheckout(order: {
   accountId: string;
   amount: string;
 }) {
-  const response = await fetch(`${gatewayUrl}/api/payments/v1/intents`, {
+  const response = await fetch(`${gatewayUrl}/api/v1/deposits`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${gatewayApiKey}`,
@@ -158,7 +158,7 @@ that proxies the safe status fields. Do not call the gateway directly from
 browser code. All intent reads require the bearer API key.
 
 ```http
-GET /api/payments/v1/intents/di_example
+GET /api/v1/deposits/di_example
 Authorization: Bearer <gateway-api-key>
 ```
 
@@ -184,13 +184,13 @@ sequenceDiagram
 
     Customer->>UI: Start checkout
     UI->>App: Request crypto payment
-    App->>Gateway: POST /intents with idempotency key
+    App->>Gateway: POST /deposits with idempotency key
     Gateway-->>App: Intent, exact amount, QR and URI
     App-->>UI: Safe checkout fields
     Customer->>Chain: Send payment
     loop While checkout is open
         UI->>App: Get deposit status
-        App->>Gateway: GET /intents/{id}
+        App->>Gateway: GET /deposits/{id}
         Gateway-->>App: Current status and transactions
         App-->>UI: Current status
     end
@@ -379,9 +379,9 @@ Run a small reconciliation job for open orders. Poll the stored intent IDs.
 Apply the same idempotent fulfillment function that the webhook handler uses.
 
 ```http
-GET /api/payments/v1/intents/{id}
-GET /api/payments/v1/intents/{id}/transactions
-GET /api/payments/v1/intents/{id}/sweep
+GET /api/v1/deposits/{id}
+GET /api/v1/deposits/{id}/transactions
+GET /api/v1/deposits/{id}/sweep
 ```
 
 The transactions endpoint explains underpayments, confirmation counts, late
@@ -393,7 +393,7 @@ The authenticated analytics endpoint returns base-unit strings rather than
 floating-point totals:
 
 ```http
-GET /api/payments/v1/analytics/summary
+GET /api/v1/analytics/summary
 ```
 
 It groups requested, received, confirmed, and collected units by chain and
@@ -406,7 +406,7 @@ convert units only at the display boundary.
 The health endpoint does not require the bearer key:
 
 ```http
-GET /api/payments/v1/health
+GET /health
 ```
 
 ```json
@@ -442,7 +442,7 @@ address defaults to `treasuryAddress` when the configuration omits it.
 Create a withdrawal only after your application reserves the customer balance:
 
 ```http
-POST /api/payments/v1/withdrawals
+POST /api/v1/withdrawals
 Idempotency-Key: withdrawal:account-001:42
 Content-Type: application/json
 
@@ -460,7 +460,7 @@ Content-Type: application/json
 Get the exact transaction fields from the proposal endpoint:
 
 ```http
-GET /api/payments/v1/withdrawals/{id}/proposal
+GET /api/v1/withdrawals/{id}/proposal
 ```
 
 The external signer must validate these fields:
@@ -484,7 +484,7 @@ approval policy in the signer system.
 Sign the transaction outside Cloudflare. Then submit the raw transaction:
 
 ```http
-POST /api/payments/v1/withdrawals/{id}/transaction
+POST /api/v1/withdrawals/{id}/transaction
 Content-Type: application/json
 
 {
@@ -530,7 +530,7 @@ First, create a token deposit intent with `purpose` set to `swap`. Then link the
 deposit to its output:
 
 ```http
-POST /api/payments/v1/swaps
+POST /api/v1/swaps
 Idempotency-Key: swap:quote-123
 Content-Type: application/json
 

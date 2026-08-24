@@ -1,7 +1,7 @@
 import { formatUnits, parseAmount } from "../src/domain";
 
 const API_ROOT = "/api";
-const GATEWAY_ROOT = "/api/payments/v1";
+const GATEWAY_ROOT = "/api/v1";
 const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
 
@@ -56,13 +56,13 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics`) {
     return getDemoAnalytics(request, env);
   }
-  if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`) {
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`) {
     return createDemoIntent(request, env);
   }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/withdrawals`) {
     return createDemoWithdrawal(request, env);
   }
-  const intentMatch = url.pathname.match(/^\/api\/intents\/(di_[A-Za-z0-9_-]+)$/);
+  const intentMatch = url.pathname.match(/^\/api\/deposits\/(di_[A-Za-z0-9_-]+)$/);
   if (request.method === "GET" && intentMatch) {
     return getDemoIntent(request, env, intentMatch[1]);
   }
@@ -144,7 +144,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
   }
 
   const gateway = await env.GATEWAY.fetch(
-    new Request(`https://gateway.internal${GATEWAY_ROOT}/intents`, {
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
@@ -359,10 +359,12 @@ async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): 
   const headers = gatewayAuthorization(env);
   const [intentResponse, sweepResponse, webhookEvent] = await Promise.all([
     env.GATEWAY.fetch(
-      new Request(`https://gateway.internal${GATEWAY_ROOT}/intents/${intentId}`, { headers }),
+      new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${intentId}`, { headers }),
     ),
     env.GATEWAY.fetch(
-      new Request(`https://gateway.internal${GATEWAY_ROOT}/intents/${intentId}/sweep`, { headers }),
+      new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${intentId}/sweep`, {
+        headers,
+      }),
     ),
     env.DEMO_EVENTS.get(`intent:${intentId}`, "json"),
   ]);

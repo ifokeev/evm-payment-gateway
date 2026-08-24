@@ -248,11 +248,11 @@ limits operations on idle queues.
 
 ## API
 
-All payment routes use `/api/payments/v1`. Only `GET /health` is public. Every
+All payment routes use `/api/v1`. Only `GET /health` is public. Every
 other route requires the server-side bearer key.
 
 ```bash
-curl -X POST "$GATEWAY_URL/api/payments/v1/intents" \
+curl -X POST "$GATEWAY_URL/api/v1/deposits" \
   -H "Authorization: Bearer $PAYMENT_API_KEY" \
   -H "Idempotency-Key: payment-attempt-001" \
   -H "Content-Type: application/json" \
@@ -274,10 +274,10 @@ requests use `withdrawal`. The swap coordinator creates `swap` withdrawals.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/intents` | Create or idempotently replay an intent. |
-| `GET` | `/intents/{id}` | Poll state and included transactions. |
-| `GET` | `/intents/{id}/transactions` | Read deposit transfer history. |
-| `GET` | `/intents/{id}/sweep` | Read treasury-collection history. |
+| `POST` | `/deposits` | Create or idempotently replay an intent. |
+| `GET` | `/deposits/{id}` | Poll state and included transactions. |
+| `GET` | `/deposits/{id}/transactions` | Read deposit transfer history. |
+| `GET` | `/deposits/{id}/sweep` | Read treasury-collection history. |
 | `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for the external signer. |

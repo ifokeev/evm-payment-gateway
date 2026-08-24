@@ -143,7 +143,7 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const withdrawing = flow === "withdrawal";
-    const response = await fetch(withdrawing ? "/api/withdrawals" : "/api/intents", {
+    const response = await fetch(withdrawing ? "/api/withdrawals" : "/api/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -823,7 +823,7 @@ function startPolling(immediate = false) {
     if (flow !== "deposit" || !currentIntentId || !accessToken || pollAttempts >= 360) return;
     pollAttempts += 1;
     try {
-      const response = await fetch(`/api/intents/${encodeURIComponent(currentIntentId)}`, {
+      const response = await fetch(`/api/deposits/${encodeURIComponent(currentIntentId)}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const body = await response.json();
