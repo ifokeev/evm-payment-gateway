@@ -480,7 +480,7 @@ describe("public demo", () => {
         outputAsset: "ETH",
         outputAmount: "0.00001",
         destinationAddress: swapWithdrawal.destinationAddress,
-        refundAddress: swap.refund.address,
+        refundAddress: swapWithdrawal.destinationAddress,
       },
     });
 
@@ -527,7 +527,7 @@ describe("public demo", () => {
     expect(
       (
         await demo.fetch(
-          createSwapRequest({ refundAddress: "0x0000000000000000000000000000000000000000" }),
+          createSwapRequest({ walletAddress: "0x0000000000000000000000000000000000000000" }),
           env,
         )
       ).status,
@@ -800,8 +800,7 @@ function createSwapRequest(
     outputChain: string;
     outputAsset: string;
     outputAmount: string;
-    destinationAddress: string;
-    refundAddress: string;
+    walletAddress: string;
   }> = {},
 ): Request {
   return new Request("https://demo.test/api/swaps", {
@@ -817,8 +816,7 @@ function createSwapRequest(
       amount: "0.50",
       outputChain: "ethereum-sepolia",
       outputAsset: "ETH",
-      destinationAddress: swapWithdrawal.destinationAddress,
-      refundAddress: swap.refund.address,
+      walletAddress: swapWithdrawal.destinationAddress,
       ...input,
       idempotencyKey: crypto.randomUUID(),
       turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",

@@ -297,7 +297,9 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 The optional demo Worker shows testnet deposits, withdrawals, and cross-chain
 swaps. Swap quotes use fixed configured testnet amounts, not market prices. The
-demo follows signed webhooks, treasury collection, outputs, and refunds.
+demo uses one user wallet for the swap output and possible refund. The core API
+keeps these addresses separate. The demo follows signed webhooks, treasury
+collection, outputs, and refunds.
 
 The withdrawal and swap views show exact proposals and accept signed raw
 transactions. The treasury signer stays outside Cloudflare. A private service

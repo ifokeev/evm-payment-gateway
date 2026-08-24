@@ -273,8 +273,7 @@ async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response>
     "amount",
     "outputChain",
     "outputAsset",
-    "destinationAddress",
-    "refundAddress",
+    "walletAddress",
     "idempotencyKey",
     "turnstileToken",
   ]);
@@ -290,8 +289,7 @@ async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response>
   if (input.chain === output.chain && input.asset === output.asset) {
     throw new DemoError(400, "swap input and output must differ");
   }
-  const destinationAddress = demoAddress(body, "destinationAddress");
-  const refundAddress = demoAddress(body, "refundAddress");
+  const walletAddress = demoAddress(body, "walletAddress");
   const idempotencyKey = demoIdempotencyKey(body);
   const turnstileToken = stringField(body, "turnstileToken");
   let inputAmount: ReturnType<typeof parseAmount>;
@@ -356,8 +354,8 @@ async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response>
         outputChain: output.chain,
         outputAsset: output.asset,
         outputAmount: outputAmount.amount,
-        destinationAddress,
-        refundAddress,
+        destinationAddress: walletAddress,
+        refundAddress: walletAddress,
       }),
     }),
   );
@@ -935,10 +933,13 @@ function demoOption(env: DemoEnv, chain: string, asset: string): DemoOption {
 function demoAddress(value: Record<string, unknown>, key: string): string {
   const address = stringField(value, key);
   if (!/^0x[0-9a-f]{40}$/i.test(address) || /^0x0{40}$/i.test(address)) {
-    throw new DemoError(
-      400,
-      `enter a valid ${key === "refundAddress" ? "refund address" : "destination address"}`,
-    );
+    const label =
+      key === "walletAddress"
+        ? "wallet address"
+        : key === "refundAddress"
+          ? "refund address"
+          : "destination address";
+    throw new DemoError(400, `enter a valid ${label}`);
   }
   return address;
 }

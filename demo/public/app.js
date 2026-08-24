@@ -15,9 +15,6 @@ const purposeHelp = document.querySelector("#purpose-help");
 const destinationField = document.querySelector("#destination-field");
 const destinationAddress = document.querySelector("#destination-address");
 const destinationError = document.querySelector("#destination-error");
-const refundField = document.querySelector("#refund-field");
-const refundAddress = document.querySelector("#refund-address");
-const refundError = document.querySelector("#refund-error");
 const amount = document.querySelector("#amount");
 const amountHelp = document.querySelector("#amount-help");
 const amountError = document.querySelector("#amount-error");
@@ -100,10 +97,6 @@ destinationAddress.addEventListener("input", () => {
   destinationError.textContent = "";
 });
 
-refundAddress.addEventListener("input", () => {
-  refundError.textContent = "";
-});
-
 copyAddress.addEventListener("click", async () => {
   const address = document.querySelector("#deposit-address").textContent;
   if (!address) return;
@@ -167,7 +160,6 @@ form.addEventListener("submit", async (event) => {
   submitting = true;
   amountError.textContent = "";
   destinationError.textContent = "";
-  refundError.textContent = "";
   globalError.hidden = true;
   setStage("loading");
   updateCreateButton();
@@ -189,8 +181,7 @@ form.addEventListener("submit", async (event) => {
           ? {
               outputChain: outputNetwork.value,
               outputAsset: outputAsset.value,
-              destinationAddress: destinationAddress.value,
-              refundAddress: refundAddress.value,
+              walletAddress: destinationAddress.value,
             }
           : {}),
         ...(!withdrawing && !swapping ? { purpose: purpose.value } : {}),
@@ -245,8 +236,7 @@ form.addEventListener("submit", async (event) => {
     );
     const message = error instanceof Error ? error.message : "Request failed";
     if (error instanceof DemoRequestError && error.status === 400) {
-      if (message.toLowerCase().includes("refund")) refundError.textContent = message;
-      else if (message.toLowerCase().includes("destination"))
+      if (message.toLowerCase().includes("wallet") || message.toLowerCase().includes("destination"))
         destinationError.textContent = message;
       else amountError.textContent = message;
     } else showGlobalError(message);
@@ -525,18 +515,16 @@ function setFlow(next, initializing = false) {
   outputAsset.disabled = !config || flow !== "swap";
   destinationField.hidden = flow === "deposit";
   destinationAddress.disabled = !config || flow === "deposit";
-  refundField.hidden = flow !== "swap";
-  refundAddress.disabled = !config || flow !== "swap";
   amount.disabled = !config || flow === "swap";
   analyticsPanel.hidden = flow !== "deposit";
   text("#network-label", flow === "swap" ? "Input network" : "Network");
   text("#asset-title", flow === "swap" ? "Input asset" : "Asset");
   text("#amount-title", flow === "swap" ? "Fixed input amount" : "Amount");
-  text("#destination-label", flow === "swap" ? "Output destination" : "Destination address");
+  text("#destination-label", flow === "swap" ? "Your wallet address" : "Destination address");
   text(
     "#destination-help",
     flow === "swap"
-      ? "The treasury signer must approve this output recipient."
+      ? "The demo sends the swap output or a refund to this address."
       : "The external signer must approve this exact recipient.",
   );
   text(
@@ -741,7 +729,6 @@ function renderSwap(state) {
     `${swap.output.amount} ${swap.output.asset} on ${humanize(swap.output.chain)}`,
   );
   text("#swap-destination", swap.output.destinationAddress);
-  text("#swap-refund", swap.refund.address);
   text("#intent-id-label", "Swap ID");
   text("#intent-id", swap.id);
   text("#expiry-time", formatExpiry(swap.quoteExpiresAt));

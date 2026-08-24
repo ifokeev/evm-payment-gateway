@@ -133,25 +133,6 @@
               <p id="destination-error" class="field-error" role="alert"></p>
             </div>
 
-            <div id="refund-field" class="field" hidden>
-              <label for="refund-address">Refund address</label>
-              <input
-                id="refund-address"
-                name="refundAddress"
-                type="text"
-                inputmode="text"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="0x..."
-                aria-describedby="refund-help refund-error"
-                disabled
-              />
-              <p id="refund-help" class="field-help">
-                The gateway uses this address if it must refund the swap input.
-              </p>
-              <p id="refund-error" class="field-error" role="alert"></p>
-            </div>
-
             <div class="field">
               <label id="amount-title" for="amount">Amount</label>
               <div class="amount-control">
@@ -267,12 +248,8 @@
                 <dd id="swap-output-route"></dd>
               </div>
               <div>
-                <dt>Output destination</dt>
+                <dt>User wallet</dt>
                 <dd><code id="swap-destination"></code></dd>
-              </div>
-              <div>
-                <dt>Refund address</dt>
-                <dd><code id="swap-refund"></code></dd>
               </div>
             </dl>
 
