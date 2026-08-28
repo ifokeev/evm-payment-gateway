@@ -112,7 +112,7 @@ async function processCollection(
 
   if (!network.relayerPrivateKey) throw new Error("relayer private key is missing");
   const account = privateKeyToAccount(network.relayerPrivateKey);
-  const data = collectionCall(job.intentSalt, network.treasuryAddress, job.tokenAddress);
+  const data = collectionCall(job.intentSalt, job.treasuryAddress, job.tokenAddress);
   const [gasPrice, nonce, estimated] = await Promise.all([
     client.getGasPrice(),
     client.getTransactionCount({ address: account.address, blockTag: "pending" }),
@@ -294,12 +294,11 @@ function validateJobNetwork(job: SweepJob, network: NetworkConfig): void {
   const expected = counterfactualAddress(
     network.factoryAddress,
     job.intentSalt,
-    network.treasuryAddress,
+    job.treasuryAddress,
     job.tokenAddress,
   );
   if (
     job.chainId !== network.chainId ||
-    !isAddressEqual(job.treasuryAddress, network.treasuryAddress) ||
     !isAddressEqual(job.factoryAddress, network.factoryAddress) ||
     job.factoryCodeHash.toLowerCase() !== network.factoryCodeHash ||
     !isAddressEqual(job.relayerAddress, network.relayerAddress) ||
@@ -338,7 +337,7 @@ function retrySeconds(env: SweeperEnv): number {
 
 function knownTransactionError(error: unknown): boolean {
   const message = errorText(error).toLowerCase();
-  return message.includes("already known") || message.includes("known transaction");
+  return message.includes("already known") || /\bknown transaction\b/.test(message);
 }
 
 function queued(delaySeconds: number, remainingUnits = "0"): SweepOutcome {

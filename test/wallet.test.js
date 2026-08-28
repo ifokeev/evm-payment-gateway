@@ -16,7 +16,7 @@ describe("wallet payment requests", () => {
     expect(paymentAction({ status: "pending", expired: true, topUpPaymentUri: uri })).toEqual({
       uri: "",
       title: "Payment link expired",
-      detail: "Create a new payment intent to continue.",
+      detail: "Create a new deposit intent to continue.",
     });
     expect(paymentAction({ status: "confirming", expired: false })).toMatchObject({
       uri: "",

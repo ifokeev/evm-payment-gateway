@@ -1,7 +1,7 @@
 import { formatUnits, parseAmount } from "../src/domain";
 
 const API_ROOT = "/api";
-const GATEWAY_ROOT = "/api/payments/v1";
+const GATEWAY_ROOT = "/api/v1";
 const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
 
@@ -12,7 +12,6 @@ export interface DemoEnv {
   DEMO_RATE_LIMITER: RateLimit;
   PAYMENT_API_KEY: string;
   PAYMENT_WEBHOOK_SECRET: string;
-  DEMO_SESSION_SECRET: string;
   TURNSTILE_SITE_KEY: string;
   TURNSTILE_SECRET_KEY: string;
   DEMO_OPTIONS_JSON: string;
@@ -56,14 +55,63 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics`) {
     return getDemoAnalytics(request, env);
   }
-  if (request.method === "POST" && url.pathname === `${API_ROOT}/intents`) {
+  if (request.method === "GET" && url.pathname === `${API_ROOT}/signer/withdrawals`) {
+    return getSignerInbox(request, url, env);
+  }
+  if (request.method === "GET" && url.pathname === "/analytics") {
+    url.pathname = "/analytics.html";
+    return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
+  }
+  if (request.method === "GET" && url.pathname === "/signer") {
+    url.pathname = "/signer.html";
+    return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
+  }
+  if (
+    request.method === "GET" &&
+    /^\/(?:deposits\/di_|withdrawals\/wd_|swaps\/swp_)[A-Za-z0-9_-]+$/.test(url.pathname)
+  ) {
+    url.pathname = "/index.html";
+    return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
+  }
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`) {
     return createDemoIntent(request, env);
   }
-  const intentMatch = url.pathname.match(/^\/api\/intents\/(pi_[A-Za-z0-9_-]+)$/);
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/withdrawals`) {
+    return createDemoWithdrawal(request, env);
+  }
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/swaps`) {
+    return createDemoSwap(request, env);
+  }
+  const intentMatch = url.pathname.match(/^\/api\/deposits\/(di_[A-Za-z0-9_-]+)$/);
   if (request.method === "GET" && intentMatch) {
     return getDemoIntent(request, env, intentMatch[1]);
   }
-  if (request.method === "POST" && url.pathname === "/webhooks/payment") {
+  const withdrawalMatch = url.pathname.match(
+    /^\/api\/withdrawals\/(wd_[A-Za-z0-9_-]+)(?:\/(transaction))?$/,
+  );
+  if (request.method === "GET" && withdrawalMatch && !withdrawalMatch[2]) {
+    return getDemoWithdrawal(request, env, withdrawalMatch[1]);
+  }
+  if (request.method === "POST" && withdrawalMatch?.[2] === "transaction") {
+    return submitDemoWithdrawal(request, env, withdrawalMatch[1]);
+  }
+  const signerMatch = url.pathname.match(
+    /^\/api\/signer\/withdrawals\/(wd_[A-Za-z0-9_-]+)\/(proposal|transaction)$/,
+  );
+  if (request.method === "GET" && signerMatch?.[2] === "proposal") {
+    return getSignerWithdrawal(request, env, signerMatch[1]);
+  }
+  if (request.method === "POST" && signerMatch?.[2] === "transaction") {
+    return submitSignerWithdrawal(request, env, signerMatch[1]);
+  }
+  const swapMatch = url.pathname.match(/^\/api\/swaps\/(swp_[A-Za-z0-9_-]+)(?:\/(transaction))?$/);
+  if (request.method === "GET" && swapMatch && !swapMatch[2]) {
+    return getDemoSwap(request, env, swapMatch[1]);
+  }
+  if (request.method === "POST" && swapMatch?.[2] === "transaction") {
+    return submitDemoSwapTransaction(request, env, swapMatch[1]);
+  }
+  if (request.method === "POST" && url.pathname === "/webhooks/deposit") {
     return receiveWebhook(request, env);
   }
   if (url.pathname.startsWith(`${API_ROOT}/`) || url.pathname.startsWith("/webhooks/")) {
@@ -73,39 +121,19 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
 }
 
 async function createDemoIntent(request: Request, env: DemoEnv): Promise<Response> {
-  const origin = request.headers.get("Origin");
-  if (origin && origin !== new URL(request.url).origin) throw new DemoError(403, "invalid origin");
+  enforceSameOrigin(request);
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.DEMO_RATE_LIMITER.limit({ key: `create:${ip}` })).success) {
     throw new DemoError(429, "too many demo payments; try again in a minute");
   }
 
   const body = await readObject(request, 8_192);
-  rejectUnknownFields(body, [
-    "chain",
-    "asset",
-    "amount",
-    "purpose",
-    "idempotencyKey",
-    "turnstileToken",
-  ]);
+  rejectUnknownFields(body, ["chain", "asset", "amount", "idempotencyKey", "turnstileToken"]);
   const chain = stringField(body, "chain");
   const asset = stringField(body, "asset");
   const amount = stringField(body, "amount");
-  const purpose = stringField(body, "purpose");
-  const idempotencyKey = stringField(body, "idempotencyKey");
+  const idempotencyKey = demoIdempotencyKey(body);
   const turnstileToken = stringField(body, "turnstileToken");
-  if (purpose !== "checkout" && purpose !== "account_top_up") {
-    throw new DemoError(400, "purpose must be checkout or account_top_up");
-  }
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)
-  ) {
-    throw new DemoError(400, "idempotencyKey must be a UUID");
-  }
-  if (!turnstileToken || turnstileToken.length > 2_048) {
-    throw new DemoError(400, "complete the security check");
-  }
 
   const option = demoOption(env, chain, asset);
   const configured = amountConfig(option);
@@ -121,19 +149,10 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
       `amount must be between ${configured.minimum.amount} and ${configured.maximum.amount}`,
     );
   }
-  if (
-    !(await verifyTurnstile(
-      turnstileToken,
-      ip,
-      new URL(request.url).hostname,
-      env.TURNSTILE_SECRET_KEY,
-    ))
-  ) {
-    throw new DemoError(403, "security check failed; please try again");
-  }
+  await requireTurnstile(turnstileToken, ip, request, env);
 
   const gateway = await env.GATEWAY.fetch(
-    new Request(`https://gateway.internal${GATEWAY_ROOT}/intents`, {
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
@@ -141,7 +160,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
         "Idempotency-Key": `demo:${idempotencyKey}`,
       },
       body: JSON.stringify({
-        kind: "payment",
+        purpose: "deposit",
         externalId: `demo_${idempotencyKey}`,
         chain: option.chain,
         asset: option.asset,
@@ -152,7 +171,7 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
           300,
           86_400,
         ),
-        metadata: { demo: true, purpose },
+        metadata: { demo: true },
       }),
     }),
   );
@@ -163,14 +182,411 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
       "gateway rejected the payment",
     );
   const intent = publicIntent(gatewayBody);
-  const expiresAt = Date.now() + 24 * 60 * 60 * 1_000;
+  return json({ intent }, gateway.status);
+}
+
+async function createDemoWithdrawal(request: Request, env: DemoEnv): Promise<Response> {
+  enforceSameOrigin(request);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `withdrawal:${ip}` })).success) {
+    throw new DemoError(429, "too many demo withdrawals; try again in a minute");
+  }
+  const body = await readObject(request, 8_192);
+  rejectUnknownFields(body, [
+    "chain",
+    "asset",
+    "amount",
+    "destinationAddress",
+    "idempotencyKey",
+    "turnstileToken",
+  ]);
+  const chain = stringField(body, "chain");
+  const asset = stringField(body, "asset");
+  const amount = stringField(body, "amount");
+  const destinationAddress = demoAddress(body, "destinationAddress");
+  const idempotencyKey = demoIdempotencyKey(body);
+  const turnstileToken = stringField(body, "turnstileToken");
+  const option = demoOption(env, chain, asset);
+  const configured = amountConfig(option);
+  let parsed: ReturnType<typeof parseAmount>;
+  try {
+    parsed = parseAmount(amount, configured.decimals);
+  } catch {
+    throw new DemoError(400, "enter a valid withdrawal amount");
+  }
+  if (parsed.units < configured.minimum.units || parsed.units > configured.maximum.units) {
+    throw new DemoError(
+      400,
+      `amount must be between ${configured.minimum.amount} and ${configured.maximum.amount}`,
+    );
+  }
+  await requireTurnstile(turnstileToken, ip, request, env);
+
+  const gateway = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `demo:withdrawal:${idempotencyKey}`,
+      },
+      body: JSON.stringify({
+        purpose: "withdrawal",
+        externalId: `demo_withdrawal_${idempotencyKey}`,
+        chain: option.chain,
+        asset: option.asset,
+        amount: parsed.amount,
+        destinationAddress,
+        expiresInSeconds: integerSetting(
+          env.DEMO_EXPIRY_SECONDS,
+          "DEMO_EXPIRY_SECONDS",
+          300,
+          86_400,
+        ),
+      }),
+    }),
+  );
+  const gatewayBody = await responseObject(gateway, 2_000_000);
+  if (!gateway.ok) {
+    throw new DemoError(
+      gateway.status >= 500 ? 502 : gateway.status,
+      "gateway rejected the withdrawal",
+    );
+  }
+  const withdrawal = publicWithdrawal(gatewayBody);
+  return json({ withdrawal }, gateway.status);
+}
+
+async function createDemoSwap(request: Request, env: DemoEnv): Promise<Response> {
+  enforceSameOrigin(request);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `swap:${ip}` })).success) {
+    throw new DemoError(429, "too many demo swaps; try again in a minute");
+  }
+  const body = await readObject(request, 8_192);
+  rejectUnknownFields(body, [
+    "chain",
+    "asset",
+    "amount",
+    "outputChain",
+    "outputAsset",
+    "walletAddress",
+    "idempotencyKey",
+    "turnstileToken",
+  ]);
+  const input = demoOption(env, stringField(body, "chain"), stringField(body, "asset"));
+  const output = demoOption(
+    env,
+    stringField(body, "outputChain"),
+    stringField(body, "outputAsset"),
+  );
+  if (input.asset === input.nativeAsset) {
+    throw new DemoError(400, "select a token for the swap input");
+  }
+  if (input.chain === output.chain && input.asset === output.asset) {
+    throw new DemoError(400, "swap input and output must differ");
+  }
+  const walletAddress = demoAddress(body, "walletAddress");
+  const idempotencyKey = demoIdempotencyKey(body);
+  const turnstileToken = stringField(body, "turnstileToken");
+  let inputAmount: ReturnType<typeof parseAmount>;
+  let configuredInput: ReturnType<typeof parseAmount>;
+  let outputAmount: ReturnType<typeof parseAmount>;
+  try {
+    inputAmount = parseAmount(stringField(body, "amount"), input.decimals);
+    configuredInput = parseAmount(input.defaultAmount, input.decimals);
+    outputAmount = parseAmount(output.defaultAmount, output.decimals);
+  } catch {
+    throw new DemoError(400, "invalid demo swap amount");
+  }
+  if (inputAmount.units !== configuredInput.units) {
+    throw new DemoError(400, `swap input amount must be ${configuredInput.amount} ${input.asset}`);
+  }
+  await requireTurnstile(turnstileToken, ip, request, env);
+
+  const authorization = gatewayAuthorization(env);
+  const depositResponse = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits`, {
+      method: "POST",
+      headers: {
+        ...authorization,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `demo:swap:deposit:${idempotencyKey}`,
+      },
+      body: JSON.stringify({
+        purpose: "swap",
+        externalId: `demo_swap_${idempotencyKey}`,
+        chain: input.chain,
+        asset: input.asset,
+        amount: inputAmount.amount,
+        expiresInSeconds: integerSetting(
+          env.DEMO_EXPIRY_SECONDS,
+          "DEMO_EXPIRY_SECONDS",
+          300,
+          86_400,
+        ),
+        metadata: { demo: true },
+      }),
+    }),
+  );
+  const depositBody = await responseObject(depositResponse, 2_000_000);
+  if (!depositResponse.ok) {
+    throw new DemoError(
+      depositResponse.status >= 500 ? 502 : depositResponse.status,
+      "gateway rejected the swap input",
+    );
+  }
+  const intent = publicIntent(depositBody);
+  const swapResponse = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/swaps`, {
+      method: "POST",
+      headers: {
+        ...authorization,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `demo:swap:${idempotencyKey}`,
+      },
+      body: JSON.stringify({
+        depositIntentId: intent.id,
+        outputChain: output.chain,
+        outputAsset: output.asset,
+        outputAmount: outputAmount.amount,
+        destinationAddress: walletAddress,
+        refundAddress: walletAddress,
+      }),
+    }),
+  );
+  const swapBody = await responseObject(swapResponse, 2_000_000);
+  if (!swapResponse.ok) {
+    throw new DemoError(
+      swapResponse.status >= 500 ? 502 : swapResponse.status,
+      "gateway rejected the swap terms",
+    );
+  }
+  const swap = publicSwap(swapBody);
+  if (swap.depositIntentId !== intent.id) {
+    throw new DemoError(502, "gateway returned an invalid swap");
+  }
   return json(
     {
+      swap,
       intent,
-      accessToken: await issueAccessToken(intent.id as string, expiresAt, env.DEMO_SESSION_SECRET),
+      sweep: null,
+      webhookEvent: null,
+      payout: null,
     },
-    gateway.status,
+    swapResponse.status,
   );
+}
+
+async function getDemoWithdrawal(
+  _request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  return getWithdrawalProposal(env, withdrawalId);
+}
+
+async function getSignerWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `signer:${ip}` })).success) {
+    throw new DemoError(429, "signer inbox refresh limit reached; try again in a minute");
+  }
+  return getWithdrawalProposal(env, withdrawalId);
+}
+
+async function getWithdrawalProposal(env: DemoEnv, withdrawalId: string): Promise<Response> {
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${withdrawalId}/proposal`, {
+      headers: gatewayAuthorization(env),
+    }),
+  );
+  const body = await responseObject(response, 2_000_000);
+  if (!response.ok) {
+    throw new DemoError(
+      response.status === 404 ? 404 : 502,
+      response.status === 404 ? "withdrawal not found" : "gateway withdrawal status is unavailable",
+    );
+  }
+  const withdrawal = publicWithdrawal(body);
+  if (withdrawal.id !== withdrawalId || !demoResource(withdrawal)) {
+    throw new DemoError(404, "withdrawal not found");
+  }
+  return json({ withdrawal });
+}
+
+async function submitDemoWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  enforceSameOrigin(request);
+  return submitSignedWithdrawal(request, env, withdrawalId);
+}
+
+async function submitSignerWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  enforceSameOrigin(request);
+  return submitSignedWithdrawal(request, env, withdrawalId);
+}
+
+async function submitSignedWithdrawal(
+  request: Request,
+  env: DemoEnv,
+  withdrawalId: string,
+): Promise<Response> {
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `withdrawal-submit:${ip}` })).success) {
+    throw new DemoError(429, "too many signed transaction attempts; try again in a minute");
+  }
+  const body = await readObject(request, 262_200);
+  rejectUnknownFields(body, ["rawTransaction"]);
+  const rawTransaction = signedRawTransaction(body);
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${withdrawalId}/transaction`, {
+      method: "POST",
+      headers: { ...gatewayAuthorization(env), "Content-Type": "application/json" },
+      body: JSON.stringify({ rawTransaction }),
+    }),
+  );
+  const responseBody = await responseObject(response, 2_000_000);
+  if (!response.ok) {
+    throw new DemoError(
+      response.status >= 500 ? 502 : response.status,
+      "gateway rejected the signed transaction",
+    );
+  }
+  return json({ withdrawal: publicWithdrawal(responseBody) }, response.status);
+}
+
+async function getSignerInbox(request: Request, url: URL, env: DemoEnv): Promise<Response> {
+  if ([...url.searchParams.keys()].some((key) => !["cursor"].includes(key))) {
+    throw new DemoError(400, "invalid signer inbox query");
+  }
+  const cursor = url.searchParams.get("cursor");
+  if (cursor && !/^\d+:wd_[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new DemoError(400, "invalid signer inbox cursor");
+  }
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `signer:${ip}` })).success) {
+    throw new DemoError(429, "signer inbox refresh limit reached; try again in a minute");
+  }
+  const query = new URLSearchParams({ status: "awaiting_signature", limit: "50" });
+  if (cursor) query.set("cursor", cursor);
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals?${query}`, {
+      headers: gatewayAuthorization(env),
+    }),
+  );
+  const body = await responseObject(response, 2_000_000);
+  if (!response.ok) throw new DemoError(502, "gateway signer inbox is unavailable");
+  return json(publicSignerInbox(body));
+}
+
+async function getDemoSwap(_request: Request, env: DemoEnv, swapId: string): Promise<Response> {
+  return json(await demoSwapState(env, swapId));
+}
+
+async function submitDemoSwapTransaction(
+  request: Request,
+  env: DemoEnv,
+  swapId: string,
+): Promise<Response> {
+  enforceSameOrigin(request);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `swap-submit:${ip}` })).success) {
+    throw new DemoError(429, "too many signed transaction attempts; try again in a minute");
+  }
+  const body = await readObject(request, 262_200);
+  rejectUnknownFields(body, ["rawTransaction"]);
+  const rawTransaction = signedRawTransaction(body);
+  const swapResponse = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/swaps/${swapId}`, {
+      headers: gatewayAuthorization(env),
+    }),
+  );
+  const swapBody = await responseObject(swapResponse, 2_000_000);
+  if (!swapResponse.ok) {
+    throw new DemoError(
+      swapResponse.status === 404 ? 404 : 502,
+      swapResponse.status === 404 ? "swap not found" : "gateway swap status is unavailable",
+    );
+  }
+  const swap = publicSwap(swapBody);
+  if (swap.id !== swapId || !demoResource(swap)) throw new DemoError(404, "swap not found");
+  const payoutId = awaitingSwapPayoutId(swap);
+  const response = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${payoutId}/transaction`, {
+      method: "POST",
+      headers: { ...gatewayAuthorization(env), "Content-Type": "application/json" },
+      body: JSON.stringify({ rawTransaction }),
+    }),
+  );
+  const responseBody = await responseObject(response, 2_000_000);
+  if (!response.ok) {
+    throw new DemoError(
+      response.status >= 500 ? 502 : response.status,
+      "gateway rejected the signed transaction",
+    );
+  }
+  return json(
+    { ...(await demoSwapState(env, swapId)), payout: publicWithdrawal(responseBody) },
+    response.status,
+  );
+}
+
+async function demoSwapState(env: DemoEnv, swapId: string): Promise<Record<string, unknown>> {
+  const headers = gatewayAuthorization(env);
+  const swapResponse = await env.GATEWAY.fetch(
+    new Request(`https://gateway.internal${GATEWAY_ROOT}/swaps/${swapId}`, { headers }),
+  );
+  const swapBody = await responseObject(swapResponse, 2_000_000);
+  if (!swapResponse.ok) throw new DemoError(502, "gateway swap status is unavailable");
+  const swap = publicSwap(swapBody);
+  if (swap.id !== swapId || !demoResource(swap)) throw new DemoError(404, "swap not found");
+  const depositIntentId = swap.depositIntentId as string;
+  const payoutId = swapPayoutId(swap);
+  const [intentResponse, sweepResponse, payoutResponse, webhookEvent] = await Promise.all([
+    env.GATEWAY.fetch(
+      new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${depositIntentId}`, {
+        headers,
+      }),
+    ),
+    env.GATEWAY.fetch(
+      new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${depositIntentId}/sweep`, {
+        headers,
+      }),
+    ),
+    payoutId
+      ? env.GATEWAY.fetch(
+          new Request(`https://gateway.internal${GATEWAY_ROOT}/withdrawals/${payoutId}/proposal`, {
+            headers,
+          }),
+        )
+      : null,
+    env.DEMO_EVENTS.get(`intent:${depositIntentId}`, "json"),
+  ]);
+  const [intent, sweep, payout] = await Promise.all([
+    responseObject(intentResponse, 2_000_000),
+    responseObject(sweepResponse, 1_000_000),
+    payoutResponse ? responseObject(payoutResponse, 2_000_000) : null,
+  ]);
+  if (!intentResponse.ok || !sweepResponse.ok || (payoutResponse && !payoutResponse.ok)) {
+    throw new DemoError(502, "gateway swap status is unavailable");
+  }
+  return {
+    swap,
+    intent: publicIntent(intent),
+    sweep,
+    webhookEvent,
+    payout: payout ? publicWithdrawal(payout) : null,
+  };
 }
 
 async function getDemoAnalytics(request: Request, env: DemoEnv): Promise<Response> {
@@ -190,21 +606,16 @@ async function getDemoAnalytics(request: Request, env: DemoEnv): Promise<Respons
   return json(publicAnalytics(body, env));
 }
 
-async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): Promise<Response> {
-  const authorization = request.headers.get("Authorization") ?? "";
-  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
-  if (!(await validAccessToken(token, intentId, env.DEMO_SESSION_SECRET))) {
-    throw new DemoError(401, "invalid demo access token");
-  }
-  const headers = {
-    Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
-  };
+async function getDemoIntent(_request: Request, env: DemoEnv, intentId: string): Promise<Response> {
+  const headers = gatewayAuthorization(env);
   const [intentResponse, sweepResponse, webhookEvent] = await Promise.all([
     env.GATEWAY.fetch(
-      new Request(`https://gateway.internal${GATEWAY_ROOT}/intents/${intentId}`, { headers }),
+      new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${intentId}`, { headers }),
     ),
     env.GATEWAY.fetch(
-      new Request(`https://gateway.internal${GATEWAY_ROOT}/intents/${intentId}/sweep`, { headers }),
+      new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${intentId}/sweep`, {
+        headers,
+      }),
     ),
     env.DEMO_EVENTS.get(`intent:${intentId}`, "json"),
   ]);
@@ -212,9 +623,19 @@ async function getDemoIntent(request: Request, env: DemoEnv, intentId: string): 
     responseObject(intentResponse, 2_000_000),
     responseObject(sweepResponse, 1_000_000),
   ]);
-  if (!intentResponse.ok || !sweepResponse.ok)
-    throw new DemoError(502, "gateway status is unavailable");
-  return json({ intent: publicIntent(intent), sweep, webhookEvent });
+  if (!intentResponse.ok || !sweepResponse.ok) {
+    throw new DemoError(
+      intentResponse.status === 404 || sweepResponse.status === 404 ? 404 : 502,
+      intentResponse.status === 404 || sweepResponse.status === 404
+        ? "deposit not found"
+        : "gateway status is unavailable",
+    );
+  }
+  const publicValue = publicIntent(intent);
+  if (publicValue.id !== intentId || !demoResource(publicValue)) {
+    throw new DemoError(404, "deposit not found");
+  }
+  return json({ intent: publicValue, sweep, webhookEvent });
 }
 
 async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response> {
@@ -253,34 +674,48 @@ async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response>
   if (!isObject(event) || event.id !== eventId || !isObject(event.data)) {
     throw new DemoError(400, "invalid webhook body");
   }
-  if (event.type !== "payment.succeeded" && event.type !== "payment.reorged") {
+  if (event.type !== "deposit.succeeded" && event.type !== "deposit.reorged") {
     throw new DemoError(400, "unsupported webhook event");
   }
-  const paymentIntent = event.data.paymentIntent;
+  const depositIntent = event.data.depositIntent;
   if (
-    !isObject(paymentIntent) ||
-    typeof paymentIntent.id !== "string" ||
-    !/^pi_[A-Za-z0-9_-]+$/.test(paymentIntent.id)
+    !isObject(depositIntent) ||
+    typeof depositIntent.id !== "string" ||
+    !/^di_[A-Za-z0-9_-]+$/.test(depositIntent.id)
   ) {
     throw new DemoError(400, "invalid webhook body");
   }
   await env.DEMO_EVENTS.put(
-    `intent:${paymentIntent.id}`,
+    `intent:${depositIntent.id}`,
     JSON.stringify({
       id: eventId,
       type: event.type,
       createdAt: event.createdAt,
-      paymentIntent: {
-        id: paymentIntent.id,
-        status: paymentIntent.status,
-        receivedUnits: paymentIntent.receivedUnits,
-        confirmedUnits: paymentIntent.confirmedUnits,
-        transactionHashes: paymentIntent.transactionHashes,
+      depositIntent: {
+        id: depositIntent.id,
+        status: depositIntent.status,
+        receivedUnits: depositIntent.receivedUnits,
+        confirmedUnits: depositIntent.confirmedUnits,
+        transactionHashes: depositIntent.transactionHashes,
       },
     }),
     { expirationTtl: 7 * 24 * 60 * 60 },
   );
   return new Response(null, { status: 204 });
+}
+
+async function requireTurnstile(
+  token: string,
+  ip: string,
+  request: Request,
+  env: DemoEnv,
+): Promise<void> {
+  if (!token || token.length > 2_048) throw new DemoError(400, "complete the security check");
+  if (
+    !(await verifyTurnstile(token, ip, new URL(request.url).hostname, env.TURNSTILE_SECRET_KEY))
+  ) {
+    throw new DemoError(403, "security check failed; try again");
+  }
 }
 
 async function verifyTurnstile(
@@ -331,12 +766,12 @@ function amountConfig(option: DemoOption): {
 
 function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
   const id = value.id;
-  if (typeof id !== "string" || !/^pi_[A-Za-z0-9_-]+$/.test(id)) {
+  if (typeof id !== "string" || !/^di_[A-Za-z0-9_-]+$/.test(id)) {
     throw new DemoError(502, "gateway returned an invalid intent");
   }
   const fields = [
     "id",
-    "kind",
+    "purpose",
     "externalId",
     "chain",
     "chainId",
@@ -360,6 +795,182 @@ function publicIntent(value: Record<string, unknown>): Record<string, unknown> {
     "createdAt",
     "updatedAt",
   ];
+  return publicFields(value, fields);
+}
+
+function publicSwap(value: Record<string, unknown>): Record<string, unknown> {
+  const id = value.id;
+  const depositIntentId = value.depositIntentId;
+  if (
+    typeof id !== "string" ||
+    !/^swp_[A-Za-z0-9_-]+$/.test(id) ||
+    typeof depositIntentId !== "string" ||
+    !/^di_[A-Za-z0-9_-]+$/.test(depositIntentId) ||
+    !isObject(value.input) ||
+    !isObject(value.output) ||
+    !isObject(value.refund)
+  ) {
+    throw new DemoError(502, "gateway returned an invalid swap");
+  }
+  const result = publicFields(value, [
+    "id",
+    "externalId",
+    "depositIntentId",
+    "withdrawalIntentId",
+    "status",
+    "quoteExpiresAt",
+    "lastError",
+    "completedAt",
+    "createdAt",
+    "updatedAt",
+  ]);
+  result.input = publicFields(value.input, [
+    "chain",
+    "chainId",
+    "asset",
+    "expectedAmount",
+    "expectedUnits",
+    "receivedUnits",
+    "confirmedUnits",
+    "depositAddress",
+    "depositStatus",
+    "collectionStatus",
+    "collectedUnits",
+  ]);
+  result.output = publicFields(value.output, [
+    "chain",
+    "chainId",
+    "asset",
+    "amount",
+    "amountUnits",
+    "sourceAddress",
+    "destinationAddress",
+    "withdrawalStatus",
+  ]);
+  result.refund = publicFields(value.refund, [
+    "address",
+    "sourceAddress",
+    "withdrawalIntentId",
+    "withdrawalStatus",
+  ]);
+  return result;
+}
+
+function publicWithdrawal(value: Record<string, unknown>): Record<string, unknown> {
+  const id = value.id;
+  if (typeof id !== "string" || !/^wd_[A-Za-z0-9_-]+$/.test(id)) {
+    throw new DemoError(502, "gateway returned an invalid withdrawal");
+  }
+  const result = publicFields(value, [
+    "id",
+    "purpose",
+    "externalId",
+    "chain",
+    "chainId",
+    "asset",
+    "amount",
+    "amountUnits",
+    "sourceAddress",
+    "destinationAddress",
+    "requiredConfirmations",
+    "status",
+    "expiresAt",
+    "completedAt",
+    "lastError",
+    "createdAt",
+    "updatedAt",
+    "swapId",
+    "depositIntentId",
+  ]);
+  if (isObject(value.proposal)) {
+    result.proposal = publicFields(value.proposal, [
+      "chainId",
+      "from",
+      "to",
+      "value",
+      "data",
+      "amount",
+      "asset",
+      "maxGas",
+      "maxGasPriceWei",
+    ]);
+  }
+  result.transaction = isObject(value.transaction)
+    ? publicFields(value.transaction, [
+        "hash",
+        "from",
+        "to",
+        "nonce",
+        "feeWei",
+        "status",
+        "blockNumber",
+        "lastError",
+        "explorerUrl",
+      ])
+    : null;
+  return result;
+}
+
+function publicSignerInbox(value: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(value.items)) throw new DemoError(502, "gateway returned an invalid inbox");
+  const nextCursor = value.nextCursor;
+  if (nextCursor !== null && !/^\d+:wd_[A-Za-z0-9_-]+$/.test(String(nextCursor))) {
+    throw new DemoError(502, "gateway returned an invalid inbox");
+  }
+  return {
+    items: value.items
+      .map((item) => {
+        if (!isObject(item)) throw new DemoError(502, "gateway returned an invalid inbox");
+        return publicWithdrawal(item);
+      })
+      .filter(demoResource),
+    nextCursor,
+  };
+}
+
+function demoResource(value: Record<string, unknown>): boolean {
+  return typeof value.externalId === "string" && value.externalId.startsWith("demo_");
+}
+
+function swapPayoutId(swap: Record<string, unknown>): string {
+  const refund = swap.refund;
+  if (
+    isObject(refund) &&
+    typeof refund.withdrawalIntentId === "string" &&
+    /^wd_[A-Za-z0-9_-]+$/.test(refund.withdrawalIntentId) &&
+    (String(swap.status).startsWith("refund_") || swap.status === "refunded")
+  ) {
+    return refund.withdrawalIntentId;
+  }
+  return typeof swap.withdrawalIntentId === "string" &&
+    /^wd_[A-Za-z0-9_-]+$/.test(swap.withdrawalIntentId)
+    ? swap.withdrawalIntentId
+    : "";
+}
+
+function awaitingSwapPayoutId(swap: Record<string, unknown>): string {
+  const output = swap.output;
+  if (
+    isObject(output) &&
+    output.withdrawalStatus === "awaiting_signature" &&
+    typeof swap.withdrawalIntentId === "string" &&
+    /^wd_[A-Za-z0-9_-]+$/.test(swap.withdrawalIntentId)
+  ) {
+    return swap.withdrawalIntentId;
+  }
+  const refund = swap.refund;
+  if (
+    isObject(refund) &&
+    refund.withdrawalStatus === "awaiting_signature" &&
+    typeof refund.withdrawalIntentId === "string" &&
+    /^wd_[A-Za-z0-9_-]+$/.test(refund.withdrawalIntentId)
+  ) {
+    return refund.withdrawalIntentId;
+  }
+  throw new DemoError(409, "swap has no transaction awaiting signature");
+}
+
+function publicFields(value: Record<string, unknown>, fields: string[]): Record<string, unknown> {
   return Object.fromEntries(
     fields.filter((field) => field in value).map((field) => [field, value[field]]),
   );
@@ -395,6 +1006,8 @@ function publicAnalytics(value: Record<string, unknown>, env: DemoEnv): Record<s
         collectedAmount: formatUnits(analyticsUnits(row.collectedUnits), option.decimals),
       };
     }),
+    withdrawals: analyticsWithdrawalStatuses(value.withdrawalsByPurpose),
+    swaps: analyticsStatuses(value.swaps),
     generatedAt:
       typeof value.generatedAt === "string" && Number.isFinite(Date.parse(value.generatedAt))
         ? value.generatedAt
@@ -402,10 +1015,57 @@ function publicAnalytics(value: Record<string, unknown>, env: DemoEnv): Record<s
   };
 }
 
+function analyticsStatuses(value: unknown): Record<string, number> {
+  if (!isObject(value)) throw new DemoError(502, "gateway returned invalid analytics");
+  return Object.fromEntries(
+    Object.entries(value).map(([status, count]) => {
+      if (!/^[a-z_]{1,40}$/.test(status)) {
+        throw new DemoError(502, "gateway returned invalid analytics");
+      }
+      return [status, analyticsInteger(count)];
+    }),
+  );
+}
+
+function analyticsWithdrawalStatuses(value: unknown): Record<string, number> {
+  if (!isObject(value)) throw new DemoError(502, "gateway returned invalid analytics");
+  return analyticsStatuses(value.withdrawal);
+}
+
 function demoOption(env: DemoEnv, chain: string, asset: string): DemoOption {
   const option = demoOptions(env).find((item) => item.chain === chain && item.asset === asset);
   if (!option) throw new DemoError(400, "unsupported demo network or asset");
   return option;
+}
+
+function demoAddress(value: Record<string, unknown>, key: string): string {
+  const address = stringField(value, key);
+  if (!/^0x[0-9a-f]{40}$/i.test(address) || /^0x0{40}$/i.test(address)) {
+    const label =
+      key === "walletAddress"
+        ? "wallet address"
+        : key === "refundAddress"
+          ? "refund address"
+          : "destination address";
+    throw new DemoError(400, `enter a valid ${label}`);
+  }
+  return address;
+}
+
+function demoIdempotencyKey(value: Record<string, unknown>): string {
+  const key = stringField(value, "idempotencyKey");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(key)) {
+    throw new DemoError(400, "idempotencyKey must be a UUID");
+  }
+  return key;
+}
+
+function signedRawTransaction(value: Record<string, unknown>): string {
+  const raw = stringField(value, "rawTransaction");
+  if (!/^0x(?:[0-9a-f]{2})+$/i.test(raw) || raw.length > 262_146) {
+    throw new DemoError(400, "enter a valid signed raw transaction");
+  }
+  return raw;
 }
 
 function demoOptions(env: DemoEnv): DemoOption[] {
@@ -507,47 +1167,15 @@ function analyticsUnits(value: unknown): bigint {
   return BigInt(value);
 }
 
-async function issueAccessToken(
-  intentId: string,
-  expiresAt: number,
-  secret: string,
-): Promise<string> {
-  const payload = base64Url(new TextEncoder().encode(JSON.stringify({ intentId, expiresAt })));
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    await hmacKey(requiredSecret(secret, "DEMO_SESSION_SECRET", 32)),
-    new TextEncoder().encode(payload),
-  );
-  return `${payload}.${base64Url(new Uint8Array(signature))}`;
+function gatewayAuthorization(env: DemoEnv): Record<string, string> {
+  return {
+    Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
+  };
 }
 
-async function validAccessToken(token: string, intentId: string, secret: string): Promise<boolean> {
-  if (token.length > 4_096) return false;
-  const [payload, encodedSignature, extra] = token.split(".");
-  if (!payload || !encodedSignature || extra) return false;
-  let signature: ArrayBuffer;
-  let parsed: unknown;
-  try {
-    signature = fromBase64Url(encodedSignature);
-    parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(payload)));
-  } catch {
-    return false;
-  }
-  if (
-    !isObject(parsed) ||
-    parsed.intentId !== intentId ||
-    typeof parsed.expiresAt !== "number" ||
-    !Number.isSafeInteger(parsed.expiresAt) ||
-    parsed.expiresAt < Date.now()
-  ) {
-    return false;
-  }
-  return crypto.subtle.verify(
-    "HMAC",
-    await hmacKey(requiredSecret(secret, "DEMO_SESSION_SECRET", 32)),
-    signature,
-    new TextEncoder().encode(payload),
-  );
+function enforceSameOrigin(request: Request): void {
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== new URL(request.url).origin) throw new DemoError(403, "invalid origin");
 }
 
 async function readObject(
@@ -661,23 +1289,6 @@ function hexBytes(value: string): ArrayBuffer {
   for (let index = 0; index < bytes.length; index++) {
     bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
   }
-  return bytes.buffer;
-}
-
-function base64Url(value: Uint8Array): string {
-  let binary = "";
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(value: string): ArrayBuffer {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid base64url");
-  const padded =
-    value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - (value.length % 4)) % 4);
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  if (base64Url(bytes) !== value) throw new Error("non-canonical base64url");
   return bytes.buffer;
 }
 

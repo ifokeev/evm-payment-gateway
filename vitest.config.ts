@@ -6,12 +6,15 @@ import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH as factoryCodeHash } from "
 const relayer = privateKeyToAccount(
   "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
 );
+const treasury = privateKeyToAccount(
+  "0x1111111111111111111111111111111111111111111111111111111111111111",
+);
 const network = JSON.stringify([
   {
     name: "test",
     chainId: 1337,
     rpcUrls: ["https://rpc.test"],
-    treasuryAddress: "0x2222222222222222222222222222222222222222",
+    treasuryAddress: treasury.address,
     factoryAddress: "0x3333333333333333333333333333333333333333",
     factoryCodeHash,
     relayerAddress: relayer.address,

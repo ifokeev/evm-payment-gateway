@@ -14,7 +14,7 @@
     "deploy:demo": "wrangler deploy --env testnet --config wrangler.demo.jsonc --secrets-file .demo.secrets",
     "deploy:dry-run": "wrangler deploy --dry-run --env testnet --config wrangler.api.jsonc --secrets-file .api.secrets.example && wrangler deploy --dry-run --env testnet --config wrangler.sweeper.jsonc --secrets-file .sweeper.secrets.example && wrangler deploy --dry-run --env mainnet --config wrangler.api.jsonc --secrets-file .api.secrets.example && wrangler deploy --dry-run --env mainnet --config wrangler.sweeper.jsonc --secrets-file .sweeper.secrets.example && wrangler deploy --dry-run --env testnet --config wrangler.demo.jsonc --secrets-file .demo.secrets.example",
     "dev": "wrangler dev --env testnet --config wrangler.api.jsonc",
-    "dev:demo": "wrangler dev --env testnet --config wrangler.demo.jsonc --env-file .demo.secrets",
+    "dev:demo": "TURNSTILE_SITE_KEY=1x00000000000000000000AA TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA wrangler dev --env testnet --config wrangler.demo.jsonc --env-file .demo.secrets --port 8788",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "prepare": "husky",

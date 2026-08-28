@@ -5,75 +5,128 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Create and complete testnet payments on Base, Ethereum, and BNB Chain."
+      content="Try testnet deposits, withdrawals, and cross-chain swaps on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/app.js"></script>
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/" aria-label="EVM Payment Gateway demo home">
+      <a class="brand" href="/">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>EVM Payment Gateway</span>
+        <span class="brand-copy">
+          <strong>EVM Payment Gateway</strong>
+          <small id="header-context">Live testnet demo</small>
+        </span>
       </a>
-      <span class="header-divider" aria-hidden="true"></span>
-      <p id="header-context" class="header-context">Live multichain demo</p>
       <nav class="header-actions" aria-label="Demo links">
+        <a class="header-nav-link" href="/signer">Signer</a>
+        <a class="header-nav-link" href="/analytics">Analytics</a>
         <span class="environment-label">Testnet</span>
         <a
           class="header-link"
           href="https://github.com/ifokeev/evm-payment-gateway"
           rel="noreferrer"
         >
-          Self-hosted
+          GitHub
         </a>
       </nav>
     </header>
 
-    <main class="page-shell">
+    <main class="page-shell" data-flow="deposit" data-stage="empty">
       <section class="intro" aria-labelledby="page-title">
         <div class="intro-content">
           <div>
-            <h1 id="page-title"><span>Pay crypto.</span><span>See each step.</span></h1>
-            <p class="intro-copy">
-              Create an exact testnet payment on Base, Ethereum, or BNB Chain and follow it to
-              treasury collection.
+            <h1 id="page-title">Deposit crypto.</h1>
+            <p id="intro-copy" class="intro-copy">
+              Create an exact testnet payment and follow it to treasury collection.
             </p>
           </div>
 
+          <div class="flow-tabs" role="tablist" aria-label="Gateway flow">
+            <button class="flow-tab" type="button" role="tab" data-flow="deposit" aria-selected="true">
+              Deposit
+            </button>
+            <button class="flow-tab" type="button" role="tab" data-flow="withdrawal" aria-selected="false">
+              Withdraw
+            </button>
+            <button class="flow-tab" type="button" role="tab" data-flow="swap" aria-selected="false">
+              Swap
+            </button>
+          </div>
+
           <form id="payment-form" class="payment-form" novalidate>
+            <h2 id="form-title" class="form-title">Create deposit</h2>
             <div class="network-fields">
               <div class="field">
-                <label for="network">Network</label>
+                <label id="network-label" for="network">Network</label>
                 <div class="select-control">
                   <select id="network" name="network" disabled></select>
                 </div>
               </div>
 
               <div class="field">
-                <label for="asset">Asset</label>
+                <label id="asset-title" for="asset">Asset</label>
                 <div class="select-control">
                   <select id="asset" name="asset" disabled></select>
                 </div>
               </div>
             </div>
 
-            <div class="field">
-              <label for="purpose">Use case</label>
-              <div class="select-control">
-                <select id="purpose" name="purpose">
-                  <option value="checkout">Checkout payment</option>
-                  <option value="account_top_up" selected>Account top-up</option>
-                </select>
+            <div id="output-fields" class="field" hidden>
+              <div class="network-fields">
+                <div class="field">
+                  <label for="output-network">Output network</label>
+                  <div class="select-control">
+                    <select id="output-network" name="outputNetwork" disabled></select>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="output-asset">Output asset</label>
+                  <div class="select-control">
+                    <select id="output-asset" name="outputAsset" disabled></select>
+                  </div>
+                </div>
               </div>
-              <p id="purpose-help" class="field-help">
-                The user chooses the amount before the app creates an exact payment intent.
-              </p>
+              <div class="amount-control">
+                <input
+                  id="output-amount"
+                  name="outputAmount"
+                  type="text"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  aria-label="Fixed output amount"
+                  readonly
+                />
+                <span id="output-asset-label"></span>
+              </div>
+              <p class="field-help">The demo uses fixed testnet amounts. This value is not a market quote.</p>
             </div>
 
-            <div class="field">
-              <label for="amount">Amount</label>
+            <div id="destination-field" class="field" hidden>
+              <label id="destination-label" for="destination-address">Destination address</label>
+              <input
+                id="destination-address"
+                name="destinationAddress"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x..."
+                aria-describedby="destination-help destination-error"
+                disabled
+              />
+              <p id="destination-help" class="field-help">
+                Review this recipient before you approve the withdrawal.
+              </p>
+              <p id="destination-error" class="field-error" role="alert"></p>
+            </div>
+
+            <div id="amount-field" class="field">
+              <label id="amount-title" for="amount">Amount</label>
               <div class="amount-control">
                 <input
                   id="amount"
@@ -98,61 +151,31 @@
               aria-label="Security check"
             ></fieldset>
             <button id="create-button" class="primary-button" type="submit" disabled>
-              Create payment
+              Create deposit
             </button>
-          </form>
 
-          <div class="testnet-note">
-            <span class="note-icon" aria-hidden="true">i</span>
-            <p>Testnet assets have no monetary value</p>
-          </div>
+            <div class="testnet-note">
+              <span class="note-icon" aria-hidden="true">i</span>
+              <p>Testnet assets have no monetary value</p>
+            </div>
+          </form>
         </div>
       </section>
 
-      <section class="payment-stage" aria-label="Payment status">
-        <section
-          id="analytics-panel"
-          class="analytics-panel"
-          aria-labelledby="analytics-title"
-          data-state="loading"
-        >
-          <header class="analytics-heading">
-            <div>
-              <h2 id="analytics-title">Live testnet totals</h2>
-              <p id="analytics-context">Aggregate activity for this deployment.</p>
-            </div>
-            <p id="analytics-updated" role="status">Loading totals...</p>
-          </header>
-          <dl id="analytics-grid" class="analytics-grid" aria-busy="true">
-            <div>
-              <dt>Payment intents</dt>
-              <dd id="analytics-intents">...</dd>
-            </div>
-            <div>
-              <dt>Paid intents</dt>
-              <dd id="analytics-paid">...</dd>
-            </div>
-            <div>
-              <dt>Confirmed volume</dt>
-              <dd><span id="analytics-confirmed">...</span> <small>USDC</small></dd>
-            </div>
-            <div>
-              <dt>Treasury collected</dt>
-              <dd><span id="analytics-collected">...</span> <small>USDC</small></dd>
-            </div>
-          </dl>
-        </section>
-
+      <section class="payment-stage" aria-label="Gateway flow status">
         <div id="empty-state" class="empty-state">
+          <h2 id="lifecycle-title" class="lifecycle-title">Deposit lifecycle</h2>
           <div class="empty-heading">
-            <p class="status-label">Demo ready</p>
-            <h2>Payment activity will appear here.</h2>
-            <p>Create an intent to receive a unique address, QR code, and wallet link.</p>
+            <p class="status-label">Ready to create</p>
+            <h2 id="empty-title">Receive funds at a unique address.</h2>
+            <p id="empty-detail">Create an intent to receive a unique address, QR code, and wallet link.</p>
           </div>
           <div class="empty-flow">
-            <div><strong>On-chain activity</strong><span>Waiting for payment</span></div>
-            <div><strong>Signed webhook</strong><span>Waiting for confirmation</span></div>
-            <div><strong>Treasury collection</strong><span>Waiting for settlement</span></div>
+            <div><strong id="empty-step-one">Create deposit</strong><span id="empty-step-one-detail">Ready</span></div>
+            <div><strong id="empty-step-two">Waiting for payment</strong><span id="empty-step-two-detail">Pending</span></div>
+            <div><strong id="empty-step-three">Confirmations</strong><span id="empty-step-three-detail">Pending</span></div>
+            <div><strong id="empty-step-four">Treasury collection</strong><span id="empty-step-four-detail">Pending</span></div>
+            <div><strong id="empty-step-five">Complete</strong><span id="empty-step-five-detail">Pending</span></div>
           </div>
         </div>
 
@@ -164,7 +187,7 @@
               <span></span><strong></strong><span></span><span></span>
             </div>
           </div>
-          <p>Allocating a dedicated payment address...</p>
+          <p id="loading-message">Allocating a dedicated deposit address...</p>
         </div>
 
         <div id="intent-state" hidden>
@@ -176,6 +199,21 @@
                 <p id="status-detail" class="status-detail">Waiting for an on-chain transfer.</p>
               </div>
             </div>
+
+            <dl id="swap-route-summary" class="swap-route-summary" hidden>
+              <div>
+                <dt>Input</dt>
+                <dd id="swap-input-route"></dd>
+              </div>
+              <div>
+                <dt>Output</dt>
+                <dd id="swap-output-route"></dd>
+              </div>
+              <div>
+                <dt>User wallet</dt>
+                <dd><code id="swap-destination"></code></dd>
+              </div>
+            </dl>
 
             <div id="payment-content" class="payment-content">
               <div class="qr-panel">
@@ -210,7 +248,10 @@
 
             <div id="payment-closed" class="payment-closed" hidden>
               <strong id="payment-closed-title">Payment link unavailable</strong>
-              <p id="payment-closed-detail">Create a new payment intent to continue.</p>
+              <p id="payment-closed-detail">Create a new deposit intent to continue.</p>
+              <button id="create-another" class="secondary-button" type="button">
+                Create new deposit
+              </button>
             </div>
           </div>
 
@@ -234,7 +275,7 @@
               <div class="activity-body">
                 <div class="activity-heading">
                   <div class="activity-title">
-                    <h3 id="delivery-title">Signed webhook</h3>
+                    <h3 id="delivery-title">Payment update</h3>
                     <span id="delivery-badge" class="activity-status">Waiting</span>
                   </div>
                 </div>
@@ -257,15 +298,147 @@
                 </div>
               </div>
             </section>
+            <section id="swap-output-activity" class="activity-section" data-state="idle" hidden>
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-heading">
+                  <div class="activity-title">
+                    <h3 id="swap-output-title">Swap output</h3>
+                    <span id="swap-output-badge" class="activity-status">Waiting</span>
+                  </div>
+                </div>
+                <div id="swap-output-status" class="activity-content">
+                  <p class="muted">The output starts after treasury collection.</p>
+                </div>
+              </div>
+            </section>
           </div>
 
           <dl class="intent-meta">
             <div><dt>Network</dt><dd id="metadata-network">Base Sepolia</dd></div>
-            <div><dt>Payment ID</dt><dd id="intent-id"></dd></div>
+            <div><dt id="intent-id-label">Deposit ID</dt><dd id="intent-id"></dd></div>
             <div><dt>Created</dt><dd id="created-time"></dd></div>
             <div><dt>Expires in</dt><dd id="expiry-time"></dd></div>
           </dl>
         </div>
+
+        <div id="withdrawal-state" hidden>
+          <div class="payment-panel">
+            <div id="withdrawal-header" class="intent-header">
+              <span class="status-orbit" aria-hidden="true"></span>
+              <div>
+                <h2 id="withdrawal-status-title" class="status-label">Approval required</h2>
+                <p id="withdrawal-status-detail" class="status-detail">
+                  Review and approve the exact proposal.
+                </p>
+              </div>
+            </div>
+
+            <div class="withdrawal-summary">
+              <div>
+                <span class="detail-label">Withdrawal amount</span>
+                <p class="amount-due">
+                  <strong id="withdrawal-amount">0</strong>
+                  <span id="withdrawal-asset">USDC</span>
+                </p>
+              </div>
+              <dl class="route-grid">
+                <div><dt>Treasury source</dt><dd><code id="withdrawal-source"></code></dd></div>
+                <div><dt>User destination</dt><dd><code id="withdrawal-destination"></code></dd></div>
+              </dl>
+            </div>
+            <button
+              id="withdrawal-create-another"
+              class="secondary-button terminal-action"
+              type="button"
+              hidden
+            >
+              Create new withdrawal
+            </button>
+          </div>
+
+          <div class="activity-list">
+            <section id="proposal-activity" class="activity-section" data-state="success">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-title">
+                  <h3>Withdrawal proposal</h3>
+                  <span id="proposal-badge" class="activity-status">Ready</span>
+                </div>
+                <div id="proposal-status" class="activity-content">
+                  <p class="muted">Exact amount and destination are locked.</p>
+                </div>
+              </div>
+            </section>
+            <section id="signature-activity" class="activity-section" data-state="active">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-title">
+                  <h3>Transaction approval</h3>
+                  <span id="signature-badge" class="activity-status">Waiting</span>
+                </div>
+                <div id="signature-status" class="activity-content">
+                  <p class="muted">Waiting for transaction approval.</p>
+                </div>
+              </div>
+            </section>
+            <section id="withdrawal-chain-activity" class="activity-section" data-state="idle">
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-body">
+                <div class="activity-title">
+                  <h3>Network settlement</h3>
+                  <span id="withdrawal-chain-badge" class="activity-status">Waiting</span>
+                </div>
+                <div id="withdrawal-chain-status" class="activity-content">
+                  <p class="muted">Broadcast starts after signature validation.</p>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <dl class="intent-meta">
+            <div><dt>Network</dt><dd id="withdrawal-network"></dd></div>
+            <div><dt>Withdrawal ID</dt><dd id="withdrawal-id"></dd></div>
+            <div><dt>Created</dt><dd id="withdrawal-created"></dd></div>
+            <div><dt>Expires in</dt><dd id="withdrawal-expiry"></dd></div>
+          </dl>
+        </div>
+
+        <section id="signer-panel" class="signer-panel" aria-labelledby="signer-title" hidden>
+          <header>
+            <div>
+              <h3 id="signer-title">Transaction approval</h3>
+              <p>Compare this proposal with your records before you sign it.</p>
+            </div>
+            <button id="copy-proposal" class="secondary-button" type="button">Copy proposal</button>
+          </header>
+          <dl class="proposal-grid">
+            <div><dt>Chain ID</dt><dd id="proposal-chain"></dd></div>
+            <div><dt>Transaction target</dt><dd><code id="proposal-to"></code></dd></div>
+            <div><dt>Native value</dt><dd id="proposal-value"></dd></div>
+            <div><dt>Maximum gas</dt><dd id="proposal-gas"></dd></div>
+            <div><dt>Maximum gas price</dt><dd id="proposal-gas-price"></dd></div>
+            <div class="proposal-data"><dt>Calldata</dt><dd><code id="proposal-data"></code></dd></div>
+          </dl>
+          <form id="signed-transaction-form" class="signed-transaction-form">
+            <label for="raw-transaction">Signed raw transaction</label>
+            <textarea
+              id="raw-transaction"
+              rows="4"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="0x..."
+              aria-describedby="raw-transaction-help raw-transaction-error"
+            ></textarea>
+            <p id="raw-transaction-help" class="signer-help">
+              Sign the proposal, then paste the serialized transaction here.
+            </p>
+            <p id="raw-transaction-error" class="field-error" role="alert"></p>
+            <button id="submit-transaction" class="primary-button" type="submit">
+              Submit signed transaction
+            </button>
+          </form>
+        </section>
 
         <div id="global-error" class="global-error" role="alert" hidden></div>
       </section>

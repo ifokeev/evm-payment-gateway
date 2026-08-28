@@ -1,7 +1,7 @@
 import { type Address, getAddress, isAddress, isAddressEqual, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH } from "./contracts.generated";
-import type { NetworkConfig, PaymentStatus, TokenConfig } from "./types";
+import type { DepositStatus, NetworkConfig, TokenConfig } from "./types";
 
 const UINT256_MAX = (1n << 256n) - 1n;
 
@@ -32,7 +32,7 @@ export function deriveStatus(
   expected: bigint,
   expired: boolean,
   reorged: boolean,
-): PaymentStatus {
+): DepositStatus {
   if (confirmed >= expected) return "paid";
   if (reorged) return "reorged";
   if (received >= expected) return "confirming";
@@ -104,6 +104,10 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
       stringField(item, "treasuryAddress"),
       `treasury address for ${name}`,
     );
+    const configuredWithdrawalSource = optionalString(item, "withdrawalSourceAddress").trim();
+    const withdrawalSourceAddress = configuredWithdrawalSource
+      ? checkedAddress(configuredWithdrawalSource, `withdrawal source address for ${name}`)
+      : treasuryAddress;
     const factoryAddress = checkedAddress(
       stringField(item, "factoryAddress"),
       `factory address for ${name}`,
@@ -122,9 +126,11 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
     if (
       isAddressEqual(factoryAddress, treasuryAddress) ||
       isAddressEqual(relayerAddress, treasuryAddress) ||
+      isAddressEqual(factoryAddress, withdrawalSourceAddress) ||
+      isAddressEqual(relayerAddress, withdrawalSourceAddress) ||
       isAddressEqual(relayerAddress, factoryAddress)
     ) {
-      throw new Error(`factory, relayer, and treasury must differ for ${name}`);
+      throw new Error(`factory, relayer, treasury, and withdrawal source must differ for ${name}`);
     }
     if (result.has(name) || chainIds.has(chainId))
       throw new Error(`duplicate network name or chain ID: ${name}`);
@@ -143,6 +149,8 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
       );
       if (isAddressEqual(address, treasuryAddress))
         throw new Error(`token address must not match treasury for ${name}/${symbol}`);
+      if (isAddressEqual(address, withdrawalSourceAddress))
+        throw new Error(`token address must not match withdrawal source for ${name}/${symbol}`);
       if (isAddressEqual(address, factoryAddress) || isAddressEqual(address, relayerAddress))
         throw new Error(`token address must not match factory or relayer for ${name}/${symbol}`);
       tokens[symbol] = {
@@ -168,6 +176,7 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
       chainId,
       rpcUrls: normalizedRpcUrls,
       treasuryAddress,
+      withdrawalSourceAddress,
       factoryAddress,
       factoryCodeHash: factoryCodeHash.toLowerCase() as `0x${string}`,
       relayerAddress,
@@ -195,7 +204,7 @@ export function stableStringify(value: unknown): string {
 
 export function eligibleForSweep(
   isToken: boolean,
-  status: PaymentStatus,
+  status: DepositStatus,
   confirmed: bigint,
   expected: bigint,
   expiredWithGrace: boolean,

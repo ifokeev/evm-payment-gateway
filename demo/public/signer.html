@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Review testnet withdrawal, swap output, and refund proposals."
+    />
+    <title>EVM Payment Gateway - Signer inbox</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/signer.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-copy">
+          <strong>EVM Payment Gateway</strong>
+          <small>Live testnet demo</small>
+        </span>
+      </a>
+      <nav class="header-actions" aria-label="Demo links">
+        <a class="header-nav-link" href="/">Demo</a>
+        <a class="header-nav-link" href="/analytics">Analytics</a>
+        <span class="environment-label">Testnet</span>
+        <a
+          class="header-link"
+          href="https://github.com/ifokeev/evm-payment-gateway"
+          rel="noreferrer"
+        >
+          GitHub
+        </a>
+      </nav>
+    </header>
+
+    <main id="signer-main" class="signer-page" aria-busy="true">
+      <header class="signer-intro">
+        <div>
+          <h1>Signer inbox.</h1>
+          <p>Review withdrawals, swap outputs, and refunds waiting for treasury approval.</p>
+          <p class="signer-warning">Public testnet view. Never paste a private key.</p>
+        </div>
+        <button id="refresh-inbox" class="secondary-button" type="button">Refresh</button>
+      </header>
+
+      <p id="signer-error" class="analytics-error" role="alert" hidden></p>
+
+      <div class="signer-layout">
+        <section class="analytics-section signer-inbox" aria-labelledby="inbox-title">
+          <header>
+            <h2 id="inbox-title">Awaiting signature</h2>
+            <span id="inbox-count" aria-live="polite">Loading...</span>
+          </header>
+          <div id="inbox-list" class="inbox-list"></div>
+          <button id="load-more" class="secondary-button inbox-more" type="button" hidden>
+            Load more
+          </button>
+        </section>
+
+        <section class="analytics-section signer-review" aria-labelledby="review-title">
+          <div id="review-empty" class="review-empty">
+            <span class="status-orbit" aria-hidden="true"><i></i></span>
+            <h2 id="review-title">Select a proposal</h2>
+            <p>Open a queue item to inspect the exact transaction before signing.</p>
+          </div>
+
+          <div id="review-content" hidden>
+            <header class="review-header">
+              <div>
+                <span id="review-purpose" class="purpose-badge"></span>
+                <h2 id="review-amount">Proposal amount</h2>
+                <p id="review-reference"></p>
+              </div>
+              <span class="status-label">Awaiting signature</span>
+            </header>
+
+            <dl id="review-summary" class="review-summary"></dl>
+
+            <form id="signer-form" class="signed-transaction-form">
+              <label for="signed-transaction">Signed raw transaction</label>
+              <textarea
+                id="signed-transaction"
+                name="rawTransaction"
+                placeholder="0x..."
+                spellcheck="false"
+                required
+              ></textarea>
+              <p class="signer-help">
+                Sign the exact proposal in your external treasury system, then paste only the raw
+                signed transaction.
+              </p>
+              <button class="primary-button" type="submit">Submit signed transaction</button>
+            </form>
+          </div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

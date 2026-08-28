@@ -7,6 +7,7 @@ export type NetworkConfig = {
   chainId: number;
   rpcUrls: string[];
   treasuryAddress: Address;
+  withdrawalSourceAddress: Address;
   factoryAddress: Address;
   factoryCodeHash: Hex;
   relayerAddress: Address;
@@ -48,7 +49,7 @@ export type IntentRow = {
   id: string;
   idempotency_key: string;
   request_hash: string;
-  kind: "payment" | "invoice";
+  purpose: "deposit" | "swap";
   external_id: string;
   chain: string;
   chain_id: number;
@@ -59,22 +60,23 @@ export type IntentRow = {
   expected_units: string;
   received_units: string;
   confirmed_units: string;
+  treasury_address: Address | "";
   deposit_address: Address;
   intent_salt: Hex;
   factory_address: Address;
   forwarder_init_code_hash: Hex;
   start_block: number;
   confirmations: number;
-  status: PaymentStatus;
+  status: DepositStatus;
   expires_at: number;
   metadata: string;
   created_at: number;
   updated_at: number;
 };
 
-export type PaymentTransactionRow = {
+export type DepositTransferRow = {
   id: string;
-  payment_intent: string;
+  deposit_intent: string;
   chain: string;
   tx_hash: Hex;
   event_index: number;
@@ -90,7 +92,7 @@ export type PaymentTransactionRow = {
   updated_at: number;
 };
 
-export type PaymentStatus = "pending" | "underpaid" | "confirming" | "paid" | "expired" | "reorged";
+export type DepositStatus = "pending" | "underpaid" | "confirming" | "paid" | "expired" | "reorged";
 
 export type SweepTransaction = {
   id: string;

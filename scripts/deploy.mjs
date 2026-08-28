@@ -25,15 +25,6 @@ for (const file of [apiSecrets, sweeperSecrets]) {
 }
 
 run("wrangler", [
-  "deploy",
-  "--env",
-  environment,
-  "--config",
-  "wrangler.api.jsonc",
-  "--secrets-file",
-  apiSecrets,
-]);
-run("wrangler", [
   "d1",
   "migrations",
   "apply",
@@ -43,6 +34,15 @@ run("wrangler", [
   environment,
   "--config",
   "wrangler.api.jsonc",
+]);
+run("wrangler", [
+  "deploy",
+  "--env",
+  environment,
+  "--config",
+  "wrangler.api.jsonc",
+  "--secrets-file",
+  apiSecrets,
 ]);
 run("wrangler", [
   "deploy",

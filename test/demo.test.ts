@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import demo, { type DemoEnv } from "../demo/worker";
 
 const intent = {
-  id: "pi_demo123",
-  kind: "payment",
+  id: "di_demo123",
+  purpose: "deposit",
   externalId: "demo_123",
   chain: "base-sepolia",
   chainId: 84532,
@@ -28,6 +28,117 @@ const intent = {
   metadata: { shouldNotLeak: true },
   transactions: [],
 };
+const withdrawal = {
+  id: "wd_demo123",
+  purpose: "withdrawal",
+  externalId: "demo_withdrawal_123",
+  chain: "base-sepolia",
+  chainId: 84532,
+  asset: "USDC",
+  amount: "1.25",
+  amountUnits: "1250000",
+  sourceAddress: "0x2222222222222222222222222222222222222222",
+  destinationAddress: "0x3333333333333333333333333333333333333333",
+  requiredConfirmations: 3,
+  status: "awaiting_signature",
+  expiresAt: "2026-08-15T10:30:00.000Z",
+  completedAt: null,
+  lastError: "",
+  proposal: {
+    chainId: 84532,
+    from: "0x2222222222222222222222222222222222222222",
+    to: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    value: "0",
+    data: `0xa9059cbb${"0".repeat(24)}${"3".repeat(40)}${(1_250_000).toString(16).padStart(64, "0")}`,
+    amount: "1.25",
+    asset: "USDC",
+    maxGas: "500000",
+    maxGasPriceWei: "1000000000",
+  },
+  transaction: null,
+  internalSecret: "must-not-leak",
+  createdAt: "2026-08-15T10:00:00.000Z",
+  updatedAt: "2026-08-15T10:00:00.000Z",
+};
+const swapIntent = {
+  ...intent,
+  id: "di_swap123",
+  purpose: "swap",
+  externalId: "demo_swap_123",
+  expectedAmount: "0.5",
+  expectedUnits: "500000",
+  remainingAmount: "0.5",
+  remainingUnits: "500000",
+};
+const swapWithdrawal = {
+  ...withdrawal,
+  id: "wd_swap123",
+  purpose: "swap",
+  externalId: "demo_swap_123",
+  chain: "ethereum-sepolia",
+  chainId: 11155111,
+  asset: "ETH",
+  amount: "0.00001",
+  amountUnits: "10000000000000",
+  destinationAddress: "0x4444444444444444444444444444444444444444",
+  proposal: {
+    ...withdrawal.proposal,
+    chainId: 11155111,
+    to: "0x4444444444444444444444444444444444444444",
+    value: "10000000000000",
+    data: "0x",
+    amount: "0.00001",
+    asset: "ETH",
+  },
+};
+const swap = {
+  id: "swp_demo123",
+  externalId: "demo_swap_123",
+  depositIntentId: swapIntent.id,
+  withdrawalIntentId: swapWithdrawal.id,
+  input: {
+    chain: "base-sepolia",
+    chainId: 84532,
+    asset: "USDC",
+    expectedAmount: "0.5",
+    expectedUnits: "500000",
+    receivedUnits: "500000",
+    confirmedUnits: "500000",
+    depositAddress: swapIntent.depositAddress,
+    depositStatus: "paid",
+    collectionStatus: "complete",
+    collectedUnits: "500000",
+  },
+  output: {
+    chain: "ethereum-sepolia",
+    chainId: 11155111,
+    asset: "ETH",
+    amount: "0.00001",
+    amountUnits: "10000000000000",
+    sourceAddress: swapWithdrawal.sourceAddress,
+    destinationAddress: swapWithdrawal.destinationAddress,
+    withdrawalStatus: "awaiting_signature",
+  },
+  refund: {
+    address: "0x5555555555555555555555555555555555555555",
+    sourceAddress: withdrawal.sourceAddress,
+    withdrawalIntentId: null,
+    withdrawalStatus: null,
+  },
+  status: "awaiting_signature",
+  quoteExpiresAt: swapIntent.expiresAt,
+  lastError: "",
+  completedAt: null,
+  createdAt: "2026-08-15T10:00:00.000Z",
+  updatedAt: "2026-08-15T10:00:00.000Z",
+  internalSecret: "must-not-leak",
+};
+const createdSwap = {
+  ...swap,
+  withdrawalIntentId: null,
+  output: { ...swap.output, withdrawalStatus: null },
+  status: "awaiting_input",
+};
 const analytics = {
   generatedAt: "2026-08-15T12:00:00.000Z",
   assets: [
@@ -48,8 +159,15 @@ const analytics = {
       collectedUnits: "500000000000",
     },
   ],
+  withdrawals: { awaiting_signature: 1, confirming: 1, complete: 1 },
+  withdrawalsByPurpose: {
+    withdrawal: { awaiting_signature: 1, confirming: 1, complete: 1 },
+    swap: {},
+    refund: {},
+  },
+  swaps: { awaiting_input: 1, awaiting_signature: 1, complete: 2 },
   collectionFeesWei: { "base-sepolia": "secret-operational-detail" },
-  webhooks: [{ type: "payment.succeeded", status: "delivered", count: 9 }],
+  webhooks: [{ type: "deposit.succeeded", status: "delivered", count: 9 }],
 };
 const options = [
   {
@@ -96,6 +214,8 @@ const options = [
 let env: DemoEnv;
 let events: Map<string, string>;
 let gatewayRequests: Array<{
+  method: string;
+  path: string;
   headers: Headers;
   body: Record<string, unknown> | null;
 }>;
@@ -107,24 +227,91 @@ beforeEach(() => {
   rateLimitSuccess = true;
   env = {
     ASSETS: {
-      fetch: vi.fn(async () => new Response("demo asset")),
+      fetch: vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        return new Response(url.pathname);
+      }),
     } as unknown as Fetcher,
     GATEWAY: {
       fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const request = input instanceof Request ? input : new Request(input, init);
         const path = new URL(request.url).pathname;
         gatewayRequests.push({
+          method: request.method,
+          path,
           headers: new Headers(request.headers),
           body: request.method === "POST" ? await request.clone().json() : null,
         });
-        if (request.method === "POST" && path.endsWith("/intents")) {
-          return Response.json(intent, { status: 201 });
+        if (request.method === "POST" && path.endsWith("/swaps")) {
+          return Response.json(createdSwap, { status: 201 });
+        }
+        if (request.method === "GET" && path.endsWith(`/swaps/${swap.id}`)) {
+          return Response.json(swap);
+        }
+        if (
+          request.method === "GET" &&
+          path.endsWith(`/withdrawals/${swapWithdrawal.id}/proposal`)
+        ) {
+          return Response.json(swapWithdrawal);
+        }
+        if (request.method === "POST" && path.endsWith("/withdrawals")) {
+          const { proposal: _, internalSecret: __, ...created } = withdrawal;
+          return Response.json(created, { status: 201 });
+        }
+        if (request.method === "GET" && path.endsWith("/withdrawals")) {
+          return Response.json({
+            items: [
+              { ...withdrawal, proposal: undefined },
+              {
+                ...swapWithdrawal,
+                proposal: undefined,
+                swapId: swap.id,
+                depositIntentId: swapIntent.id,
+              },
+              {
+                ...withdrawal,
+                id: "wd_private123",
+                externalId: "private_withdrawal",
+                proposal: undefined,
+              },
+            ],
+            nextCursor: null,
+          });
+        }
+        if (request.method === "GET" && path.endsWith(`/withdrawals/${withdrawal.id}/proposal`)) {
+          return Response.json(withdrawal);
+        }
+        if (request.method === "POST" && path.endsWith("/transaction")) {
+          const payout = path.includes(swapWithdrawal.id) ? swapWithdrawal : withdrawal;
+          return Response.json(
+            {
+              ...payout,
+              status: "submitted",
+              transaction: {
+                hash: `0x${"4".repeat(64)}`,
+                from: payout.sourceAddress,
+                to: payout.proposal.to,
+                nonce: 4,
+                feeWei: "0",
+                status: "submitted",
+                blockNumber: null,
+                lastError: "",
+              },
+            },
+            { status: 202 },
+          );
+        }
+        if (request.method === "POST" && path.endsWith("/deposits")) {
+          return Response.json(
+            gatewayRequests.at(-1)?.body?.purpose === "swap" ? swapIntent : intent,
+            { status: 201 },
+          );
         }
         if (path.endsWith("/analytics/summary")) return Response.json(analytics);
         if (path.endsWith("/sweep")) {
           return Response.json({ status: "not_queued", transactions: [] });
         }
-        return Response.json(intent);
+        return Response.json(path.includes(swapIntent.id) ? swapIntent : intent);
       }),
     } as unknown as Fetcher,
     DEMO_EVENTS: {
@@ -141,7 +328,6 @@ beforeEach(() => {
     },
     PAYMENT_API_KEY: "test-api-key-at-least-24-characters",
     PAYMENT_WEBHOOK_SECRET: "test-webhook-secret-at-least-24-characters",
-    DEMO_SESSION_SECRET: "test-demo-session-secret-at-least-32-characters",
     TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     DEMO_OPTIONS_JSON: JSON.stringify(options),
@@ -156,59 +342,279 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("public demo", () => {
-  it("creates an exact user-chosen payment without exposing backend fields", async () => {
-    const response = await demo.fetch(
-      createRequest({ amount: "1.250000", purpose: "account_top_up" }),
-      env,
-    );
+  it("creates an exact user-chosen deposit without exposing backend fields", async () => {
+    const response = await demo.fetch(createRequest({ amount: "1.250000" }), env);
     expect(response.status).toBe(201);
     const body = await response.json<{
       intent: Record<string, unknown>;
-      accessToken: string;
     }>();
     expect(body.intent).toMatchObject({
       id: intent.id,
-      kind: "payment",
       expectedAmount: "1.25",
     });
     expect(body.intent).not.toHaveProperty("metadata");
-    expect(body.accessToken.split(".")).toHaveLength(2);
+    expect(body).not.toHaveProperty("accessToken");
 
     const gatewayRequest = gatewayRequests[0];
     expect(gatewayRequest.headers.get("Authorization")).toBe(`Bearer ${env.PAYMENT_API_KEY}`);
     expect(gatewayRequest.headers.get("Idempotency-Key")).toMatch(/^demo:/);
     expect(gatewayRequest.body).toMatchObject({
-      kind: "payment",
+      purpose: "deposit",
       chain: "base-sepolia",
       asset: "USDC",
       amount: "1.25",
-      metadata: { demo: true, purpose: "account_top_up" },
+      metadata: { demo: true },
     });
 
     events.set(
       `intent:${intent.id}`,
-      JSON.stringify({ id: "evt_demo", type: "payment.succeeded" }),
+      JSON.stringify({ id: "evt_demo", type: "deposit.succeeded" }),
     );
-    const poll = await demo.fetch(
-      new Request(`https://demo.test/api/intents/${intent.id}`, {
-        headers: { Authorization: `Bearer ${body.accessToken}` },
-      }),
-      env,
-    );
+    const poll = await demo.fetch(new Request(`https://demo.test/api/deposits/${intent.id}`), env);
     expect(poll.status).toBe(200);
     expect(await poll.json()).toMatchObject({
       intent: { id: intent.id },
       sweep: { status: "not_queued" },
-      webhookEvent: { id: "evt_demo", type: "payment.succeeded" },
+      webhookEvent: { id: "evt_demo", type: "deposit.succeeded" },
+    });
+  });
+
+  it("creates, reveals, and submits an externally signed withdrawal", async () => {
+    const created = await demo.fetch(createWithdrawalRequest(), env);
+    expect(created.status).toBe(201);
+    const body = await created.json<{
+      withdrawal: Record<string, unknown>;
+    }>();
+    expect(body.withdrawal).toMatchObject({
+      id: withdrawal.id,
+      amount: "1.25",
+      destinationAddress: withdrawal.destinationAddress,
+      status: "awaiting_signature",
+      transaction: null,
+    });
+    expect(body.withdrawal).not.toHaveProperty("internalSecret");
+    expect(gatewayRequests[0]).toMatchObject({
+      method: "POST",
+      path: "/api/v1/withdrawals",
+      body: {
+        purpose: "withdrawal",
+        chain: "base-sepolia",
+        asset: "USDC",
+        amount: "1.25",
+        destinationAddress: withdrawal.destinationAddress,
+      },
+    });
+    expect(gatewayRequests[0].headers.get("Idempotency-Key")).toMatch(/^demo:withdrawal:/);
+
+    const status = await demo.fetch(
+      new Request(`https://demo.test/api/withdrawals/${withdrawal.id}`),
+      env,
+    );
+    expect(await status.json()).toMatchObject({
+      withdrawal: {
+        id: withdrawal.id,
+        proposal: {
+          from: withdrawal.sourceAddress,
+          to: withdrawal.proposal.to,
+          data: withdrawal.proposal.data,
+        },
+      },
     });
 
-    const unrelated = await demo.fetch(
-      new Request("https://demo.test/api/intents/pi_other", {
-        headers: { Authorization: `Bearer ${body.accessToken}` },
+    const rawTransaction = `0x${"12".repeat(100)}`;
+    const submitted = await demo.fetch(
+      new Request(`https://demo.test/api/withdrawals/${withdrawal.id}/transaction`, {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": "192.0.2.10",
+          "Content-Type": "application/json",
+          Origin: "https://demo.test",
+        },
+        body: JSON.stringify({ rawTransaction }),
       }),
       env,
     );
-    expect(unrelated.status).toBe(401);
+    expect(submitted.status).toBe(202);
+    expect(await submitted.json()).toMatchObject({
+      withdrawal: { status: "submitted", transaction: { nonce: 4, status: "submitted" } },
+    });
+    expect(gatewayRequests.at(-1)).toMatchObject({
+      method: "POST",
+      path: `/api/v1/withdrawals/${withdrawal.id}/transaction`,
+      body: { rawTransaction },
+    });
+    expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
+      `Bearer ${env.PAYMENT_API_KEY}`,
+    );
+  });
+
+  it("lists and submits testnet proposals through the signer inbox", async () => {
+    const inbox = await demo.fetch(
+      new Request("https://demo.test/api/signer/withdrawals", {
+        headers: { "CF-Connecting-IP": "192.0.2.10" },
+      }),
+      env,
+    );
+    expect(inbox.status).toBe(200);
+    const body = await inbox.json<{ items: Array<Record<string, unknown>> }>();
+    expect(body.items).toHaveLength(2);
+    expect(body.items[1]).toMatchObject({
+      id: swapWithdrawal.id,
+      purpose: "swap",
+      swapId: swap.id,
+      depositIntentId: swapIntent.id,
+    });
+    expect(body.items[0]).not.toHaveProperty("proposal");
+    expect(body.items[0]).not.toHaveProperty("internalSecret");
+    expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
+      `Bearer ${env.PAYMENT_API_KEY}`,
+    );
+
+    const proposal = await demo.fetch(
+      new Request(`https://demo.test/api/signer/withdrawals/${swapWithdrawal.id}/proposal`, {
+        headers: { "CF-Connecting-IP": "192.0.2.10" },
+      }),
+      env,
+    );
+    expect(await proposal.json()).toMatchObject({
+      withdrawal: { id: swapWithdrawal.id, proposal: { chainId: 11155111 } },
+    });
+
+    const rawTransaction = `0x${"12".repeat(100)}`;
+    const submitted = await demo.fetch(
+      new Request(`https://demo.test/api/signer/withdrawals/${swapWithdrawal.id}/transaction`, {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": "192.0.2.10",
+          "Content-Type": "application/json",
+          Origin: "https://demo.test",
+        },
+        body: JSON.stringify({ rawTransaction }),
+      }),
+      env,
+    );
+    expect(submitted.status).toBe(202);
+    expect(gatewayRequests.at(-1)).toMatchObject({
+      method: "POST",
+      path: `/api/v1/withdrawals/${swapWithdrawal.id}/transaction`,
+      body: { rawTransaction },
+    });
+  });
+
+  it("creates, polls, and signs a fixed cross-chain swap", async () => {
+    const created = await demo.fetch(createSwapRequest(), env);
+    expect(created.status).toBe(201);
+    const body = await created.json<{
+      swap: Record<string, unknown>;
+      intent: Record<string, unknown>;
+    }>();
+    expect(body).toMatchObject({
+      swap: {
+        id: createdSwap.id,
+        depositIntentId: swapIntent.id,
+        status: "awaiting_input",
+        output: { chain: "ethereum-sepolia", asset: "ETH", amount: "0.00001" },
+      },
+      intent: { id: swapIntent.id, purpose: "swap", expectedAmount: "0.5" },
+    });
+    expect(body.swap).not.toHaveProperty("internalSecret");
+    expect(gatewayRequests[0]).toMatchObject({
+      method: "POST",
+      path: "/api/v1/deposits",
+      body: {
+        purpose: "swap",
+        chain: "base-sepolia",
+        asset: "USDC",
+        amount: "0.5",
+      },
+    });
+    expect(gatewayRequests[1]).toMatchObject({
+      method: "POST",
+      path: "/api/v1/swaps",
+      body: {
+        depositIntentId: swapIntent.id,
+        outputChain: "ethereum-sepolia",
+        outputAsset: "ETH",
+        outputAmount: "0.00001",
+        destinationAddress: swapWithdrawal.destinationAddress,
+        refundAddress: swapWithdrawal.destinationAddress,
+      },
+    });
+
+    const polled = await demo.fetch(new Request(`https://demo.test/api/swaps/${swap.id}`), env);
+    expect(await polled.json()).toMatchObject({
+      swap: { id: swap.id, status: "awaiting_signature" },
+      intent: { id: swapIntent.id },
+      payout: { id: swapWithdrawal.id, proposal: { chainId: 11155111 } },
+    });
+
+    const rawTransaction = `0x${"34".repeat(100)}`;
+    const submitted = await demo.fetch(
+      new Request(`https://demo.test/api/swaps/${swap.id}/transaction`, {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": "192.0.2.10",
+          "Content-Type": "application/json",
+          Origin: "https://demo.test",
+        },
+        body: JSON.stringify({ rawTransaction }),
+      }),
+      env,
+    );
+    expect(submitted.status).toBe(202);
+    expect(await submitted.json()).toMatchObject({
+      swap: { id: swap.id },
+      payout: { id: swapWithdrawal.id, status: "submitted" },
+    });
+    expect(gatewayRequests.findLast((item) => item.method === "POST")).toMatchObject({
+      path: `/api/v1/withdrawals/${swapWithdrawal.id}/transaction`,
+      body: { rawTransaction },
+    });
+  });
+
+  it("does not proxy a non-demo swap", async () => {
+    const gatewayFetch = vi.fn(async () =>
+      Response.json({ ...swap, id: "swp_private123", externalId: "private_swap" }),
+    );
+    env.GATEWAY = { fetch: gatewayFetch } as unknown as Fetcher;
+
+    const response = await demo.fetch(
+      new Request("https://demo.test/api/swaps/swp_private123"),
+      env,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "swap not found" });
+    expect(gatewayFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects user-defined swap terms before it creates a deposit", async () => {
+    expect((await demo.fetch(createSwapRequest({ amount: "0.51" }), env)).status).toBe(400);
+    expect((await demo.fetch(createSwapRequest({ outputAmount: "5" }), env)).status).toBe(400);
+    expect(
+      (
+        await demo.fetch(
+          createSwapRequest({ walletAddress: "0x0000000000000000000000000000000000000000" }),
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await demo.fetch(
+          createSwapRequest({ chain: "ethereum-sepolia", asset: "ETH", amount: "0.00001" }),
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await demo.fetch(
+          createSwapRequest({ outputChain: "base-sepolia", outputAsset: "USDC" }),
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    expect(gatewayRequests).toHaveLength(0);
   });
 
   it("allows only configured network and asset pairs", async () => {
@@ -217,7 +623,6 @@ describe("public demo", () => {
         chain: "ethereum-sepolia",
         asset: "ETH",
         amount: "0.00001",
-        purpose: "checkout",
       }),
       env,
     );
@@ -229,86 +634,60 @@ describe("public demo", () => {
     });
 
     const unsupported = await demo.fetch(
-      createRequest({ chain: "bnb-testnet", asset: "USDC", amount: "1", purpose: "checkout" }),
+      createRequest({ chain: "bnb-testnet", asset: "USDC", amount: "1" }),
       env,
     );
     expect(unsupported.status).toBe(400);
   });
 
   it("enforces origin, amount, challenge, and rate-limit boundaries", async () => {
-    const foreign = createRequest({ amount: "1", purpose: "checkout" });
+    const foreign = createRequest({ amount: "1" });
     foreign.headers.set("Origin", "https://attacker.test");
     expect((await demo.fetch(foreign, env)).status).toBe(403);
 
-    expect(
-      (await demo.fetch(createRequest({ amount: "5.000001", purpose: "checkout" }), env)).status,
-    ).toBe(400);
+    expect((await demo.fetch(createRequest({ amount: "5.000001" }), env)).status).toBe(400);
 
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Response.json({ success: false })),
     );
-    expect(
-      (await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env)).status,
-    ).toBe(403);
+    expect((await demo.fetch(createRequest({ amount: "1" }), env)).status).toBe(403);
 
     rateLimitSuccess = false;
-    expect(
-      (await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env)).status,
-    ).toBe(429);
+    expect((await demo.fetch(createRequest({ amount: "1" }), env)).status).toBe(429);
     expect((await demo.fetch(new Request("https://demo.test/api/analytics"), env)).status).toBe(
       429,
     );
     expect(gatewayRequests).toHaveLength(0);
   });
 
-  it("rejects malformed requests and invalid intent access tokens", async () => {
-    const malformed = new Request("https://demo.test/api/intents", {
+  it("rejects malformed requests and invalid resource paths", async () => {
+    const malformed = new Request("https://demo.test/api/deposits", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         amount: "1",
-        purpose: "checkout",
         idempotencyKey: crypto.randomUUID(),
         turnstileToken: "token",
         unexpected: true,
       }),
     });
     expect((await demo.fetch(malformed, env)).status).toBe(400);
-
-    const created = await demo.fetch(createRequest({ amount: "1", purpose: "checkout" }), env);
-    const { accessToken } = await created.json<{ accessToken: string }>();
-    const tamperedToken = `${accessToken.slice(0, -1)}${accessToken.endsWith("a") ? "b" : "a"}`;
-    const tampered = await demo.fetch(
-      new Request(`https://demo.test/api/intents/${intent.id}`, {
-        headers: { Authorization: `Bearer ${tamperedToken}` },
-      }),
-      env,
-    );
-    expect(tampered.status).toBe(401);
-
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1_000 + 1);
-      const expired = await demo.fetch(
-        new Request(`https://demo.test/api/intents/${intent.id}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }),
-        env,
-      );
-      expect(expired.status).toBe(401);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(
+      (await demo.fetch(new Request("https://demo.test/api/deposits/not-an-id"), env)).status,
+    ).toBe(404);
+    expect(
+      (await demo.fetch(new Request("https://demo.test/api/deposits/di_other"), env)).status,
+    ).toBe(404);
   });
 
   it("accepts authentic idempotent webhooks and rejects tampering", async () => {
     const event = {
       id: "evt_demo123",
-      type: "payment.succeeded",
+      type: "deposit.succeeded",
       createdAt: new Date().toISOString(),
       data: {
-        paymentIntent: {
+        depositIntent: {
           id: intent.id,
           status: "paid",
           receivedUnits: "1250000",
@@ -321,7 +700,7 @@ describe("public demo", () => {
     const timestamp = Math.floor(Date.now() / 1_000).toString();
     const signature = await signWebhook(timestamp, rawBody, env.PAYMENT_WEBHOOK_SECRET);
     const webhookRequest = () =>
-      new Request("https://demo.test/webhooks/payment", {
+      new Request("https://demo.test/webhooks/deposit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -334,12 +713,12 @@ describe("public demo", () => {
     expect((await demo.fetch(webhookRequest(), env)).status).toBe(204);
     expect(JSON.parse(events.get(`intent:${intent.id}`) ?? "null")).toMatchObject({
       id: event.id,
-      type: "payment.succeeded",
-      paymentIntent: { id: intent.id, confirmedUnits: "1250000" },
+      type: "deposit.succeeded",
+      depositIntent: { id: intent.id, confirmedUnits: "1250000" },
     });
     expect((await demo.fetch(webhookRequest(), env)).status).toBe(204);
 
-    const tampered = new Request("https://demo.test/webhooks/payment", {
+    const tampered = new Request("https://demo.test/webhooks/deposit", {
       method: "POST",
       headers: {
         "Webhook-Id": event.id,
@@ -350,7 +729,7 @@ describe("public demo", () => {
     });
     expect((await demo.fetch(tampered, env)).status).toBe(401);
 
-    const stale = new Request("https://demo.test/webhooks/payment", {
+    const stale = new Request("https://demo.test/webhooks/deposit", {
       method: "POST",
       headers: {
         "Webhook-Id": event.id,
@@ -369,7 +748,19 @@ describe("public demo", () => {
       turnstileSiteKey: "1x00000000000000000000AA",
     });
     const asset = await demo.fetch(new Request("https://demo.test/"), env);
-    expect(await asset.text()).toBe("demo asset");
+    expect(await asset.text()).toBe("/");
+    const analyticsPage = await demo.fetch(new Request("https://demo.test/analytics"), env);
+    expect(await analyticsPage.text()).toBe("/analytics.html");
+    const signerPage = await demo.fetch(new Request("https://demo.test/signer"), env);
+    expect(await signerPage.text()).toBe("/signer.html");
+    for (const path of [
+      `/deposits/${intent.id}`,
+      `/withdrawals/${withdrawal.id}`,
+      `/swaps/${swap.id}`,
+    ]) {
+      const resourcePage = await demo.fetch(new Request(`https://demo.test${path}`), env);
+      expect(await resourcePage.text()).toBe("/index.html");
+    }
   });
 
   it("exposes only aggregate analytics for configured demo assets", async () => {
@@ -402,6 +793,8 @@ describe("public demo", () => {
           collectedAmount: "0",
         },
       ],
+      withdrawals: analytics.withdrawals,
+      swaps: analytics.swaps,
       generatedAt: analytics.generatedAt,
     });
     expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(
@@ -410,13 +803,8 @@ describe("public demo", () => {
   });
 });
 
-function createRequest(input: {
-  chain?: string;
-  asset?: string;
-  amount: string;
-  purpose: string;
-}): Request {
-  return new Request("https://demo.test/api/intents", {
+function createRequest(input: { chain?: string; asset?: string; amount: string }): Request {
+  return new Request("https://demo.test/api/deposits", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -426,6 +814,57 @@ function createRequest(input: {
     body: JSON.stringify({
       chain: "base-sepolia",
       asset: "USDC",
+      ...input,
+      idempotencyKey: crypto.randomUUID(),
+      turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
+    }),
+  });
+}
+
+function createWithdrawalRequest(): Request {
+  return new Request("https://demo.test/api/withdrawals", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "https://demo.test",
+      "CF-Connecting-IP": "192.0.2.10",
+    },
+    body: JSON.stringify({
+      chain: "base-sepolia",
+      asset: "USDC",
+      amount: "1.250000",
+      destinationAddress: withdrawal.destinationAddress,
+      idempotencyKey: crypto.randomUUID(),
+      turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
+    }),
+  });
+}
+
+function createSwapRequest(
+  input: Partial<{
+    chain: string;
+    asset: string;
+    amount: string;
+    outputChain: string;
+    outputAsset: string;
+    outputAmount: string;
+    walletAddress: string;
+  }> = {},
+): Request {
+  return new Request("https://demo.test/api/swaps", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "https://demo.test",
+      "CF-Connecting-IP": "192.0.2.10",
+    },
+    body: JSON.stringify({
+      chain: "base-sepolia",
+      asset: "USDC",
+      amount: "0.50",
+      outputChain: "ethereum-sepolia",
+      outputAsset: "ETH",
+      walletAddress: swapWithdrawal.destinationAddress,
       ...input,
       idempotencyKey: crypto.randomUUID(),
       turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",

@@ -28,16 +28,24 @@ Your application remains the system of record for orders and entitlements. The
 gateway detects payments and collects funds. It does not fulfill orders or
 grant entitlements.
 
-All payment endpoints use the `/api/payments/v1` prefix and require
+All API routes use the `/api/v1` prefix and require
 `Authorization: Bearer <PAYMENT_API_KEY>`. Only `GET /health` is public.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/intents` | Create or idempotently replay a payment intent. |
-| `GET` | `/intents/{id}` | Poll status and the included transaction history. |
-| `GET` | `/intents/{id}/transactions` | Read payment transactions only. |
-| `GET` | `/intents/{id}/sweep` | Inspect treasury collection progress. |
-| `GET` | `/analytics/summary` | Read aggregate payment and collection metrics. |
+| `POST` | `/deposits` | Create or idempotently replay a deposit intent. |
+| `GET` | `/deposits/{id}` | Poll status and the included transaction history. |
+| `GET` | `/deposits/{id}/transactions` | Read deposit transfers only. |
+| `GET` | `/deposits/{id}/sweep` | Inspect treasury collection progress. |
+| `POST` | `/withdrawals` | Create or replay a withdrawal proposal. |
+| `GET` | `/withdrawals?status=awaiting_signature` | List proposals for signer approval. |
+| `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
+| `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
+| `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
+| `POST` | `/swaps` | Link an exact swap deposit to an output proposal. |
+| `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
+| `GET` | `/analytics/summary` | Read aggregate settlement metrics. |
+| `GET` | `/health` | Read successful scan progress and stale active chains. |
 
 Errors use `{ "error": "message" }`. The API does not support lookup by
 `externalId`.
@@ -59,7 +67,7 @@ export async function createCryptoCheckout(order: {
   accountId: string;
   amount: string;
 }) {
-  const response = await fetch(`${gatewayUrl}/api/payments/v1/intents`, {
+  const response = await fetch(`${gatewayUrl}/api/v1/deposits`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${gatewayApiKey}`,
@@ -67,7 +75,7 @@ export async function createCryptoCheckout(order: {
       "Idempotency-Key": `payment:${order.paymentAttemptId}`,
     },
     body: JSON.stringify({
-      kind: "payment",
+      purpose: "deposit",
       externalId: order.id,
       chain: "base",
       asset: "USDC",
@@ -91,16 +99,16 @@ than 32 nested levels.
 
 Keep `metadata` small. Store sensitive application data in your own database.
 
-Use `payment` for a one-time charge and `invoice` for a payable invoice. The
-gateway processes both types identically. Your application defines the product
-or service.
+Set `purpose` to `deposit` for a normal deposit. Use `swap` only for an input
+that the swap coordinator manages. Store the business use case in `externalId`,
+`metadata`, or your application database.
 
 The response includes the fields needed by your checkout:
 
 ```json
 {
-  "id": "pi_example",
-  "kind": "payment",
+  "id": "di_example",
+  "purpose": "deposit",
   "externalId": "order_123",
   "chain": "base",
   "chainId": 8453,
@@ -140,12 +148,15 @@ does not send the original full amount again.
 Show the chain, asset, `remainingAmount`, and deposit address as copyable text.
 The customer can compare these values with the wallet transaction.
 
+Send native deposits as direct wallet transactions. The scanner does not use
+trace APIs, so it cannot find an internal native transfer from a contract.
+
 Poll from your backend. Alternatively, expose a narrow application endpoint
 that proxies the safe status fields. Do not call the gateway directly from
 browser code. All intent reads require the bearer API key.
 
 ```http
-GET /api/payments/v1/intents/pi_example
+GET /api/v1/deposits/di_example
 Authorization: Bearer <gateway-api-key>
 ```
 
@@ -171,23 +182,23 @@ sequenceDiagram
 
     Customer->>UI: Start checkout
     UI->>App: Request crypto payment
-    App->>Gateway: POST /intents with idempotency key
+    App->>Gateway: POST /deposits with idempotency key
     Gateway-->>App: Intent, exact amount, QR and URI
     App-->>UI: Safe checkout fields
     Customer->>Chain: Send payment
     loop While checkout is open
-        UI->>App: Get payment status
-        App->>Gateway: GET /intents/{id}
+        UI->>App: Get deposit status
+        App->>Gateway: GET /deposits/{id}
         Gateway-->>App: Current status and transactions
         App-->>UI: Current status
     end
     Gateway->>Chain: Wait for configured confirmations
-    Gateway->>App: Signed payment.succeeded webhook
+    Gateway->>App: Signed deposit.succeeded webhook
     App->>App: Verify, deduplicate, and fulfill
     Gateway->>Treasury: Collect funds asynchronously
 ```
 
-### Payment statuses
+### Deposit statuses
 
 ```mermaid
 stateDiagram-v2
@@ -224,11 +235,8 @@ Handle excess funds through your support or refund policy.
 
 For donations, stored-value deposits, or account top-ups, let the user choose
 an amount in your UI. Validate the permitted range, chain, and asset on your
-backend. Create the same generic `payment` intent. Describe the application
-purpose in metadata.
-
-A separate intent kind is not necessary because settlement behavior is
-identical.
+backend. Create the same deposit intent. Describe the application use case in
+metadata.
 
 ```mermaid
 sequenceDiagram
@@ -240,35 +248,34 @@ sequenceDiagram
     User->>UI: Choose amount
     UI->>App: Request top-up
     App->>App: Validate amount and account
-    App->>Gateway: Create payment intent
+    App->>Gateway: Create deposit intent
     Gateway-->>App: Exact amount, address, QR and URI
     App-->>UI: Safe payment fields
-    Gateway->>App: Signed payment.succeeded
+    Gateway->>App: Signed deposit.succeeded
     App->>App: Credit requested amount exactly once
 ```
 
 ```json
 {
-  "kind": "payment",
+  "purpose": "deposit",
   "externalId": "topup_attempt_123",
   "chain": "base",
   "asset": "USDC",
   "amount": "25",
   "metadata": {
-    "purpose": "account_top_up",
     "accountId": "account_123"
   }
 }
 ```
 
-Create a new intent for every attempt. After `payment.succeeded`, credit the
+Create a new intent for every attempt. After `deposit.succeeded`, credit the
 validated requested amount once with your ledger constraint. Do not convert an
 accidental overpayment into additional balance.
 
 ## 3. Validate and process webhooks
 
-The gateway sends `payment.succeeded`, `payment.reorged`, and informational
-`payment.recovered` events. It retries non-2xx responses with exponential
+The gateway sends `deposit.succeeded`, `deposit.reorged`, and informational
+`deposit.recovered` events. It retries non-2xx responses with exponential
 backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
 
 ```text
@@ -310,13 +317,13 @@ Example event:
 ```json
 {
   "id": "evt_example",
-  "type": "payment.succeeded",
+  "type": "deposit.succeeded",
   "createdAt": "2026-08-14T20:05:00.000Z",
   "data": {
-    "paymentIntent": {
-      "id": "pi_example",
+    "depositIntent": {
+      "id": "di_example",
       "externalId": "order_123",
-      "kind": "payment",
+      "purpose": "deposit",
       "chain": "base",
       "chainId": 8453,
       "asset": "USDC",
@@ -331,7 +338,7 @@ Example event:
 }
 ```
 
-For `payment.succeeded`, match both `externalId` and the stored intent ID. Then
+For `deposit.succeeded`, match both `externalId` and the stored intent ID. Then
 write a unique fulfillment ledger entry for your business order or invoice ID.
 Keep the gateway intent ID on that entry.
 
@@ -339,7 +346,7 @@ This constraint prevents duplicate fulfillment from webhooks, polling, new
 checkout attempts, or payment recovery after a reorg. After the transaction
 commits, return a 2xx response.
 
-For `payment.reorged`, record the incident. If your product supports safe
+For `deposit.reorged`, record the incident. If your product supports safe
 reversal, reverse the entitlement. If fulfillment is irreversible, configure
 more confirmations for that network. For irreversible fulfillment, route the
 reorg to manual review.
@@ -348,7 +355,7 @@ Model reversible fulfillment as a state transition on the existing business
 order or invoice. If the same intent becomes paid again after a reorg, reactivate
 that entitlement. For the same recovered intent, do not append a second grant.
 
-`payment.recovered` means the gateway collected some or all funds from an
+`deposit.recovered` means the gateway collected some or all funds from an
 expired or underpaid intent. It includes `requestedUnits`, `receivedUnits`,
 `missingUnits`, `collectedUnits`, and `collectedDeltaUnits`. It does not change
 the intent to `paid`.
@@ -365,9 +372,9 @@ Run a small reconciliation job for open orders. Poll the stored intent IDs.
 Apply the same idempotent fulfillment function that the webhook handler uses.
 
 ```http
-GET /api/payments/v1/intents/{id}
-GET /api/payments/v1/intents/{id}/transactions
-GET /api/payments/v1/intents/{id}/sweep
+GET /api/v1/deposits/{id}
+GET /api/v1/deposits/{id}/transactions
+GET /api/v1/deposits/{id}/sweep
 ```
 
 The transactions endpoint explains underpayments, confirmation counts, late
@@ -379,18 +386,243 @@ The authenticated analytics endpoint returns base-unit strings rather than
 floating-point totals:
 
 ```http
-GET /api/payments/v1/analytics/summary
+GET /api/v1/analytics/summary
 ```
 
 It groups requested, received, confirmed, and collected units by chain and
-asset, plus collection fees and webhook counts. Use your configured token
-decimals to convert units only at the display boundary.
+asset. It also returns collection fees, withdrawal fees, withdrawal statuses,
+swap statuses, and webhook counts. Use your configured token decimals to
+convert units only at the display boundary.
+
+### Scanner health
+
+The health endpoint does not require the bearer key:
+
+```http
+GET /health
+```
+
+```json
+{
+  "ok": true,
+  "time": "2026-08-24T07:00:00.000Z",
+  "activeWithdrawals": 1,
+  "activeSwaps": 2,
+  "staleChains": [],
+  "networks": {
+    "base": {
+      "lastScannedBlock": 34567890,
+      "lastScanAt": "2026-08-24T06:59:30.000Z"
+    }
+  }
+}
+```
+
+If more than 300 seconds pass without a successful scan on an active deposit
+chain, `ok` is `false`. Only a successful block scan updates `lastScanAt`.
+Lease acquisition and failed scans do not update it.
+
+Before the first successful scan, `lastScannedBlock` and `lastScanAt` are
+`null`. If `ok` is `false`, alert the operator. Stop time-sensitive settlement
+decisions until the scanner advances again.
+
+## Treasury withdrawals
+
+The gateway does not store a treasury private key. The configured
+`withdrawalSourceAddress` is the source address for each new withdrawal. This
+address defaults to `treasuryAddress` when the configuration omits it.
+
+Create a withdrawal only after your application reserves the customer balance:
+
+```http
+POST /api/v1/withdrawals
+Idempotency-Key: withdrawal:account-001:42
+Content-Type: application/json
+
+{
+  "purpose": "withdrawal",
+  "externalId": "account-withdrawal-42",
+  "chain": "base",
+  "asset": "USDC",
+  "amount": "125.50",
+  "destinationAddress": "0x...",
+  "expiresInSeconds": 1800
+}
+```
+
+The signer polls the withdrawal inbox. The same inbox contains direct
+withdrawals, swap outputs, and refunds:
+
+```http
+GET /api/v1/withdrawals?status=awaiting_signature&limit=50
+```
+
+Each item includes `purpose`, `externalId`, the amount, the source and
+destination addresses, and `expiresAt`. A swap output or refund also includes
+`swapId` and `depositIntentId`. Use `nextCursor` in the next request when it is
+not `null`:
+
+```http
+GET /api/v1/withdrawals?status=awaiting_signature&limit=50&cursor={nextCursor}
+```
+
+The inbox is the durable approval queue. It excludes expired proposals and
+unsigned proposals whose swap input was reorganized. A notification can tell
+the signer to poll sooner, but it is not the source of truth.
+
+Get the exact transaction fields from the proposal endpoint:
+
+```http
+GET /api/v1/withdrawals/{id}/proposal
+```
+
+The external signer must validate these fields:
+
+- Validate the `chainId` value.
+- Validate the `from` treasury address.
+- Validate the `to` address.
+- Validate the native-token `value`.
+- Validate the ERC-20 `data`.
+- Validate the withdrawal amount and expiry time.
+- Validate `purpose` and `externalId` against the independently authorized operation.
+
+A swap proposal also includes `swapId` and `depositIntentId`. Read `/swaps/{swapId}`
+to compare the input and output with the independent ledger.
+
+The signer must also compare the proposal with an independently authorized
+withdrawal in your ledger. Do not approve a proposal only because the gateway
+returned it. Enforce your balance reservation, transaction limits, and manual
+approval policy in the signer system.
+
+Sign the transaction outside Cloudflare. Then submit the raw transaction:
+
+```http
+POST /api/v1/withdrawals/{id}/transaction
+Content-Type: application/json
+
+{
+  "rawTransaction": "0x..."
+}
+```
+
+The gateway recovers the signer and validates all transaction fields. It stores
+the signed transaction before it broadcasts the transaction.
+
+The signer must use the nonce only for this withdrawal. The gateway rejects a
+nonce that belongs to a different withdrawal.
+
+If a transaction is stuck, submit a replacement for the same withdrawal. The
+replacement must use the same nonce and a higher fee cap.
+
+The withdrawal has these statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `awaiting_signature` | The proposal is ready for signer approval until `expiresAt`. |
+| `submitted` | The gateway stored and broadcast the signed transaction. |
+| `confirming` | The transaction is canonical but does not have the required confirmations. |
+| `complete` | The transaction has the required confirmations. |
+| `failed` | The transaction reverted or failed receipt validation. Reconcile the ledger before a new proposal. |
+| `expired` | The unsigned proposal expired or the linked swap invalidated it. |
+
+Poll until the status is `complete`, `failed`, or `expired`. The gateway
+rechecks a `complete` withdrawal for seven days. A receipt reorg returns the
+withdrawal to `submitted` and clears its completion time.
+
+Continue independent ledger reconciliation during this seven-day window. The
+first version supports direct transactions from an externally owned treasury
+account. It does not parse transactions that a Safe contract executes.
+
+## Custodial swaps
+
+The swap workflow supports different input and output EVM chains. It is not an
+atomic bridge or an on-chain exchange. Your application sets the quoted output
+amount before it creates the swap.
+
+First, create a token deposit intent with `purpose` set to `swap`. Then link the
+deposit to its output:
+
+```http
+POST /api/v1/swaps
+Idempotency-Key: swap:quote-123
+Content-Type: application/json
+
+{
+  "depositIntentId": "di_example",
+  "outputChain": "bnb",
+  "outputAsset": "USDT",
+  "outputAmount": "24.91",
+  "destinationAddress": "0x...",
+  "refundAddress": "0x..."
+}
+```
+
+The gateway locks `refundAddress` when it creates the swap. Use an address that
+the user controls on the input chain.
+
+The input and output can use different configured chains. The output can use a
+native asset or an allowed token. The first version accepts only token inputs.
+Native input monitoring cannot find internal transfers without transaction
+traces.
+
+The gateway requires an exact input. An underpayment waits for more funds until
+the quote expires. An overpayment enters `refund_required` immediately.
+
+The gateway creates one refund withdrawal after it confirms and collects all
+received input. The refund sends the collected input asset to `refundAddress`.
+The external signer must approve this withdrawal.
+
+The refund spends from `withdrawalSourceAddress` on the input chain. Keep enough
+approved liquidity in that wallet before the signer submits the refund.
+
+An expired or failed output also starts the refund flow. The gateway does not
+create a refund while an output is active or submitted. If an output revives
+before refund approval, the gateway expires the unsigned refund and marks the
+swap as `reorged`.
+
+The gateway creates the output withdrawal after these events occur:
+
+- The input gets the required confirmations.
+- The relayer collects the exact input in the treasury.
+- The input transaction was mined before the quote expiry.
+
+The swap has these statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `awaiting_input` | The gateway waits for the exact input. |
+| `input_confirming` | The exact input is present but does not have all confirmations. |
+| `input_confirmed` | The input is confirmed, but treasury collection is not finished. |
+| `awaiting_signature` | The output proposal is ready for signer approval. |
+| `output_submitted` | The output transaction is submitted or confirming. |
+| `complete` | The output transaction has the required confirmations. |
+| `expired` | The quote expired without usable input. A later scan can reopen it for a timely exact transfer. |
+| `refund_required` | The gateway waits for exact collection or operator action before it creates a refund proposal. |
+| `refund_awaiting_signature` | The refund proposal is ready for signer approval. |
+| `refund_submitted` | The refund transaction is submitted or confirming. |
+| `refunded` | The refund transaction has the required confirmations. |
+| `reorged` | The input or a linked payout changed after coordination. Reconcile the incident manually. |
+
+The external signer must validate the swap against an independent ledger and
+an independent RPC provider. The signer must validate the collected input,
+quoted output, destination, chain, asset, and amount before approval.
+
+For a refund, the signer must also validate `refundAddress` and the total
+collected input. The signer must reject a refund when the output can still
+complete.
+
+Input and output transactions are not atomic across chains. If the input
+reorganizes before signature, the gateway expires unsigned output and refund
+proposals. It also rejects transaction submissions for these proposals.
+
+If the input reorganizes after output submission, the swap enters `reorged`.
+Stop automatic approval. Reconcile the loss from the treasury ledger.
 
 ## Recurring billing
 
-For any recurring product, create a new `invoice` intent for every billing
-period. Use a new external ID and idempotency key for each period. After its own
-`payment.succeeded` event, fulfill the invoice.
+For a recurring product, create a new deposit intent for each billing period.
+Use a new external ID and idempotency key for each period. Fulfill the business
+invoice after its `deposit.succeeded` event.
 
 The gateway never stores an allowance or withdraws from the customer's wallet
 automatically.
@@ -409,7 +641,9 @@ Before production, complete these tasks:
   database constraints.
 - Use polling for display and recovery.
 - Use a validated gateway status for fulfillment.
-- Handle `payment.reorged` according to the reversibility of your product.
-- Route `payment.recovered` to reconciliation.
-- Never treat `payment.recovered` as payment success.
+- Handle `deposit.reorged` according to the reversibility of your product.
+- Route `deposit.recovered` to reconciliation.
+- Never treat `deposit.recovered` as payment success.
 - Never make fulfillment depend on asynchronous treasury collection.
+- Monitor `/health` and alert on stale active chains.
+- Reconcile withdrawal and swap terminal states against an independent ledger.

@@ -15,13 +15,13 @@ export function paymentAction(intent) {
       "No additional payment is needed while confirmations complete.",
     ],
     paid: ["Payment complete", "No additional payment is needed."],
-    expired: ["Payment link expired", "Create a new payment intent to continue."],
-    reorged: ["Payment unavailable", "Create a new payment intent or contact the merchant."],
+    expired: ["Payment link expired", "Create a new deposit intent to continue."],
+    reorged: ["Payment unavailable", "Create a new deposit intent or contact the merchant."],
   };
   const state = intent.status === "paid" ? "paid" : intent.expired ? "expired" : intent.status;
   const [title, detail] = messages[state] ?? [
     "Payment link unavailable",
-    "Create a new payment intent to continue.",
+    "Create a new deposit intent to continue.",
   ];
   return { uri: "", title, detail };
 }
