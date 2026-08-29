@@ -23,10 +23,16 @@ jobs:
       - run: npm ci
       - run: npm run check
 
-  deploy-demo:
+  deploy-testnet:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: check
     runs-on: ubuntu-latest
+    environment:
+      name: testnet
+      url: https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev
+    concurrency:
+      group: testnet-deployment
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -34,6 +40,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Deploy testnet backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 migrations apply DB --remote --env testnet --config wrangler.api.jsonc
+          npx wrangler deploy --env testnet --config wrangler.api.jsonc
+          npx wrangler deploy --env testnet --config wrangler.sweeper.jsonc
       - name: Write testnet demo secrets
         env:
           PAYMENT_API_KEY: ${{ secrets.TESTNET_PAYMENT_API_KEY }}
@@ -54,3 +68,11 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Verify testnet services
+        run: |
+          curl --fail-with-body --silent --show-error \
+            https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/api/signer/withdrawals \
+            > /dev/null
+          curl --fail-with-body --silent --show-error \
+            https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/api/analytics \
+            > /dev/null
