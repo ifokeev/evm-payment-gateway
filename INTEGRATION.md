@@ -271,6 +271,61 @@ Create a new intent for every attempt. After `deposit.succeeded`, credit the
 validated requested amount once with your ledger constraint. Do not convert an
 accidental overpayment into additional balance.
 
+### Multi-asset checkout
+
+A multi-asset checkout is an application pattern over deposit intents. It lets
+the payer choose a chain and asset while your application keeps one order.
+
+Create one intent per accepted option. Use the same `externalId` and a distinct
+`Idempotency-Key` for each option.
+
+Retry a failed option call with the same idempotency key. A partial set of
+created intents remains recoverable through replay.
+
+```ts
+const options = [
+  { chain: "base", asset: "USDC", amount: "10.25" },
+  { chain: "bnb", asset: "USDT", amount: "10.19" },
+];
+
+const intents = await Promise.all(
+  options.map(async (option) => {
+    const response = await fetch(`${gatewayUrl}/api/v1/deposits`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${gatewayApiKey}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": `checkout:${order.id}:${option.chain}:${option.asset}`,
+      },
+      body: JSON.stringify({
+        purpose: "deposit",
+        externalId: order.id,
+        ...option,
+        metadata: { accountId: order.accountId },
+      }),
+    });
+    if (!response.ok) throw new Error(`Gateway returned ${response.status}`);
+    return response.json();
+  }),
+);
+```
+
+Show the options with their exact amounts, addresses, QR codes, and expiry. On
+`deposit.succeeded`, mark the order paid once and record which intent won. Ignore
+or expire the other options in your UI. The first confirmed payment wins.
+
+Close the other options as soon as one intent enters `confirming`. Keep polling
+the winning intent so a reorg can reopen the checkout.
+
+If another option is paid after the order is already fulfilled, refund that
+duplicate deposit through `POST /api/v1/deposits/{id}/refunds`. Refund-to-source
+requires one payer address per deposit, which matches this one-intent-per-option
+pattern.
+
+The gateway does not store a checkout group. Your application is the source of
+truth for the option list, the winning intent, and the order ledger. The demo
+`/api/checkout` route is a demo-only wrapper around these deposit calls.
+
 ## 3. Validate and process webhooks
 
 The gateway sends `deposit.succeeded`, `deposit.reorged`, informational

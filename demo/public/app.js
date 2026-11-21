@@ -5,10 +5,14 @@ const pageShell = document.querySelector(".page-shell");
 const flowTabs = document.querySelectorAll(".flow-tab[data-flow]");
 const network = document.querySelector("#network");
 const asset = document.querySelector("#asset");
+const networkFields = document.querySelector("#network-fields");
+const checkoutFields = document.querySelector("#checkout-fields");
+const checkoutPreview = document.querySelector("#checkout-preview");
 const destinationField = document.querySelector("#destination-field");
 const destinationAddress = document.querySelector("#destination-address");
 const destinationError = document.querySelector("#destination-error");
 const amount = document.querySelector("#amount");
+const amountField = document.querySelector("#amount-field");
 const amountHelp = document.querySelector("#amount-help");
 const amountError = document.querySelector("#amount-error");
 const assetLabel = document.querySelector("#asset-label");
@@ -17,6 +21,8 @@ const emptyState = document.querySelector("#empty-state");
 const loadingState = document.querySelector("#loading-state");
 const intentState = document.querySelector("#intent-state");
 const withdrawalState = document.querySelector("#withdrawal-state");
+const checkoutState = document.querySelector("#checkout-state");
+const checkoutOptions = document.querySelector("#checkout-options");
 const signerPanel = document.querySelector("#signer-panel");
 const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
@@ -29,6 +35,7 @@ const submitTransaction = document.querySelector("#submit-transaction");
 const copyProposal = document.querySelector("#copy-proposal");
 const createAnother = document.querySelector("#create-another");
 const withdrawalCreateAnother = document.querySelector("#withdrawal-create-another");
+const checkoutCreateAnother = document.querySelector("#checkout-create-another");
 
 const initialResource = resourceRoute(window.location.pathname);
 let config;
@@ -42,6 +49,7 @@ let openingWallet = false;
 let walletPaymentUri = "";
 let currentIntentId = initialResource?.flow === "deposit" ? initialResource.id : "";
 let currentWithdrawalId = initialResource?.flow === "withdrawal" ? initialResource.id : "";
+let currentCheckoutId = initialResource?.flow === "checkout" ? initialResource.id : "";
 let currentProposal;
 let currentProposalId = "";
 let currentSignerPath = "";
@@ -50,6 +58,7 @@ let idempotencyKey = crypto.randomUUID();
 for (const tab of flowTabs) tab.addEventListener("click", () => openForm(tab.dataset.flow));
 createAnother.addEventListener("click", () => openForm(flow));
 withdrawalCreateAnother.addEventListener("click", () => openForm("withdrawal"));
+checkoutCreateAnother.addEventListener("click", () => openForm("checkout"));
 window.addEventListener("popstate", restoreResource);
 
 network.addEventListener("change", () => {
@@ -138,24 +147,34 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const withdrawing = flow === "withdrawal";
-    const endpoint = withdrawing ? "/api/withdrawals" : "/api/deposits";
+    const checkingOut = flow === "checkout";
+    const endpoint = withdrawing
+      ? "/api/withdrawals"
+      : checkingOut
+        ? "/api/checkout"
+        : "/api/deposits";
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chain: network.value,
-        asset: asset.value,
-        amount: amount.value,
-        ...(withdrawing ? { destinationAddress: destinationAddress.value } : {}),
-        idempotencyKey,
-        turnstileToken,
-      }),
+      body: JSON.stringify(
+        checkingOut
+          ? { idempotencyKey, turnstileToken }
+          : {
+              chain: network.value,
+              asset: asset.value,
+              amount: amount.value,
+              ...(withdrawing ? { destinationAddress: destinationAddress.value } : {}),
+              idempotencyKey,
+              turnstileToken,
+            },
+      ),
     });
     const body = await response.json();
     if (!response.ok)
       throw new DemoRequestError(
         response.status,
-        body.error ?? (withdrawing ? "Withdrawal failed" : "Payment failed"),
+        body.error ??
+          (withdrawing ? "Withdrawal failed" : checkingOut ? "Checkout failed" : "Payment failed"),
       );
     idempotencyKey = crypto.randomUUID();
     if (withdrawing) {
@@ -163,6 +182,11 @@ form.addEventListener("submit", async (event) => {
       setResourcePath("withdrawal", currentWithdrawalId);
       renderWithdrawal(body.withdrawal);
       startWithdrawalPolling(true);
+    } else if (checkingOut) {
+      currentCheckoutId = body.checkout.id;
+      setResourcePath("checkout", currentCheckoutId);
+      renderCheckout(body.checkout);
+      startCheckoutPolling(true);
     } else {
       currentIntentId = body.intent.id;
       setResourcePath("deposit", currentIntentId);
@@ -175,12 +199,16 @@ form.addEventListener("submit", async (event) => {
         ? currentWithdrawalId
           ? "withdrawal"
           : "empty"
-        : currentIntentId
-          ? "intent"
-          : "empty",
+        : flow === "checkout"
+          ? currentCheckoutId
+            ? "checkout"
+            : "empty"
+          : currentIntentId
+            ? "intent"
+            : "empty",
     );
     const message = error instanceof Error ? error.message : "Request failed";
-    if (error instanceof DemoRequestError && error.status === 400) {
+    if (error instanceof DemoRequestError && error.status === 400 && flow !== "checkout") {
       if (message.toLowerCase().includes("wallet") || message.toLowerCase().includes("destination"))
         destinationError.textContent = message;
       else amountError.textContent = message;
@@ -233,6 +261,7 @@ async function initialize() {
     config = body;
     populateNetworks();
     populateAssets();
+    populateCheckoutPreview();
     updateSelection();
     network.disabled = false;
     asset.disabled = false;
@@ -273,6 +302,26 @@ function populateAssets() {
     item.selected = option.asset === previous;
     asset.append(item);
   }
+}
+
+function populateCheckoutPreview() {
+  const options = (config?.options ?? []).slice(0, 2);
+  if (options.length < 2) {
+    checkoutPreview.replaceChildren(paragraph("Checkout requires two configured assets."));
+    return;
+  }
+  checkoutPreview.replaceChildren(
+    ...options.map((option) => {
+      const card = document.createElement("div");
+      card.className = "checkout-preview-option";
+      const label = document.createElement("span");
+      label.textContent = option.chainLabel;
+      const amount = document.createElement("strong");
+      amount.textContent = `${option.defaultAmount} ${option.asset}`;
+      card.append(label, amount);
+      return card;
+    }),
+  );
 }
 
 function updateSelection() {
@@ -334,10 +383,14 @@ function updateCreateButton() {
   createButton.textContent = submitting
     ? flow === "withdrawal"
       ? "Creating withdrawal..."
-      : "Creating deposit..."
+      : flow === "checkout"
+        ? "Creating checkout..."
+        : "Creating deposit..."
     : flow === "withdrawal"
       ? "Create withdrawal"
-      : "Create deposit";
+      : flow === "checkout"
+        ? "Create checkout"
+        : "Create deposit";
 }
 
 function setStage(stage) {
@@ -346,44 +399,76 @@ function setStage(stage) {
   loadingState.hidden = stage !== "loading";
   intentState.hidden = stage !== "intent";
   withdrawalState.hidden = stage !== "withdrawal";
+  checkoutState.hidden = stage !== "checkout";
   signerPanel.hidden = true;
 }
 
 function setFlow(next, initializing = false) {
-  if (submitting || !["deposit", "withdrawal"].includes(next)) return;
+  if (submitting || !["deposit", "withdrawal", "checkout"].includes(next)) return;
   const changed = flow !== next;
   flow = next;
   pageShell.dataset.flow = flow;
   clearTimeout(pollTimer);
   for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
-  destinationField.hidden = flow === "deposit";
-  destinationAddress.disabled = !config || flow === "deposit";
-  amount.disabled = !config;
+  const checkingOut = flow === "checkout";
+  networkFields.hidden = checkingOut;
+  amountField.hidden = checkingOut;
+  checkoutFields.hidden = !checkingOut;
+  destinationField.hidden = flow === "deposit" || checkingOut;
+  destinationAddress.disabled = !config || flow !== "withdrawal";
+  amount.disabled = !config || checkingOut;
   text("#network-label", "Network");
   text("#asset-title", "Asset");
   text("#amount-title", "Amount");
-  text("#form-title", flow === "deposit" ? "Create deposit" : "Create withdrawal");
-  text("#lifecycle-title", flow === "deposit" ? "Deposit lifecycle" : "Withdrawal lifecycle");
+  text(
+    "#form-title",
+    flow === "deposit"
+      ? "Create deposit"
+      : flow === "withdrawal"
+        ? "Create withdrawal"
+        : "Create checkout",
+  );
+  text(
+    "#lifecycle-title",
+    flow === "deposit"
+      ? "Deposit lifecycle"
+      : flow === "withdrawal"
+        ? "Withdrawal lifecycle"
+        : "Checkout lifecycle",
+  );
   text("#destination-label", "Destination address");
   text("#destination-help", "Review this recipient before you approve the withdrawal.");
-  text("#page-title", flow === "deposit" ? "Deposit crypto." : "Withdraw crypto.");
+  text(
+    "#page-title",
+    flow === "deposit"
+      ? "Deposit crypto."
+      : flow === "withdrawal"
+        ? "Withdraw crypto."
+        : "Pay with either asset.",
+  );
   text(
     "#intro-copy",
     flow === "deposit"
       ? "Create an exact testnet payment and follow it to treasury collection."
-      : "Create an exact proposal, approve it, and follow it to settlement.",
+      : flow === "withdrawal"
+        ? "Create an exact proposal, approve it, and follow it to settlement."
+        : "Create one checkout with two payment options. The first confirmed payment wins.",
   );
   text(
     "#empty-title",
     flow === "deposit"
       ? "Receive funds at a unique address."
-      : "Review each withdrawal before approval.",
+      : flow === "withdrawal"
+        ? "Review each withdrawal before approval."
+        : "Pay with either supported asset.",
   );
   text(
     "#empty-detail",
     flow === "deposit"
       ? "Create an intent to receive a unique address, QR code, and wallet link."
-      : "Create a proposal to review its exact transaction fields.",
+      : flow === "withdrawal"
+        ? "Create a proposal to review its exact transaction fields."
+        : "The first confirmed payment closes the checkout. A second payment is refundable.",
   );
   const depositSteps = [
     ["Create deposit", "Ready"],
@@ -399,7 +484,15 @@ function setFlow(next, initializing = false) {
     ["Confirmations", "Pending"],
     ["Complete", "Pending"],
   ];
-  const steps = flow === "deposit" ? depositSteps : withdrawalSteps;
+  const checkoutSteps = [
+    ["Create checkout", "Ready"],
+    ["Pay either option", "Pending"],
+    ["First payment confirms", "Pending"],
+    ["Treasury collection", "Pending"],
+    ["Complete", "Pending"],
+  ];
+  const steps =
+    flow === "deposit" ? depositSteps : flow === "withdrawal" ? withdrawalSteps : checkoutSteps;
   const stepNames = ["one", "two", "three", "four", "five"];
   for (const [index, [title, detail]] of steps.entries()) {
     text(`#empty-step-${stepNames[index]}`, title);
@@ -409,7 +502,9 @@ function setFlow(next, initializing = false) {
     "#loading-message",
     flow === "deposit"
       ? "Allocating a dedicated deposit address..."
-      : "Locking the withdrawal proposal...",
+      : flow === "withdrawal"
+        ? "Locking the withdrawal proposal..."
+        : "Creating payment options...",
   );
   populateNetworks();
   populateAssets();
@@ -421,6 +516,7 @@ function setFlow(next, initializing = false) {
   updateCreateButton();
   if (flow === "deposit" && currentIntentId) startPolling(true);
   else if (flow === "withdrawal" && currentWithdrawalId) startWithdrawalPolling(true);
+  else if (flow === "checkout" && currentCheckoutId) startCheckoutPolling(true);
   else setStage("empty");
 }
 
@@ -581,6 +677,132 @@ function renderWithdrawal(withdrawal) {
     }
     chainStatus.append(reference);
   }
+}
+
+function renderCheckout(checkout) {
+  setStage("checkout");
+  globalError.hidden = true;
+  const status = String(checkout.status ?? "awaiting_payment");
+  const titles = {
+    awaiting_payment: "Waiting for payment",
+    confirming: "Payment confirming",
+    paid: "Payment received",
+    duplicate_payment: "Duplicate payment",
+    expired: "Checkout expired",
+  };
+  const details = {
+    awaiting_payment: "Pay with either option. The first confirmed payment wins.",
+    confirming: "A payment was detected. Wait for network confirmations.",
+    paid: "One option is paid. The other option can be ignored.",
+    duplicate_payment:
+      "More than one option was paid. Refund the duplicate from the merchant backend.",
+    expired: "No option reached confirmation before expiry.",
+  };
+  const header = document.querySelector("#checkout-header");
+  header.dataset.status =
+    status === "duplicate_payment"
+      ? "duplicate_payment"
+      : status === "expired"
+        ? "expired"
+        : status === "confirming"
+          ? "confirming"
+          : status === "awaiting_payment"
+            ? ""
+            : "paid";
+  text("#checkout-status-title", titles[status] ?? "Checkout updated");
+  text("#checkout-status-detail", details[status] ?? "Checkout state updated.");
+  text("#checkout-id", checkout.id);
+  text("#checkout-created", formatDate(checkout.createdAt));
+
+  const options = Array.isArray(checkout.options) ? checkout.options : [];
+  const duplicateIds = Array.isArray(checkout.duplicateIntentIds)
+    ? checkout.duplicateIntentIds
+    : [];
+  const locked = status === "paid" || status === "duplicate_payment" || status === "confirming";
+  checkoutOptions.replaceChildren(
+    ...options.map((option) =>
+      checkoutOption(option.intent, checkout.paidIntentId, duplicateIds, locked),
+    ),
+  );
+  checkoutCreateAnother.hidden = !["paid", "duplicate_payment", "expired"].includes(status);
+}
+
+function checkoutOption(intent, paidIntentId, duplicateIds, locked) {
+  const winner = intent.id === paidIntentId;
+  const duplicate = duplicateIds.includes(intent.id);
+  const confirming = String(intent.status) === "confirming";
+  const closed = locked && !winner && !duplicate && !confirming;
+  const card = document.createElement("article");
+  card.className = "checkout-option";
+  card.dataset.state = duplicate
+    ? "duplicate"
+    : winner
+      ? "paid"
+      : confirming
+        ? "confirming"
+        : closed
+          ? "closed"
+          : "open";
+
+  const heading = document.createElement("div");
+  heading.className = "checkout-option-heading";
+  const asset = document.createElement("strong");
+  asset.textContent = intent.asset;
+  const network = document.createElement("span");
+  network.textContent = humanize(intent.chain);
+  heading.append(asset, network);
+
+  const status = document.createElement("span");
+  status.className = "checkout-option-status";
+  status.textContent = duplicate
+    ? "Duplicate"
+    : winner
+      ? "Winning payment"
+      : confirming
+        ? "Confirming"
+        : closed
+          ? "Closed"
+          : humanize(intent.status);
+
+  const amount = document.createElement("p");
+  amount.className = "checkout-option-amount";
+  amount.textContent = `${intent.expectedAmount} ${intent.asset}`;
+  const payable =
+    !locked && !intent.expired && ["pending", "underpaid"].includes(String(intent.status));
+
+  card.append(heading, status, amount);
+  if (intent.status === "underpaid") {
+    card.append(paragraph(`Remaining ${intent.remainingAmount} ${intent.asset}`, "muted"));
+  }
+
+  const qrValue = intent.topUpQrCodeDataUrl ?? intent.qrCodeDataUrl;
+  if (payable && typeof qrValue === "string" && qrValue.startsWith("data:image/svg+xml;base64,")) {
+    const qr = document.createElement("img");
+    qr.className = "checkout-option-qr";
+    qr.src = qrValue;
+    qr.alt = `Payment QR code for ${intent.asset}`;
+    qr.width = 180;
+    qr.height = 180;
+    card.append(qr);
+  }
+
+  const address = document.createElement("code");
+  address.className = "checkout-option-address";
+  address.textContent = intent.depositAddress;
+  card.append(address);
+
+  const action = paymentAction(intent);
+  if (payable && action.uri) {
+    const link = document.createElement("a");
+    link.className = "secondary-button";
+    link.href = action.uri;
+    link.textContent = "Open wallet";
+    card.append(link);
+  }
+  if (duplicate) {
+    card.append(paragraph("Refund this payment from the merchant backend.", "muted"));
+  }
+  return card;
 }
 
 function renderSigner(withdrawal, path) {
@@ -840,27 +1062,54 @@ function startWithdrawalPolling(immediate = false) {
   pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
 }
 
+function startCheckoutPolling(immediate = false) {
+  clearTimeout(pollTimer);
+  pollAttempts = 0;
+  const poll = async () => {
+    if (flow !== "checkout" || !currentCheckoutId || pollAttempts >= 360) return;
+    pollAttempts += 1;
+    try {
+      const response = await fetch(`/api/checkout/${encodeURIComponent(currentCheckoutId)}`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Checkout status is unavailable");
+      if (flow !== "checkout") return;
+      renderCheckout(body.checkout);
+      const statuses = (body.checkout.options ?? []).map((option) => option.intent?.status);
+      const terminal = statuses.every((status) =>
+        ["paid", "expired", "reorged"].includes(String(status)),
+      );
+      if (body.checkout.status === "duplicate_payment" || terminal) return;
+    } catch (error) {
+      showGlobalError(error instanceof Error ? error.message : "Checkout status is unavailable");
+    }
+    pollTimer = setTimeout(poll, 5_000);
+  };
+  pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
+}
+
 function clearResources() {
   currentIntentId = "";
   currentWithdrawalId = "";
+  currentCheckoutId = "";
   currentProposal = undefined;
   currentProposalId = "";
   currentSignerPath = "";
 }
 
 function resourceRoute(pathname) {
-  const match = pathname.match(/^\/(deposits|withdrawals)\/([^/]+)$/);
+  const match = pathname.match(/^\/(deposits|withdrawals|checkouts)\/([^/]+)$/);
   if (!match) return null;
   const definitions = {
     deposits: ["deposit", /^di_[A-Za-z0-9_-]+$/],
     withdrawals: ["withdrawal", /^wd_[A-Za-z0-9_-]+$/],
+    checkouts: ["checkout", /^chk_[A-Za-z0-9_-]+$/],
   };
   const [resourceFlow, idPattern] = definitions[match[1]];
   return idPattern.test(match[2]) ? { flow: resourceFlow, id: match[2] } : null;
 }
 
 function setResourcePath(resourceFlow, id) {
-  const collections = { deposit: "deposits", withdrawal: "withdrawals" };
+  const collections = { deposit: "deposits", withdrawal: "withdrawals", checkout: "checkouts" };
   window.history.pushState(null, "", `/${collections[resourceFlow]}/${encodeURIComponent(id)}`);
 }
 
@@ -877,6 +1126,7 @@ function restoreResource() {
   flow = resource?.flow ?? "deposit";
   if (resource?.flow === "deposit") currentIntentId = resource.id;
   if (resource?.flow === "withdrawal") currentWithdrawalId = resource.id;
+  if (resource?.flow === "checkout") currentCheckoutId = resource.id;
   setFlow(flow, true);
 }
 

@@ -28,6 +28,39 @@ const intent = {
   metadata: { shouldNotLeak: true },
   transactions: [],
 };
+const checkoutKey = "12345678-1234-4234-8234-123456789abc";
+const checkoutId = `chk_${checkoutKey.replaceAll("-", "")}`;
+const checkoutExternalId = `demo_checkout_${checkoutKey}`;
+const checkoutIntentA = {
+  ...intent,
+  id: "di_checkout_a",
+  externalId: checkoutExternalId,
+  expectedAmount: "0.5",
+  expectedUnits: "500000",
+  remainingAmount: "0.5",
+  remainingUnits: "500000",
+  depositAddress: "0x4444444444444444444444444444444444444444",
+  paymentUri:
+    "ethereum:0x036CbD53842c5426634e7929541eC2318f3dCF7e@84532/transfer?address=0x4444444444444444444444444444444444444444&uint256=500000",
+  topUpPaymentUri:
+    "ethereum:0x036CbD53842c5426634e7929541eC2318f3dCF7e@84532/transfer?address=0x4444444444444444444444444444444444444444&uint256=500000",
+};
+const checkoutIntentB = {
+  ...intent,
+  id: "di_checkout_b",
+  externalId: checkoutExternalId,
+  chain: "ethereum-sepolia",
+  chainId: 11155111,
+  asset: "ETH",
+  expectedAmount: "0.00001",
+  expectedUnits: "10000000000000",
+  remainingAmount: "0.00001",
+  remainingUnits: "10000000000000",
+  depositAddress: "0x5555555555555555555555555555555555555555",
+  paymentUri: "ethereum:0x5555555555555555555555555555555555555555@11155111?value=10000000000000",
+  topUpPaymentUri:
+    "ethereum:0x5555555555555555555555555555555555555555@11155111?value=10000000000000",
+};
 const withdrawal = {
   id: "wd_demo123",
   purpose: "withdrawal",
@@ -136,11 +169,16 @@ let gatewayRequests: Array<{
   body: Record<string, unknown> | null;
 }>;
 let rateLimitSuccess: boolean;
+let checkoutStatuses: Record<string, string>;
 
 beforeEach(() => {
   events = new Map();
   gatewayRequests = [];
   rateLimitSuccess = true;
+  checkoutStatuses = {
+    [checkoutIntentA.id]: "pending",
+    [checkoutIntentB.id]: "pending",
+  };
   env = {
     ASSETS: {
       fetch: vi.fn(async (input: RequestInfo | URL) => {
@@ -199,11 +237,29 @@ beforeEach(() => {
           );
         }
         if (request.method === "POST" && path.endsWith("/deposits")) {
+          const body = gatewayRequests.at(-1)?.body;
+          if (body?.externalId === checkoutExternalId) {
+            return Response.json(body.asset === "USDC" ? checkoutIntentA : checkoutIntentB, {
+              status: 201,
+            });
+          }
           return Response.json(intent, { status: 201 });
         }
         if (path.endsWith("/analytics/summary")) return Response.json(analytics);
         if (path.endsWith("/sweep")) {
           return Response.json({ status: "not_queued", transactions: [] });
+        }
+        if (path.endsWith(`/deposits/${checkoutIntentA.id}`)) {
+          return Response.json({
+            ...checkoutIntentA,
+            status: checkoutStatuses[checkoutIntentA.id],
+          });
+        }
+        if (path.endsWith(`/deposits/${checkoutIntentB.id}`)) {
+          return Response.json({
+            ...checkoutIntentB,
+            status: checkoutStatuses[checkoutIntentB.id],
+          });
         }
         return Response.json(intent);
       }),
@@ -270,6 +326,93 @@ describe("public demo", () => {
       intent: { id: intent.id },
       sweep: { status: "not_queued" },
       webhookEvent: { id: "evt_demo", type: "deposit.succeeded" },
+    });
+  });
+
+  it("creates a two-option checkout and resolves the first paid option", async () => {
+    const created = await demo.fetch(createCheckoutRequest(), env);
+    expect(created.status).toBe(201);
+    const checkout = (
+      await created.json<{
+        checkout: {
+          id: string;
+          externalId: string;
+          status: string;
+          paidIntentId: string | null;
+          duplicateIntentIds: string[];
+          options: Array<{ intent: Record<string, unknown> }>;
+        };
+      }>()
+    ).checkout;
+    expect(checkout).toMatchObject({
+      id: checkoutId,
+      externalId: checkoutExternalId,
+      status: "awaiting_payment",
+      paidIntentId: null,
+      duplicateIntentIds: [],
+    });
+    expect(checkout.options.map((option) => option.intent.id)).toEqual([
+      checkoutIntentA.id,
+      checkoutIntentB.id,
+    ]);
+    expect(checkout.options.map((option) => option.intent.asset)).toEqual(["USDC", "ETH"]);
+    const posts = gatewayRequests.filter(
+      (request) => request.method === "POST" && request.path === "/api/v1/deposits",
+    );
+    expect(posts).toHaveLength(2);
+    expect(posts[0].body).toMatchObject({
+      externalId: checkoutExternalId,
+      chain: "base-sepolia",
+      asset: "USDC",
+      amount: "0.5",
+    });
+    expect(posts[1].body).toMatchObject({
+      externalId: checkoutExternalId,
+      chain: "ethereum-sepolia",
+      asset: "ETH",
+      amount: "0.00001",
+    });
+    expect(posts[0].headers.get("Idempotency-Key")).toContain("demo:checkout:");
+
+    const replay = await demo.fetch(createCheckoutRequest(), env);
+    expect(replay.status).toBe(200);
+    expect((await replay.json<{ checkout: { id: string } }>()).checkout.id).toBe(checkoutId);
+    expect(
+      gatewayRequests.filter(
+        (request) => request.method === "POST" && request.path === "/api/v1/deposits",
+      ),
+    ).toHaveLength(2);
+
+    checkoutStatuses[checkoutIntentA.id] = "confirming";
+    const confirming = await demo.fetch(
+      new Request(`https://demo.test/api/checkout/${checkoutId}`),
+      env,
+    );
+    expect(await confirming.json()).toMatchObject({
+      checkout: { status: "confirming", paidIntentId: null },
+    });
+
+    checkoutStatuses[checkoutIntentA.id] = "paid";
+    const paid = await demo.fetch(new Request(`https://demo.test/api/checkout/${checkoutId}`), env);
+    expect(await paid.json()).toMatchObject({
+      checkout: {
+        status: "paid",
+        paidIntentId: checkoutIntentA.id,
+        duplicateIntentIds: [],
+      },
+    });
+
+    checkoutStatuses[checkoutIntentB.id] = "paid";
+    const duplicate = await demo.fetch(
+      new Request(`https://demo.test/api/checkout/${checkoutId}`),
+      env,
+    );
+    expect(await duplicate.json()).toMatchObject({
+      checkout: {
+        status: "duplicate_payment",
+        paidIntentId: checkoutIntentA.id,
+        duplicateIntentIds: [checkoutIntentB.id],
+      },
     });
   });
 
@@ -569,7 +712,11 @@ describe("public demo", () => {
     expect(await analyticsPage.text()).toBe("/analytics.html");
     const signerPage = await demo.fetch(new Request("https://demo.test/signer"), env);
     expect(await signerPage.text()).toBe("/signer.html");
-    for (const path of [`/deposits/${intent.id}`, `/withdrawals/${withdrawal.id}`]) {
+    for (const path of [
+      `/deposits/${intent.id}`,
+      `/withdrawals/${withdrawal.id}`,
+      `/checkouts/${checkoutId}`,
+    ]) {
       const resourcePage = await demo.fetch(new Request(`https://demo.test${path}`), env);
       expect(await resourcePage.text()).toBe("/index.html");
     }
@@ -628,6 +775,21 @@ function createRequest(input: { chain?: string; asset?: string; amount: string }
       asset: "USDC",
       ...input,
       idempotencyKey: crypto.randomUUID(),
+      turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
+    }),
+  });
+}
+
+function createCheckoutRequest(key = checkoutKey): Request {
+  return new Request("https://demo.test/api/checkout", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "https://demo.test",
+      "CF-Connecting-IP": "192.0.2.10",
+    },
+    body: JSON.stringify({
+      idempotencyKey: key,
       turnstileToken: "XXXX.DUMMY.TOKEN.XXXX",
     }),
   });

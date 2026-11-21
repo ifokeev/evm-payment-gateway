@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Try testnet deposits and treasury withdrawals on EVM networks."
+      content="Try testnet deposits, multi-asset checkout, and treasury withdrawals on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -52,11 +52,14 @@
             <button class="flow-tab" type="button" role="tab" data-flow="withdrawal" aria-selected="false">
               Withdraw
             </button>
+            <button class="flow-tab" type="button" role="tab" data-flow="checkout" aria-selected="false">
+              Checkout
+            </button>
           </div>
 
           <form id="payment-form" class="payment-form" novalidate>
             <h2 id="form-title" class="form-title">Create deposit</h2>
-            <div class="network-fields">
+            <div id="network-fields" class="network-fields">
               <div class="field">
                 <label id="network-label" for="network">Network</label>
                 <div class="select-control">
@@ -70,6 +73,14 @@
                   <select id="asset" name="asset" disabled></select>
                 </div>
               </div>
+            </div>
+
+            <div id="checkout-fields" class="checkout-fields" hidden>
+              <p class="field-help">
+                Create one checkout with two fixed testnet amounts. The first confirmed payment
+                wins. These values are not market quotes.
+              </p>
+              <div id="checkout-preview" class="checkout-preview"></div>
             </div>
 
             <div id="destination-field" class="field" hidden>
@@ -339,6 +350,33 @@
             <div><dt>Created</dt><dd id="withdrawal-created"></dd></div>
             <div><dt>Expires in</dt><dd id="withdrawal-expiry"></dd></div>
           </dl>
+        </div>
+
+        <div id="checkout-state" hidden>
+          <div class="payment-panel">
+            <div id="checkout-header" class="intent-header">
+              <span class="status-orbit" aria-hidden="true"></span>
+              <div>
+                <h2 id="checkout-status-title" class="status-label">Waiting for payment</h2>
+                <p id="checkout-status-detail" class="status-detail">
+                  Pay with either option. The first confirmed payment wins.
+                </p>
+              </div>
+            </div>
+            <div id="checkout-options" class="checkout-options"></div>
+            <button
+              id="checkout-create-another"
+              class="secondary-button terminal-action"
+              type="button"
+              hidden
+            >
+              Create new checkout
+            </button>
+            <dl class="intent-meta checkout-meta">
+              <div><dt>Checkout ID</dt><dd id="checkout-id"></dd></div>
+              <div><dt>Created</dt><dd id="checkout-created"></dd></div>
+            </dl>
+          </div>
         </div>
 
         <section id="signer-panel" class="signer-panel" aria-labelledby="signer-title" hidden>
