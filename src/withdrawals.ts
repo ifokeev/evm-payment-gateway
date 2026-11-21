@@ -26,11 +26,11 @@ const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
 
-type WithdrawalRow = {
+export type WithdrawalRow = {
   id: string;
   idempotency_key: string;
   request_hash: string;
-  purpose: "withdrawal";
+  purpose: "withdrawal" | "refund";
   external_id: string;
   chain: string;
   chain_id: number;
@@ -47,6 +47,7 @@ type WithdrawalRow = {
   expires_at: number;
   last_error: string;
   completed_at: number | null;
+  deposit_intent: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -129,22 +130,7 @@ async function createWithdrawal(request: Request, env: ApiEnv): Promise<Response
   const token = asset === network.nativeAsset ? undefined : network.tokens[asset];
   if (asset !== network.nativeAsset && !token)
     throw new WithdrawalHttpError(400, "unsupported asset for chain");
-  if (
-    [
-      network.treasuryAddress,
-      network.withdrawalSourceAddress,
-      network.factoryAddress,
-      network.relayerAddress,
-      token?.address,
-    ]
-      .filter(Boolean)
-      .some((address) => isAddressEqual(destination, address as Address)) ||
-    (await env.DB.prepare("SELECT 1 FROM deposit_intents WHERE chain = ? AND deposit_address = ?")
-      .bind(network.name, destination)
-      .first())
-  ) {
-    throw new WithdrawalHttpError(400, "invalid withdrawal destination");
-  }
+  await validateWithdrawalDestination(env.DB, network, token?.address ?? "", destination);
   let amount: ReturnType<typeof parseAmount>;
   try {
     amount = parseAmount(rawAmount, token?.decimals ?? 18);
@@ -217,6 +203,7 @@ async function createWithdrawal(request: Request, env: ApiEnv): Promise<Response
     expires_at: now + (expiresIn as number),
     last_error: "",
     completed_at: null,
+    deposit_intent: null,
     created_at: now,
     updated_at: now,
   };
@@ -323,6 +310,7 @@ async function listWithdrawals(url: URL, env: ApiEnv): Promise<Response> {
     destinationAddress: row.destination_address,
     status: row.status,
     expiresAt: new Date(row.expires_at * 1_000).toISOString(),
+    ...(row.deposit_intent ? { depositIntentId: row.deposit_intent } : {}),
     createdAt: new Date(row.created_at * 1_000).toISOString(),
     updatedAt: new Date(row.updated_at * 1_000).toISOString(),
   }));
@@ -578,7 +566,7 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
   // ponytail: keep seven days of terminal transactions under reorg watch; use a chain indexer if deeper reorg monitoring is required.
   const rows = await all<WithdrawalTransactionRow & WithdrawalRow>(
     env.DB,
-    `SELECT t.*, w.id AS withdrawal_id, w.purpose, w.external_id, w.chain_id, w.asset, w.token_address, w.decimals,
+    `SELECT t.*, w.id AS withdrawal_id, w.purpose, w.external_id, w.deposit_intent, w.chain_id, w.asset, w.token_address, w.decimals,
       w.source_address, w.destination_address, w.amount, w.amount_units, w.confirmations, w.max_gas_price_wei,
       w.expires_at, w.completed_at, w.status AS withdrawal_status
      FROM withdrawal_transactions t JOIN withdrawal_intents w ON w.id = t.withdrawal
@@ -665,15 +653,100 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
       ]);
     }
   }
+  await queueRefundWebhooks(env.DB, now);
 }
 
 async function expireUnavailableWithdrawals(db: D1Database, now: number): Promise<void> {
-  await db
-    .prepare(
-      "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE status = 'awaiting_signature' AND expires_at < ?",
-    )
-    .bind(now, now)
-    .run();
+  await db.batch([
+    db
+      .prepare(
+        "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE status = 'awaiting_signature' AND expires_at < ?",
+      )
+      .bind(now, now),
+    db
+      .prepare(`UPDATE withdrawal_intents SET status = 'expired', updated_at = ?
+        WHERE purpose = 'refund' AND status = 'awaiting_signature'
+          AND deposit_intent IN (SELECT id FROM deposit_intents WHERE status != 'paid')`)
+      .bind(now),
+  ]);
+}
+
+async function queueRefundWebhooks(db: D1Database, now: number): Promise<void> {
+  const rows = await all<{
+    id: string;
+    deposit_intent: string;
+    external_id: string;
+    chain: string;
+    chain_id: number;
+    asset: string;
+    amount: string;
+    amount_units: string;
+    source_address: string;
+    destination_address: string;
+    status: "complete" | "failed" | "expired";
+    last_error: string;
+    completed_at: number | null;
+    deposit_external_id: string;
+    deposit_status: string;
+    tx_hash: string | null;
+  }>(
+    db,
+    `SELECT w.id, w.deposit_intent, w.external_id, w.chain, w.chain_id, w.asset, w.amount,
+       w.amount_units, w.source_address, w.destination_address, w.status, w.last_error,
+       w.completed_at, d.external_id AS deposit_external_id, d.status AS deposit_status,
+       (SELECT t.tx_hash FROM withdrawal_transactions t WHERE t.withdrawal = w.id
+        ORDER BY CASE t.status WHEN 'confirmed' THEN 0 ELSE 1 END, t.created_at DESC LIMIT 1) AS tx_hash
+     FROM withdrawal_intents w JOIN deposit_intents d ON d.id = w.deposit_intent
+     WHERE w.purpose = 'refund' AND w.status IN ('complete', 'failed', 'expired')
+       AND NOT EXISTS (SELECT 1 FROM webhook_events e
+         WHERE e.event_id = 'evt_refund_' || w.id || '_' || w.status)
+     ORDER BY w.updated_at LIMIT 100`,
+  );
+  if (!rows.length) return;
+  const statements = rows.map((row) => {
+    const type =
+      row.status === "complete"
+        ? "refund.succeeded"
+        : row.status === "failed"
+          ? "refund.failed"
+          : "refund.expired";
+    const eventId = `evt_refund_${row.id}_${row.status}`;
+    const body = JSON.stringify({
+      id: eventId,
+      type,
+      createdAt: new Date(now * 1_000).toISOString(),
+      data: {
+        refund: {
+          id: row.id,
+          depositIntentId: row.deposit_intent,
+          externalId: row.external_id,
+          chain: row.chain,
+          chainId: row.chain_id,
+          asset: row.asset,
+          amount: row.amount,
+          amountUnits: row.amount_units,
+          sourceAddress: row.source_address,
+          destinationAddress: row.destination_address,
+          status: row.status,
+          transactionHash: row.tx_hash,
+          lastError: row.last_error,
+          completedAt:
+            row.completed_at === null ? null : new Date(row.completed_at * 1_000).toISOString(),
+        },
+        depositIntent: {
+          id: row.deposit_intent,
+          externalId: row.deposit_external_id,
+          status: row.deposit_status,
+        },
+      },
+    });
+    return db
+      .prepare(`INSERT OR IGNORE INTO webhook_events
+        (event_id,type,deposit_intent,body,status,attempts,next_attempt_at,created_at,updated_at)
+        VALUES (?,?,?,?,'pending',0,?,?,?)`)
+      .bind(eventId, type, row.deposit_intent, body, now, now, now);
+  });
+  await db.batch(statements);
 }
 
 async function reconcileTransaction(
@@ -868,7 +941,7 @@ function hasExpectedTransfer(
   });
 }
 
-async function withdrawalResponse(
+export async function withdrawalResponse(
   env: ApiEnv,
   row: WithdrawalRow,
   network: NetworkConfig,
@@ -897,6 +970,7 @@ async function withdrawalResponse(
     expiresAt: new Date(row.expires_at * 1_000).toISOString(),
     completedAt: row.completed_at ? new Date(row.completed_at * 1_000).toISOString() : null,
     lastError: row.last_error,
+    ...(row.deposit_intent ? { depositIntentId: row.deposit_intent } : {}),
     ...(includeProposal
       ? {
           proposal: {
@@ -986,6 +1060,31 @@ function checkedAddress(value: string): Address {
   return getAddress(value);
 }
 
+export async function validateWithdrawalDestination(
+  db: D1Database,
+  network: NetworkConfig,
+  tokenAddress: Address | "",
+  destination: Address,
+): Promise<void> {
+  if (
+    [
+      network.treasuryAddress,
+      network.withdrawalSourceAddress,
+      network.factoryAddress,
+      network.relayerAddress,
+      tokenAddress,
+    ]
+      .filter(Boolean)
+      .some((address) => isAddressEqual(destination, address as Address)) ||
+    (await db
+      .prepare("SELECT 1 FROM deposit_intents WHERE chain = ? AND deposit_address = ?")
+      .bind(network.name, destination)
+      .first())
+  ) {
+    throw new WithdrawalHttpError(400, "invalid withdrawal destination");
+  }
+}
+
 async function readObject(
   request: Request,
   allowedKeys: string[],
@@ -1067,7 +1166,7 @@ function safeError(error: unknown): string {
     .slice(0, 1_000);
 }
 
-class WithdrawalHttpError extends Error {
+export class WithdrawalHttpError extends Error {
   constructor(
     readonly status: number,
     message: string,

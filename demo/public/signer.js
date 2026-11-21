@@ -86,7 +86,10 @@ function renderProposal(withdrawal) {
   document.querySelector("#review-content").hidden = false;
   document.querySelector("#review-purpose").textContent = humanize(withdrawal.purpose);
   document.querySelector("#review-amount").textContent = `${withdrawal.amount} ${withdrawal.asset}`;
-  document.querySelector("#review-reference").textContent = withdrawal.externalId;
+  document.querySelector("#review-reference").textContent =
+    withdrawal.purpose === "refund" && withdrawal.depositIntentId
+      ? `${withdrawal.externalId} · ${withdrawal.depositIntentId}`
+      : withdrawal.externalId;
   document
     .querySelector("#review-summary")
     .replaceChildren(

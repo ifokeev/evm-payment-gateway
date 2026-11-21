@@ -1247,6 +1247,233 @@ describe("withdrawal API", () => {
   });
 });
 
+describe("refund API", () => {
+  it("creates an idempotent refund to the sole payer and exposes it to the signer", async () => {
+    const payer = "0x5555555555555555555555555555555555555555";
+    const deposit = await payDeposit(payer);
+    const key = randomId("refund");
+    const createRefund = (idempotencyKey: string, body = "{}") =>
+      api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/deposits/${deposit.id}/refunds`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+          body,
+        }),
+      );
+    try {
+      const created = await createRefund(key);
+      expect(created.status).toBe(201);
+      const refund = (
+        await created.json<{
+          refund: {
+            id: string;
+            purpose: string;
+            depositIntentId: string;
+            sourceAddress: string;
+            destinationAddress: string;
+            amount: string;
+            status: string;
+          };
+        }>()
+      ).refund;
+      expect(refund).toMatchObject({
+        purpose: "refund",
+        depositIntentId: deposit.id,
+        sourceAddress: testTreasury,
+        destinationAddress: payer,
+        amount: "1.25",
+        status: "awaiting_signature",
+      });
+
+      const replay = await createRefund(key);
+      expect(replay.status).toBe(200);
+      expect((await replay.json<{ refund: { id: string } }>()).refund.id).toBe(refund.id);
+      expect((await createRefund(key, JSON.stringify({ amount: "0.5" }))).status).toBe(409);
+
+      const listed = await api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/deposits/${deposit.id}/refunds`),
+      );
+      expect(await listed.json()).toMatchObject({
+        items: [{ id: refund.id, purpose: "refund" }],
+        refundedAmount: "1.25",
+        refundableAmount: "0",
+      });
+
+      const inbox = await api.fetch(
+        authorizedRequest("https://gateway.test/api/v1/withdrawals?status=awaiting_signature"),
+      );
+      const items = await inbox.json<{
+        items: Array<{ id: string; purpose: string; depositIntentId?: string }>;
+      }>();
+      expect(items.items.find((item) => item.id === refund.id)).toMatchObject({
+        purpose: "refund",
+        depositIntentId: deposit.id,
+      });
+
+      const proposal = await api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/withdrawals/${refund.id}/proposal`),
+      );
+      expect(await proposal.json()).toMatchObject({
+        purpose: "refund",
+        depositIntentId: deposit.id,
+        proposal: { to: testToken, value: "0" },
+      });
+    } finally {
+      await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE deposit_intent = ?")
+        .bind(deposit.id)
+        .run();
+      await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(deposit.id).run();
+    }
+  });
+
+  it("requires a paid deposit with one payer and an available balance", async () => {
+    const payer = "0x5555555555555555555555555555555555555555";
+    const unpaid = await create(randomId("unpaid-refund"), { amount: "1", metadata: {} });
+    const unpaidBody = await unpaid.json<{ id: string }>();
+    const twoPayers = await payDeposit(payer, "1", "0x6666666666666666666666666666666666666666");
+    const payable = await payDeposit(payer, "1");
+    const post = (depositId: string, key: string, body = "{}") =>
+      api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/deposits/${depositId}/refunds`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+          body,
+        }),
+      );
+    try {
+      expect((await post(unpaidBody.id, randomId("refund"))).status).toBe(409);
+      const multiple = await post(twoPayers.id, randomId("refund"));
+      expect(multiple.status).toBe(409);
+      expect(await multiple.json()).toEqual({
+        error:
+          "deposit has multiple payer addresses; use a withdrawal with an explicit destination",
+      });
+      expect(
+        (await post(payable.id, randomId("refund"), JSON.stringify({ amount: "1.01" }))).status,
+      ).toBe(409);
+      expect((await post(payable.id, randomId("refund"))).status).toBe(201);
+      expect((await post(payable.id, randomId("refund"))).status).toBe(409);
+    } finally {
+      for (const depositId of [unpaidBody.id, twoPayers.id, payable.id]) {
+        await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE deposit_intent = ?")
+          .bind(depositId)
+          .run();
+        await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(depositId).run();
+      }
+    }
+  });
+
+  it("queues refund webhooks and expires unsigned refunds after a deposit reorg", async () => {
+    const payer = "0x5555555555555555555555555555555555555555";
+    const completedDeposit = await payDeposit(payer);
+    const reorgedDeposit = await payDeposit(payer);
+    const createRefund = (depositId: string) =>
+      api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/deposits/${depositId}/refunds`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": randomId("refund-webhook"),
+          },
+          body: "{}",
+        }),
+      );
+    try {
+      const completed = await (await createRefund(completedDeposit.id)).json<{
+        refund: { id: string };
+      }>();
+      await bindings.DB.prepare(
+        "UPDATE withdrawal_intents SET status = 'complete', completed_at = ? WHERE id = ?",
+      )
+        .bind(unixNow(), completed.refund.id)
+        .run();
+      await reconcileWithdrawals(bindings);
+      const event = await bindings.DB.prepare(
+        "SELECT type, body FROM webhook_events WHERE deposit_intent = ? AND type = 'refund.succeeded'",
+      )
+        .bind(completedDeposit.id)
+        .first<{ type: string; body: string }>();
+      expect(event?.type).toBe("refund.succeeded");
+      expect(JSON.parse(event!.body)).toMatchObject({
+        type: "refund.succeeded",
+        data: { refund: { id: completed.refund.id, status: "complete" } },
+      });
+      await reconcileWithdrawals(bindings);
+      expect(
+        await bindings.DB.prepare(
+          "SELECT COUNT(*) AS count FROM webhook_events WHERE deposit_intent = ? AND type = 'refund.succeeded'",
+        )
+          .bind(completedDeposit.id)
+          .first(),
+      ).toEqual({ count: 1 });
+
+      const pending = await (await createRefund(reorgedDeposit.id)).json<{
+        refund: { id: string };
+      }>();
+      await bindings.DB.prepare("UPDATE deposit_intents SET status = 'reorged' WHERE id = ?")
+        .bind(reorgedDeposit.id)
+        .run();
+      await reconcileWithdrawals(bindings);
+      expect(
+        await bindings.DB.prepare("SELECT status FROM withdrawal_intents WHERE id = ?")
+          .bind(pending.refund.id)
+          .first(),
+      ).toEqual({ status: "expired" });
+      expect(
+        await bindings.DB.prepare(
+          "SELECT type FROM webhook_events WHERE deposit_intent = ? AND type = 'refund.expired'",
+        )
+          .bind(reorgedDeposit.id)
+          .first(),
+      ).toEqual({ type: "refund.expired" });
+    } finally {
+      for (const depositId of [completedDeposit.id, reorgedDeposit.id]) {
+        await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE deposit_intent = ?")
+          .bind(depositId)
+          .run();
+        await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(depositId).run();
+      }
+    }
+  });
+
+  it("supports partial refunds after the active proposal completes", async () => {
+    const payer = "0x5555555555555555555555555555555555555555";
+    const deposit = await payDeposit(payer, "1");
+    const post = (key: string, amount: string) =>
+      api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/deposits/${deposit.id}/refunds`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+          body: JSON.stringify({ amount }),
+        }),
+      );
+    try {
+      const first = await post(randomId("partial-refund"), "0.4");
+      expect(first.status).toBe(201);
+      const firstRefund = await first.json<{ refund: { id: string } }>();
+      expect((await post(randomId("partial-refund"), "0.6")).status).toBe(409);
+      await bindings.DB.prepare(
+        "UPDATE withdrawal_intents SET status = 'complete', completed_at = ? WHERE id = ?",
+      )
+        .bind(unixNow(), firstRefund.refund.id)
+        .run();
+      expect((await post(randomId("partial-refund"), "0.6")).status).toBe(201);
+      const listed = await api.fetch(
+        authorizedRequest(`https://gateway.test/api/v1/deposits/${deposit.id}/refunds`),
+      );
+      expect(await listed.json()).toMatchObject({
+        refundedAmount: "1",
+        refundableAmount: "0",
+      });
+    } finally {
+      await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE deposit_intent = ?")
+        .bind(deposit.id)
+        .run();
+      await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(deposit.id).run();
+    }
+  });
+});
+
 describe("sweep coordinator", () => {
   it("backfills a cryptographically provable historical treasury snapshot", async () => {
     const now = unixNow();
@@ -1426,6 +1653,7 @@ describe("analytics", () => {
     const intentId = randomId("di");
     const jobId = randomId("swp");
     const withdrawalId = randomId("wd");
+    const refundId = randomId("wd");
     const fields = intentFields("96", "");
     const requested = "900719925474099300000";
     const received = "900719925474099300001";
@@ -1489,6 +1717,22 @@ describe("analytics", () => {
         now,
         now,
       ),
+      bindings.DB.prepare(`INSERT INTO withdrawal_intents
+        (id,idempotency_key,request_hash,purpose,external_id,deposit_intent,chain,chain_id,asset,
+         token_address,decimals,source_address,destination_address,amount,amount_units,confirmations,
+         max_gas_price_wei,status,expires_at,created_at,updated_at)
+        VALUES (?,?,?,'refund','refund-analytics',?,'analytics',31337,'TOK','',18,?,?,
+          '1','1',1,'100','complete',?,?,?)`).bind(
+        refundId,
+        randomId("idem"),
+        "6".repeat(64),
+        intentId,
+        testTreasury,
+        "0x8888888888888888888888888888888888888888",
+        now + 3_600,
+        now,
+        now,
+      ),
       ...[
         { status: "confirmed", fee: "10", block: 1 },
         { status: "failed", fee: "20", block: 2 },
@@ -1542,6 +1786,7 @@ describe("analytics", () => {
       collectionFeesWei: Record<string, string>;
       withdrawalFeesWei: Record<string, string>;
       withdrawals: Record<string, number>;
+      refunds: Record<string, number>;
     }>();
     expect(body.assets.find((item) => item.chain === "analytics" && item.asset === "TOK")).toEqual({
       chain: "analytics",
@@ -1558,9 +1803,12 @@ describe("analytics", () => {
     expect(body.collectionFeesWei.analytics).toBe("123");
     expect(body.withdrawalFeesWei["fee-analytics"]).toBe("1030");
     expect(body.withdrawals).toEqual({ failed: 1 });
+    expect(body.refunds).toEqual({ complete: 1 });
     await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
       .bind(withdrawalId)
       .run();
+    await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?").bind(refundId).run();
+    await bindings.DB.prepare("DELETE FROM deposit_intents WHERE id = ?").bind(intentId).run();
   });
 });
 
@@ -2370,6 +2618,58 @@ function createWithdrawal(
       }),
     }),
   );
+}
+
+async function payDeposit(
+  payer: string,
+  amount = "1.25",
+  secondPayer?: string,
+): Promise<{ id: string; depositAddress: string; expectedUnits: string }> {
+  const response = await create(randomId("refund-deposit"), { amount, metadata: {} });
+  if (response.status !== 201)
+    throw new Error(`failed to create refund test deposit: ${response.status}`);
+  const intent = await response.json<{
+    id: string;
+    depositAddress: string;
+    expectedUnits: string;
+  }>();
+  const units = BigInt(intent.expectedUnits);
+  const transfers = secondPayer
+    ? [
+        { from: payer, amountUnits: units / 2n },
+        { from: secondPayer, amountUnits: units - units / 2n },
+      ]
+    : [{ from: payer, amountUnits: units }];
+  const now = unixNow();
+  await bindings.DB.batch([
+    bindings.DB.prepare(
+      "UPDATE deposit_intents SET status = 'paid', received_units = expected_units, confirmed_units = expected_units WHERE id = ?",
+    ).bind(intent.id),
+    ...transfers.map((transfer, index) =>
+      bindings.DB.prepare(`INSERT INTO deposit_transfers
+        (id,deposit_intent,chain,tx_hash,event_index,asset,from_address,to_address,amount_units,
+         block_number,block_hash,block_timestamp,canonical,created_at,updated_at)
+        VALUES (?,?,'test',?,?,'USDC',?,?,?,?,?,?,1,?,?)`).bind(
+        randomId("transfer"),
+        intent.id,
+        randomHex(),
+        index,
+        transfer.from,
+        intent.depositAddress,
+        transfer.amountUnits.toString(),
+        10 + index,
+        randomHex(),
+        now,
+        now,
+        now,
+      ),
+    ),
+  ]);
+  return intent;
+}
+
+function randomHex(): string {
+  return `0x${crypto.randomUUID().replaceAll("-", "").padEnd(64, "0").slice(0, 64)}`;
 }
 
 function authorizedRequest(url: string, init: RequestInit = {}): Request {

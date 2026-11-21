@@ -60,6 +60,13 @@ compare each proposal with an independently authorized ledger entry and validate
 the destination, amount, chain, and fee before signing. Cloudflare stores only
 public addresses and never signs a treasury transaction.
 
+Refund proposals target the sole canonical payer of a paid deposit. The amount
+is capped by confirmed funds minus active or completed refunds, and only one
+refund can be active per deposit. Unsigned refunds expire when the deposit
+leaves `paid`. The signer must verify that `withdrawalSourceAddress` holds the
+input asset and native gas before approval. Deposits with multiple payers require
+an explicitly reviewed withdrawal.
+
 Use Cloudflare encrypted secrets. Keep `.api.<environment>.secrets` and
 `.sweeper.<environment>.secrets` out of version control. Never share relayer
 keys, treasuries, RPC credentials, API keys, or webhook secrets between testnet
@@ -74,8 +81,9 @@ Use these operational controls:
 - Use a multisig treasury for material value.
 - Before you accept payments, validate its ability to receive native assets.
 - Set confirmation depth and reorg history for each network's risk profile.
-- Monitor relayer balance, failed collections, scanner lag, webhook retries,
-  and unexpected factory code-hash failures.
+- Monitor relayer balance, payout wallet balance, failed collections, failed
+  refunds, scanner lag, webhook retries, and unexpected factory code-hash
+  failures.
 - Validate every token address and decimals value against issuer data.
 - Treat `deposit.succeeded` as an at-least-once event.
 - Deduplicate webhook IDs and business fulfillment in your database.

@@ -29,6 +29,7 @@ import {
   syncChain,
   unixNow,
 } from "./monitor";
+import { routeRefund } from "./refunds";
 import { rpcTransport } from "./rpc";
 import type {
   ApiEnv,
@@ -92,6 +93,8 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
     return createIntent(request, env);
   const withdrawal = await routeWithdrawal(request, url, env, API_ROOT);
   if (withdrawal) return withdrawal;
+  const refund = await routeRefund(request, url, env, API_ROOT);
+  if (refund) return refund;
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics/summary`)
     return json(await analyticsSummary(env));
   const match = url.pathname.match(
@@ -259,20 +262,26 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     cursor = rows[rows.length - 1].id;
   }
 
-  const [webhookRows, withdrawalRows] = await Promise.all([
+  const [webhookRows, withdrawalRows, refundRows] = await Promise.all([
     all<{ type: string; status: string; count: number }>(
       env.DB,
       "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
     ),
     all<{ status: string; count: number }>(
       env.DB,
-      "SELECT status, COUNT(*) AS count FROM withdrawal_intents GROUP BY status",
+      "SELECT status, COUNT(*) AS count FROM withdrawal_intents WHERE purpose = 'withdrawal' GROUP BY status",
+    ),
+    all<{ status: string; count: number }>(
+      env.DB,
+      "SELECT status, COUNT(*) AS count FROM withdrawal_intents WHERE purpose = 'refund' GROUP BY status",
     ),
   ]);
   const withdrawalStatuses: Record<string, number> = {};
+  const refundStatuses: Record<string, number> = {};
   for (const row of withdrawalRows) {
     withdrawalStatuses[row.status] = (withdrawalStatuses[row.status] ?? 0) + row.count;
   }
+  for (const row of refundRows) refundStatuses[row.status] = row.count;
   const withdrawalFees: Record<string, bigint> = {};
   cursor = "";
   for (;;) {
@@ -312,6 +321,7 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
       Object.entries(withdrawalFees).map(([chain, amount]) => [chain, amount.toString()]),
     ),
     withdrawals: withdrawalStatuses,
+    refunds: refundStatuses,
     webhooks: webhookRows,
   };
 }
