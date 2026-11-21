@@ -30,7 +30,7 @@ type WithdrawalRow = {
   id: string;
   idempotency_key: string;
   request_hash: string;
-  purpose: "withdrawal" | "swap" | "refund";
+  purpose: "withdrawal";
   external_id: string;
   chain: string;
   chain_id: number;
@@ -70,10 +70,7 @@ type WithdrawalTransactionRow = {
   updated_at: number;
 };
 
-type SignerInboxRow = WithdrawalRow & {
-  swap_id: string | null;
-  deposit_intent: string | null;
-};
+type SignerInboxRow = WithdrawalRow;
 
 export async function routeWithdrawal(
   request: Request,
@@ -121,11 +118,7 @@ async function createWithdrawal(request: Request, env: ApiEnv): Promise<Response
   const asset = requiredString(body, "asset").trim().toUpperCase();
   const rawAmount = requiredString(body, "amount");
   const destination = checkedAddress(requiredString(body, "destinationAddress"));
-  if (purpose !== "withdrawal")
-    throw new WithdrawalHttpError(
-      400,
-      "purpose must be withdrawal (swap outputs and refunds are coordinator-created)",
-    );
+  if (purpose !== "withdrawal") throw new WithdrawalHttpError(400, "purpose must be withdrawal");
   if (!externalId || externalId.length > 200)
     throw new WithdrawalHttpError(400, "externalId is required and must be at most 200 characters");
   if (rawAmount.trim().length > 100)
@@ -307,12 +300,10 @@ async function listWithdrawals(url: URL, env: ApiEnv): Promise<Response> {
   const limit = Number(rawLimit);
   const rows = await all<SignerInboxRow>(
     env.DB,
-    `SELECT w.*, s.id AS swap_id, s.deposit_intent
-     FROM withdrawal_intents w
-     LEFT JOIN swaps s ON s.withdrawal_intent = w.id OR s.refund_withdrawal = w.id
-     WHERE w.status = 'awaiting_signature' AND w.expires_at >= ?
-       AND (w.created_at > ? OR (w.created_at = ? AND w.id > ?))
-     ORDER BY w.created_at, w.id LIMIT ?`,
+    `SELECT * FROM withdrawal_intents
+     WHERE status = 'awaiting_signature' AND expires_at >= ?
+       AND (created_at > ? OR (created_at = ? AND id > ?))
+     ORDER BY created_at, id LIMIT ?`,
     now,
     match ? Number(match[1]) : 0,
     match ? Number(match[1]) : 0,
@@ -332,7 +323,6 @@ async function listWithdrawals(url: URL, env: ApiEnv): Promise<Response> {
     destinationAddress: row.destination_address,
     status: row.status,
     expiresAt: new Date(row.expires_at * 1_000).toISOString(),
-    ...(row.swap_id ? { swapId: row.swap_id, depositIntentId: row.deposit_intent } : {}),
     createdAt: new Date(row.created_at * 1_000).toISOString(),
     updatedAt: new Date(row.updated_at * 1_000).toISOString(),
   }));
@@ -349,22 +339,6 @@ async function submitTransaction(id: string, request: Request, env: ApiEnv): Pro
     .bind(id)
     .first<WithdrawalRow>();
   if (!withdrawal) throw new WithdrawalHttpError(404, "withdrawal not found");
-  if (
-    withdrawal.purpose !== "withdrawal" &&
-    (await env.DB.prepare(`SELECT 1 FROM swaps s
-      JOIN deposit_intents d ON d.id = s.deposit_intent
-      WHERE (s.withdrawal_intent = ? OR s.refund_withdrawal = ?)
-        AND (s.status = 'reorged' OR d.status = 'reorged')`)
-      .bind(id, id)
-      .first())
-  ) {
-    await env.DB.prepare(
-      "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'awaiting_signature'",
-    )
-      .bind(unixNow(), id)
-      .run();
-    throw new WithdrawalHttpError(409, "linked swap input was reorganized");
-  }
   if (withdrawal.status === "awaiting_signature" && withdrawal.expires_at < unixNow()) {
     await env.DB.prepare(
       "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'awaiting_signature'",
@@ -694,23 +668,12 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
 }
 
 async function expireUnavailableWithdrawals(db: D1Database, now: number): Promise<void> {
-  await db.batch([
-    db
-      .prepare(
-        "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE status = 'awaiting_signature' AND expires_at < ?",
-      )
-      .bind(now, now),
-    db
-      .prepare(`UPDATE withdrawal_intents SET status = 'expired', updated_at = ?
-        WHERE status = 'awaiting_signature' AND id IN (
-          SELECT s.withdrawal_intent FROM swaps s JOIN deposit_intents d ON d.id = s.deposit_intent
-          WHERE s.withdrawal_intent IS NOT NULL AND (s.status = 'reorged' OR d.status = 'reorged')
-          UNION
-          SELECT s.refund_withdrawal FROM swaps s JOIN deposit_intents d ON d.id = s.deposit_intent
-          WHERE s.refund_withdrawal IS NOT NULL AND (s.status = 'reorged' OR d.status = 'reorged')
-        )`)
-      .bind(now),
-  ]);
+  await db
+    .prepare(
+      "UPDATE withdrawal_intents SET status = 'expired', updated_at = ? WHERE status = 'awaiting_signature' AND expires_at < ?",
+    )
+    .bind(now, now)
+    .run();
 }
 
 async function reconcileTransaction(
@@ -911,22 +874,13 @@ async function withdrawalResponse(
   network: NetworkConfig,
   includeProposal: boolean,
 ): Promise<Record<string, unknown>> {
-  const [transaction, swap] = await Promise.all([
-    env.DB.prepare(
-      `SELECT * FROM withdrawal_transactions WHERE withdrawal = ?
-       ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'replaced' THEN 2 ELSE 1 END,
-                created_at DESC, id DESC LIMIT 1`,
-    )
-      .bind(row.id)
-      .first<WithdrawalTransactionRow>(),
-    row.purpose !== "withdrawal"
-      ? env.DB.prepare(
-          "SELECT id, deposit_intent FROM swaps WHERE withdrawal_intent = ? OR refund_withdrawal = ?",
-        )
-          .bind(row.id, row.id)
-          .first<{ id: string; deposit_intent: string }>()
-      : Promise.resolve(null),
-  ]);
+  const transaction = await env.DB.prepare(
+    `SELECT * FROM withdrawal_transactions WHERE withdrawal = ?
+     ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'replaced' THEN 2 ELSE 1 END,
+              created_at DESC, id DESC LIMIT 1`,
+  )
+    .bind(row.id)
+    .first<WithdrawalTransactionRow>();
   return {
     id: row.id,
     purpose: row.purpose,
@@ -943,7 +897,6 @@ async function withdrawalResponse(
     expiresAt: new Date(row.expires_at * 1_000).toISOString(),
     completedAt: row.completed_at ? new Date(row.completed_at * 1_000).toISOString() : null,
     lastError: row.last_error,
-    ...(swap ? { swapId: swap.id, depositIntentId: swap.deposit_intent } : {}),
     ...(includeProposal
       ? {
           proposal: {

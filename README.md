@@ -2,12 +2,12 @@
 
 # EVM Payment Gateway
 
-**Self-hosted EVM settlement for deposits, withdrawals, and cross-chain swaps.**
+**Self-hosted EVM payment acceptance and treasury collection.**
 
 The gateway creates keyless deposit addresses and collects confirmed funds in
-your treasury. It prepares exact withdrawals, swap outputs, and refunds for an
-external treasury signer. It also sends signed webhooks and reports settlement
-analytics. The treasury key never enters Cloudflare.
+your treasury. It prepares exact withdrawals for an external treasury signer.
+It also sends signed webhooks and reports settlement analytics. The treasury key
+never enters Cloudflare.
 
 [Live testnet demo](https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev) ·
 [Quick start](#quick-start) · [Architecture](#how-it-works) · [API](#api) ·
@@ -23,7 +23,7 @@ analytics. The treasury key never enters Cloudflare.
 
 > [!IMPORTANT]
 > The gateway coordinates settlement. It does not authorize business
-> operations, calculate swap prices, provide liquidity, or hold treasury keys.
+> operations, calculate prices, provide liquidity, or hold treasury keys.
 > Your application remains responsible for orders, credits, subscriptions,
 > donations, and fulfillment. The external signer approves treasury transfers.
 
@@ -41,10 +41,9 @@ analytics. The treasury key never enters Cloudflare.
 | Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting. Then the scanner retries. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
 | Withdrawal coordination | The API validates and broadcasts exact transactions that an external treasury signer approves. |
-| Swap coordination | Exact token inputs create one same-chain or cross-chain output. Failed swaps create externally signed refund proposals. |
 | Signed events | HMAC-SHA256 webhooks retry with stable event IDs for idempotent application handling. |
 | Serverless deployment | Cloudflare Workers, D1, Queues, Cron Triggers, and service bindings. No VM or container is necessary. |
-| Analytics | Exact integer totals for requested, received, confirmed, collected, fees, statuses, and webhooks. |
+| Analytics | Exact integer totals for requested, received, confirmed, collected, withdrawal fees, statuses, and webhooks. |
 
 ## Supported networks
 
@@ -81,12 +80,12 @@ flowchart LR
         Relayer["Private relayer Worker"]
     end
 
-    App -->|"Create deposits, withdrawals, and swaps"| API
+    App -->|"Create deposits and withdrawals"| API
     API <--> DB
     API -->|"Signed event"| Webhook
     Scanner --> API
     API <-->|"Read canonical blocks"| Chain
-    User -->|"Deposit or swap input"| Forwarder
+    User -->|"Deposit"| Forwarder
     API --> Queue --> Relayer
     Relayer -->|"deployAndCollect"| Factory
     Factory --> Forwarder
@@ -94,18 +93,15 @@ flowchart LR
     Factory --> Chain
     API -->|"Exact transaction proposal"| Signer
     Signer -->|"Signed raw transaction"| API
-    API -->|"Broadcast withdrawal, swap output, or refund"| Chain
+    API -->|"Broadcast withdrawal"| Chain
     Chain -->|"Payout"| User
 ```
 
 The API Worker coordinates every flow and stores its state in D1. The chain
-scanner updates deposits, withdrawals, swaps, and reorganization history.
+scanner updates deposits, withdrawals, and reorganization history.
 
-Deposit collection uses a separate low-balance relayer. Withdrawal and swap
-transactions use the configured payout wallet and an external signer.
-
-The gateway does not calculate market prices or provide liquidity. The
-application sets exact swap amounts. The payout wallet supplies output assets.
+Deposit collection uses a separate low-balance relayer. Withdrawals use the
+configured payout wallet and an external signer.
 
 ### Deposit collection
 
@@ -143,22 +139,15 @@ stateDiagram-v2
     reorged --> paid: Payment reconfirmed
 ```
 
-### Withdrawals, swaps, and refunds
+### Withdrawals
 
 A withdrawal request creates an exact transaction proposal. The external
 signer approves that proposal and returns a signed raw transaction. The API
 validates every field before broadcast.
 
-A swap links one exact deposit input to one exact output. The input and output
-can use different configured EVM chains. The output starts only after the input
-reaches the treasury.
-
-If a swap cannot finish, the coordinator creates an exact refund proposal. The
-external signer finds it in the withdrawal inbox and approves it from the
-configured payout wallet. Inbox rows identify the proposal as a withdrawal,
-swap output, or refund. Swap rows also include the related swap and deposit IDs.
-
-These cross-chain swaps are coordinated transfers, not atomic bridge swaps.
+The signer inbox shows every proposal waiting for approval. The treasury signer
+stays outside Cloudflare and must compare each proposal with an independently
+authorized ledger entry.
 
 ## Quick start
 
@@ -301,12 +290,10 @@ curl -X POST "$GATEWAY_URL/api/v1/deposits" \
   }'
 ```
 
-Set `purpose` to `deposit` for a normal deposit. Use `swap` only for an input
-that the swap coordinator manages. Store the business use case in `externalId`,
-`metadata`, or your application database.
+Set `purpose` to `deposit` for a normal deposit. Store the business use case in
+`externalId`, `metadata`, or your application database.
 
-Direct withdrawal requests use `withdrawal`. The swap coordinator creates
-`swap` and `refund` withdrawals.
+Withdrawal requests use `purpose` set to `withdrawal`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -319,9 +306,7 @@ Direct withdrawal requests use `withdrawal`. The swap coordinator creates
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for the external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
-| `POST` | `/swaps` | Link an exact swap deposit to a same-chain or cross-chain output. |
-| `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
-| `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, swap, and webhook metrics. |
+| `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, and webhook metrics. |
 | `GET` | `/health` | Read successful scan progress and stale active chains. |
 
 Successful deposits emit `deposit.succeeded`. An orphaned success emits
@@ -332,22 +317,17 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 ## Demo
 
-The optional demo Worker shows testnet deposits, withdrawals, and cross-chain
-swaps. Swap quotes use fixed configured testnet amounts, not market prices. The
-demo uses one user wallet for the swap output and possible refund. The core API
-keeps these addresses separate. The demo follows signed webhooks, treasury
-collection, outputs, and refunds.
+The optional demo Worker shows testnet deposits and treasury withdrawals. The
+demo follows signed webhooks, treasury collection, and withdrawal settlement.
 
-The demo has a signer inbox for withdrawals, swap outputs, and refunds. It
-shows exact proposals and accepts signed raw transactions. The treasury signer
-stays outside Cloudflare. A private service binding keeps the API key out of
-browser code.
+The demo has a signer inbox for withdrawals. It shows exact proposals and
+accepts signed raw transactions. The treasury signer stays outside Cloudflare.
+A private service binding keeps the API key out of browser code.
 
 Each testnet resource has a direct URL:
 
 - `/deposits/{id}`
 - `/withdrawals/{id}`
-- `/swaps/{id}`
 
 The demo restores the resource from this URL. It does not store resource state
 in browser storage. Anyone with the URL can read the sanitized state for that
@@ -379,8 +359,8 @@ The gateway uses these security controls:
   for real funds.
 - The withdrawal API accepts only a transaction from the configured withdrawal source.
   It validates the chain, asset, amount, destination, fee, gas, and nonce.
-- An input reorg expires unsigned swap-output and refund proposals. The API
-  rejects later transaction submissions for these proposals.
+- A withdrawal receipt reorg returns the withdrawal to `submitted` and clears
+  its completion time.
 - The relayer key can spend only its own native balance. It cannot sign for a
   deposit address or redirect a forwarder. A low balance limits its exposure.
 - The API rejects relayer private keys and independently validates registered

@@ -42,8 +42,6 @@ All API routes use the `/api/v1` prefix and require
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
-| `POST` | `/swaps` | Link an exact swap deposit to an output proposal. |
-| `GET` | `/swaps/{id}` | Read the input and output state of a swap. |
 | `GET` | `/analytics/summary` | Read aggregate settlement metrics. |
 | `GET` | `/health` | Read successful scan progress and stale active chains. |
 
@@ -99,9 +97,8 @@ than 32 nested levels.
 
 Keep `metadata` small. Store sensitive application data in your own database.
 
-Set `purpose` to `deposit` for a normal deposit. Use `swap` only for an input
-that the swap coordinator manages. Store the business use case in `externalId`,
-`metadata`, or your application database.
+Set `purpose` to `deposit` for a normal deposit. Store the business use case in
+`externalId`, `metadata`, or your application database.
 
 The response includes the fields needed by your checkout:
 
@@ -391,8 +388,8 @@ GET /api/v1/analytics/summary
 
 It groups requested, received, confirmed, and collected units by chain and
 asset. It also returns collection fees, withdrawal fees, withdrawal statuses,
-swap statuses, and webhook counts. Use your configured token decimals to
-convert units only at the display boundary.
+and webhook counts. Use your configured token decimals to convert units only at
+the display boundary.
 
 ### Scanner health
 
@@ -407,7 +404,6 @@ GET /health
   "ok": true,
   "time": "2026-08-24T07:00:00.000Z",
   "activeWithdrawals": 1,
-  "activeSwaps": 2,
   "staleChains": [],
   "networks": {
     "base": {
@@ -450,25 +446,23 @@ Content-Type: application/json
 }
 ```
 
-The signer polls the withdrawal inbox. The same inbox contains direct
-withdrawals, swap outputs, and refunds:
+The signer polls the withdrawal inbox:
 
 ```http
 GET /api/v1/withdrawals?status=awaiting_signature&limit=50
 ```
 
 Each item includes `purpose`, `externalId`, the amount, the source and
-destination addresses, and `expiresAt`. A swap output or refund also includes
-`swapId` and `depositIntentId`. Use `nextCursor` in the next request when it is
-not `null`:
+destination addresses, and `expiresAt`. Use `nextCursor` in the next request
+when it is not `null`:
 
 ```http
 GET /api/v1/withdrawals?status=awaiting_signature&limit=50&cursor={nextCursor}
 ```
 
-The inbox is the durable approval queue. It excludes expired proposals and
-unsigned proposals whose swap input was reorganized. A notification can tell
-the signer to poll sooner, but it is not the source of truth.
+The inbox is the durable approval queue. It excludes expired proposals. A
+notification can tell the signer to poll sooner, but it is not the source of
+truth.
 
 Get the exact transaction fields from the proposal endpoint:
 
@@ -485,9 +479,6 @@ The external signer must validate these fields:
 - Validate the ERC-20 `data`.
 - Validate the withdrawal amount and expiry time.
 - Validate `purpose` and `externalId` against the independently authorized operation.
-
-A swap proposal also includes `swapId` and `depositIntentId`. Read `/swaps/{swapId}`
-to compare the input and output with the independent ledger.
 
 The signer must also compare the proposal with an independently authorized
 withdrawal in your ledger. Do not approve a proposal only because the gateway
@@ -523,7 +514,7 @@ The withdrawal has these statuses:
 | `confirming` | The transaction is canonical but does not have the required confirmations. |
 | `complete` | The transaction has the required confirmations. |
 | `failed` | The transaction reverted or failed receipt validation. Reconcile the ledger before a new proposal. |
-| `expired` | The unsigned proposal expired or the linked swap invalidated it. |
+| `expired` | The unsigned proposal expired before a valid signature. |
 
 Poll until the status is `complete`, `failed`, or `expired`. The gateway
 rechecks a `complete` withdrawal for seven days. A receipt reorg returns the
@@ -532,91 +523,6 @@ withdrawal to `submitted` and clears its completion time.
 Continue independent ledger reconciliation during this seven-day window. The
 first version supports direct transactions from an externally owned treasury
 account. It does not parse transactions that a Safe contract executes.
-
-## Custodial swaps
-
-The swap workflow supports different input and output EVM chains. It is not an
-atomic bridge or an on-chain exchange. Your application sets the quoted output
-amount before it creates the swap.
-
-First, create a token deposit intent with `purpose` set to `swap`. Then link the
-deposit to its output:
-
-```http
-POST /api/v1/swaps
-Idempotency-Key: swap:quote-123
-Content-Type: application/json
-
-{
-  "depositIntentId": "di_example",
-  "outputChain": "bnb",
-  "outputAsset": "USDT",
-  "outputAmount": "24.91",
-  "destinationAddress": "0x...",
-  "refundAddress": "0x..."
-}
-```
-
-The gateway locks `refundAddress` when it creates the swap. Use an address that
-the user controls on the input chain.
-
-The input and output can use different configured chains. The output can use a
-native asset or an allowed token. The first version accepts only token inputs.
-Native input monitoring cannot find internal transfers without transaction
-traces.
-
-The gateway requires an exact input. An underpayment waits for more funds until
-the quote expires. An overpayment enters `refund_required` immediately.
-
-The gateway creates one refund withdrawal after it confirms and collects all
-received input. The refund sends the collected input asset to `refundAddress`.
-The external signer must approve this withdrawal.
-
-The refund spends from `withdrawalSourceAddress` on the input chain. Keep enough
-approved liquidity in that wallet before the signer submits the refund.
-
-An expired or failed output also starts the refund flow. The gateway does not
-create a refund while an output is active or submitted. If an output revives
-before refund approval, the gateway expires the unsigned refund and marks the
-swap as `reorged`.
-
-The gateway creates the output withdrawal after these events occur:
-
-- The input gets the required confirmations.
-- The relayer collects the exact input in the treasury.
-- The input transaction was mined before the quote expiry.
-
-The swap has these statuses:
-
-| Status | Meaning |
-| --- | --- |
-| `awaiting_input` | The gateway waits for the exact input. |
-| `input_confirming` | The exact input is present but does not have all confirmations. |
-| `input_confirmed` | The input is confirmed, but treasury collection is not finished. |
-| `awaiting_signature` | The output proposal is ready for signer approval. |
-| `output_submitted` | The output transaction is submitted or confirming. |
-| `complete` | The output transaction has the required confirmations. |
-| `expired` | The quote expired without usable input. A later scan can reopen it for a timely exact transfer. |
-| `refund_required` | The gateway waits for exact collection or operator action before it creates a refund proposal. |
-| `refund_awaiting_signature` | The refund proposal is ready for signer approval. |
-| `refund_submitted` | The refund transaction is submitted or confirming. |
-| `refunded` | The refund transaction has the required confirmations. |
-| `reorged` | The input or a linked payout changed after coordination. Reconcile the incident manually. |
-
-The external signer must validate the swap against an independent ledger and
-an independent RPC provider. The signer must validate the collected input,
-quoted output, destination, chain, asset, and amount before approval.
-
-For a refund, the signer must also validate `refundAddress` and the total
-collected input. The signer must reject a refund when the output can still
-complete.
-
-Input and output transactions are not atomic across chains. If the input
-reorganizes before signature, the gateway expires unsigned output and refund
-proposals. It also rejects transaction submissions for these proposals.
-
-If the input reorganizes after output submission, the swap enters `reorged`.
-Stop automatic approval. Reconcile the loss from the treasury ledger.
 
 ## Recurring billing
 
@@ -646,4 +552,4 @@ Before production, complete these tasks:
 - Never treat `deposit.recovered` as payment success.
 - Never make fulfillment depend on asynchronous treasury collection.
 - Monitor `/health` and alert on stale active chains.
-- Reconcile withdrawal and swap terminal states against an independent ledger.
+- Reconcile withdrawal terminal states against an independent ledger.

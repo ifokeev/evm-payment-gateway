@@ -30,7 +30,6 @@ import {
   unixNow,
 } from "./monitor";
 import { rpcTransport } from "./rpc";
-import { routeSwap } from "./swaps";
 import type {
   ApiEnv,
   DepositStatus,
@@ -93,8 +92,6 @@ async function route(request: Request, env: ApiEnv): Promise<Response> {
     return createIntent(request, env);
   const withdrawal = await routeWithdrawal(request, url, env, API_ROOT);
   if (withdrawal) return withdrawal;
-  const swap = await routeSwap(request, url, env, API_ROOT);
-  if (swap) return swap;
   if (request.method === "GET" && url.pathname === `${API_ROOT}/analytics/summary`)
     return json(await analyticsSummary(env));
   const match = url.pathname.match(
@@ -121,19 +118,20 @@ async function health(env: ApiEnv): Promise<Response> {
     "SELECT chain, last_scanned, updated_at FROM chain_states",
   );
   const scanned = new Map(states.map((state) => [state.chain, state]));
-  const [withdrawals, swaps, activeChainRows] = await Promise.all([
+  const [withdrawals, activeChainRows] = await Promise.all([
     env.DB.prepare(
       "SELECT COUNT(*) AS count FROM withdrawal_intents WHERE status IN ('awaiting_signature','submitted','confirming')",
-    ).first<{ count: number }>(),
-    env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM swaps WHERE status NOT IN ('complete','refunded','reorged')",
     ).first<{ count: number }>(),
     all<{ chain: string }>(
       env.DB,
       `SELECT DISTINCT d.chain FROM deposit_intents d
        WHERE d.status IN ('pending','underpaid','confirming','reorged')
-          OR (d.status = 'paid' AND EXISTS (SELECT 1 FROM swaps s
-            WHERE s.deposit_intent = d.id AND s.status NOT IN ('complete','refunded','reorged')))`,
+          OR (d.status = 'paid' AND EXISTS (SELECT 1 FROM deposit_transfers t
+            WHERE t.deposit_intent = d.id AND t.canonical = 1
+              AND t.block_number >= COALESCE(
+                (SELECT last_scanned FROM chain_states WHERE chain = d.chain), 0
+              ) - ?))`,
+      intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000),
     ),
   ]);
   const staleChains = activeChainRows
@@ -146,7 +144,6 @@ async function health(env: ApiEnv): Promise<Response> {
     ok: staleChains.length === 0,
     time: new Date().toISOString(),
     activeWithdrawals: withdrawals?.count ?? 0,
-    activeSwaps: swaps?.count ?? 0,
     staleChains,
     networks: Object.fromEntries(
       [...networks.keys()].map((name) => {
@@ -262,29 +259,19 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
     cursor = rows[rows.length - 1].id;
   }
 
-  const [webhookRows, withdrawalRows, swapRows] = await Promise.all([
+  const [webhookRows, withdrawalRows] = await Promise.all([
     all<{ type: string; status: string; count: number }>(
       env.DB,
       "SELECT type, status, COUNT(*) AS count FROM webhook_events GROUP BY type, status",
     ),
-    all<{ purpose: string; status: string; count: number }>(
-      env.DB,
-      "SELECT purpose, status, COUNT(*) AS count FROM withdrawal_intents GROUP BY purpose, status",
-    ),
     all<{ status: string; count: number }>(
       env.DB,
-      "SELECT status, COUNT(*) AS count FROM swaps GROUP BY status",
+      "SELECT status, COUNT(*) AS count FROM withdrawal_intents GROUP BY status",
     ),
   ]);
   const withdrawalStatuses: Record<string, number> = {};
-  const withdrawalsByPurpose: Record<string, Record<string, number>> = {
-    withdrawal: {},
-    swap: {},
-    refund: {},
-  };
   for (const row of withdrawalRows) {
     withdrawalStatuses[row.status] = (withdrawalStatuses[row.status] ?? 0) + row.count;
-    withdrawalsByPurpose[row.purpose][row.status] = row.count;
   }
   const withdrawalFees: Record<string, bigint> = {};
   cursor = "";
@@ -325,8 +312,6 @@ async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {
       Object.entries(withdrawalFees).map(([chain, amount]) => [chain, amount.toString()]),
     ),
     withdrawals: withdrawalStatuses,
-    withdrawalsByPurpose,
-    swaps: Object.fromEntries(swapRows.map((row) => [row.status, row.count])),
     webhooks: webhookRows,
   };
 }
@@ -351,8 +336,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
   const chainName = requiredString(body, "chain").trim();
   const asset = requiredString(body, "asset").trim().toUpperCase();
   const rawAmount = requiredString(body, "amount");
-  if (purpose !== "deposit" && purpose !== "swap")
-    throw new HttpError(400, "purpose must be deposit or swap");
+  if (purpose !== "deposit") throw new HttpError(400, "purpose must be deposit");
   if (!externalId || externalId.length > 200)
     throw new HttpError(400, "externalId is required and must be at most 200 characters");
   if (rawAmount.trim().length > 100)
