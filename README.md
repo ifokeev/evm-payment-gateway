@@ -41,6 +41,7 @@ never enters Cloudflare.
 | Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting. Then the scanner retries. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
 | Withdrawal coordination | The API validates and broadcasts exact transactions that an external treasury signer approves. |
+| Batch withdrawals | Create up to 100 exact proposals in one idempotent request. The signer still approves each transaction. |
 | Deposit refunds | A paid deposit can be refunded to its sole payer through an externally signed withdrawal proposal. |
 | Multi-asset checkout | Create one deposit intent per accepted asset, fulfill the first paid intent, and refund duplicates. |
 | Signed events | HMAC-SHA256 webhooks retry with stable event IDs for idempotent application handling. |
@@ -314,6 +315,7 @@ the deposit refund endpoint.
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for the external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
+| `POST` | `/withdrawals/batch` | Create up to 100 withdrawal proposals with one batch request. |
 | `POST` | `/deposits/{id}/refunds` | Create a refund proposal to the deposit's sole payer. |
 | `GET` | `/deposits/{id}/refunds` | Read refund history and refundable balance. |
 | `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, refund, and webhook metrics. |
@@ -327,6 +329,9 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 
 Terminal refund proposals emit `refund.succeeded`, `refund.failed`, or
 `refund.expired`.
+
+Terminal direct withdrawals emit `withdrawal.succeeded`, `withdrawal.failed`, or
+`withdrawal.expired`.
 
 Multi-asset checkout is an application pattern over `/deposits`. Create one
 intent per accepted chain and asset with the same `externalId`, show the priced

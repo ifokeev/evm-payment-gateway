@@ -700,6 +700,44 @@ describe("public demo", () => {
     });
   });
 
+  it("accepts terminal withdrawal webhooks", async () => {
+    const event = {
+      id: "evt_withdrawal_demo123",
+      type: "withdrawal.succeeded",
+      createdAt: new Date().toISOString(),
+      data: {
+        withdrawal: {
+          id: "wd_demo123",
+          status: "complete",
+          amount: "1.25",
+          asset: "USDC",
+        },
+      },
+    };
+    const rawBody = JSON.stringify(event);
+    const timestamp = Math.floor(Date.now() / 1_000).toString();
+    const signature = await signWebhook(timestamp, rawBody, env.PAYMENT_WEBHOOK_SECRET);
+    const response = await demo.fetch(
+      new Request("https://demo.test/webhooks/deposit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Webhook-Id": event.id,
+          "Webhook-Timestamp": timestamp,
+          "Webhook-Signature": `v1,${signature}`,
+        },
+        body: rawBody,
+      }),
+      env,
+    );
+    expect(response.status).toBe(204);
+    expect(JSON.parse(events.get("withdrawal:wd_demo123") ?? "null")).toMatchObject({
+      id: event.id,
+      type: "withdrawal.succeeded",
+      withdrawal: { id: "wd_demo123", status: "complete" },
+    });
+  });
+
   it("serves public configuration and delegates static assets", async () => {
     const config = await demo.fetch(new Request("https://demo.test/api/config"), env);
     expect(await config.json()).toEqual({
