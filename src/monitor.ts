@@ -1,7 +1,6 @@
 import { type Address, createPublicClient, getAddress, type Hex, parseAbiItem } from "viem";
 import { deriveStatus, eligibleForSweep, intSetting, loadNetworks } from "./domain";
 import { rpcTransport } from "./rpc";
-import { reconcileSwaps } from "./swaps";
 import type { ApiEnv, DepositTransferRow, IntentRow, NetworkConfig, SweepMessage } from "./types";
 import { reconcileWithdrawals, rewindWithdrawals } from "./withdrawals";
 
@@ -37,7 +36,6 @@ export async function runScheduled(env: ApiEnv): Promise<void> {
     ["webhook delivery", () => deliverWebhooks(env)],
     ["sweep dispatch", () => dispatchSweeps(env)],
     ["withdrawal reconciliation", () => reconcileWithdrawals(env)],
-    ["swap reconciliation", () => reconcileSwaps(env)],
   ] as const) {
     try {
       await task();
@@ -60,10 +58,6 @@ async function scheduledScanChains(
        LEFT JOIN chain_states s ON s.chain = i.chain
       WHERE ? = 1
          OR i.status IN ('pending', 'underpaid', 'confirming', 'reorged')
-         OR (i.status = 'paid' AND EXISTS (
-              SELECT 1 FROM swaps x WHERE x.deposit_intent = i.id
-                AND x.status NOT IN ('complete', 'refunded', 'reorged')
-            ))
          OR (i.status = 'paid' AND EXISTS (
               SELECT 1 FROM deposit_transfers t
                WHERE t.deposit_intent = i.id AND t.canonical = 1
@@ -501,16 +495,14 @@ export async function recalculateChain(
     );
     if (status === "reorged") hashes.push(...orphanedHashes);
     const expiredWithGrace = now > intent.expires_at + grace;
-    const eligible =
-      (intent.purpose === "swap" && expiredWithGrace && allConfirmed > 0n) ||
-      eligibleForSweep(
-        Boolean(intent.token_address),
-        status,
-        allConfirmed,
-        expected,
-        expiredWithGrace,
-        minTokenBps,
-      );
+    const eligible = eligibleForSweep(
+      Boolean(intent.token_address),
+      status,
+      allConfirmed,
+      expected,
+      expiredWithGrace,
+      minTokenBps,
+    );
     await updatePayment(
       env.DB,
       intent,

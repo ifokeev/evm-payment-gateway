@@ -8,7 +8,7 @@
   "assets": {
     "directory": "./demo/public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/webhooks/*", "/deposits/*", "/withdrawals/*", "/swaps/*"]
+    "run_worker_first": ["/api/*", "/webhooks/*", "/deposits/*", "/withdrawals/*"]
   },
   "services": [
     {

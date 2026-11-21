@@ -7,21 +7,6 @@ const withdrawalOrder = [
   "failed",
   "expired",
 ];
-const swapOrder = [
-  "awaiting_input",
-  "input_confirming",
-  "input_confirmed",
-  "awaiting_signature",
-  "output_submitted",
-  "complete",
-  "refund_required",
-  "refund_awaiting_signature",
-  "refund_submitted",
-  "refunded",
-  "expired",
-  "reorged",
-];
-
 async function initialize() {
   const main = document.querySelector("#analytics-main");
   try {
@@ -52,7 +37,6 @@ function render(config, analytics) {
   text("#deposit-total", number.format(sum(assets.map((row) => row.intents))));
   text("#paid-total", number.format(sum(assets.map((row) => row.paidIntents))));
   text("#withdrawal-total", number.format(sum(Object.values(analytics.withdrawals ?? {}))));
-  text("#swap-total", number.format(sum(Object.values(analytics.swaps ?? {}))));
   text("#analytics-updated", formatUpdated(analytics.generatedAt));
 
   const networks = new Map(
@@ -64,7 +48,6 @@ function render(config, analytics) {
   const rows = document.querySelector("#settlement-rows");
   rows.replaceChildren(...assets.map((row) => settlementRow(row, networks.get(row.chain))));
   renderStatuses("#withdrawal-statuses", analytics.withdrawals, withdrawalOrder);
-  renderStatuses("#swap-statuses", analytics.swaps, swapOrder);
 }
 
 function settlementRow(row, networkLabel) {

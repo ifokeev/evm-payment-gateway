@@ -5,11 +5,6 @@ const pageShell = document.querySelector(".page-shell");
 const flowTabs = document.querySelectorAll(".flow-tab[data-flow]");
 const network = document.querySelector("#network");
 const asset = document.querySelector("#asset");
-const outputFields = document.querySelector("#output-fields");
-const outputNetwork = document.querySelector("#output-network");
-const outputAsset = document.querySelector("#output-asset");
-const outputAmount = document.querySelector("#output-amount");
-const outputAssetLabel = document.querySelector("#output-asset-label");
 const destinationField = document.querySelector("#destination-field");
 const destinationAddress = document.querySelector("#destination-address");
 const destinationError = document.querySelector("#destination-error");
@@ -23,7 +18,6 @@ const loadingState = document.querySelector("#loading-state");
 const intentState = document.querySelector("#intent-state");
 const withdrawalState = document.querySelector("#withdrawal-state");
 const signerPanel = document.querySelector("#signer-panel");
-const swapRouteSummary = document.querySelector("#swap-route-summary");
 const globalError = document.querySelector("#global-error");
 const copyAddress = document.querySelector("#copy-address");
 const copyLabel = document.querySelector("#copy-label");
@@ -48,7 +42,6 @@ let openingWallet = false;
 let walletPaymentUri = "";
 let currentIntentId = initialResource?.flow === "deposit" ? initialResource.id : "";
 let currentWithdrawalId = initialResource?.flow === "withdrawal" ? initialResource.id : "";
-let currentSwapId = initialResource?.flow === "swap" ? initialResource.id : "";
 let currentProposal;
 let currentProposalId = "";
 let currentSignerPath = "";
@@ -61,21 +54,12 @@ window.addEventListener("popstate", restoreResource);
 
 network.addEventListener("change", () => {
   populateAssets();
-  populateOutputNetworks();
-  populateOutputAssets();
   updateSelection();
 });
 
 asset.addEventListener("change", () => {
-  populateOutputNetworks();
-  populateOutputAssets();
   updateSelection();
 });
-outputNetwork.addEventListener("change", () => {
-  populateOutputAssets();
-  updateSelection();
-});
-outputAsset.addEventListener("change", updateSelection);
 
 amount.addEventListener("input", () => {
   amountError.textContent = "";
@@ -154,8 +138,7 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const withdrawing = flow === "withdrawal";
-    const swapping = flow === "swap";
-    const endpoint = withdrawing ? "/api/withdrawals" : swapping ? "/api/swaps" : "/api/deposits";
+    const endpoint = withdrawing ? "/api/withdrawals" : "/api/deposits";
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -164,13 +147,6 @@ form.addEventListener("submit", async (event) => {
         asset: asset.value,
         amount: amount.value,
         ...(withdrawing ? { destinationAddress: destinationAddress.value } : {}),
-        ...(swapping
-          ? {
-              outputChain: outputNetwork.value,
-              outputAsset: outputAsset.value,
-              walletAddress: destinationAddress.value,
-            }
-          : {}),
         idempotencyKey,
         turnstileToken,
       }),
@@ -179,8 +155,7 @@ form.addEventListener("submit", async (event) => {
     if (!response.ok)
       throw new DemoRequestError(
         response.status,
-        body.error ??
-          (withdrawing ? "Withdrawal failed" : swapping ? "Swap failed" : "Payment failed"),
+        body.error ?? (withdrawing ? "Withdrawal failed" : "Payment failed"),
       );
     idempotencyKey = crypto.randomUUID();
     if (withdrawing) {
@@ -188,11 +163,6 @@ form.addEventListener("submit", async (event) => {
       setResourcePath("withdrawal", currentWithdrawalId);
       renderWithdrawal(body.withdrawal);
       startWithdrawalPolling(true);
-    } else if (swapping) {
-      currentSwapId = body.swap.id;
-      setResourcePath("swap", currentSwapId);
-      renderSwap(body);
-      startSwapPolling();
     } else {
       currentIntentId = body.intent.id;
       setResourcePath("deposit", currentIntentId);
@@ -205,13 +175,9 @@ form.addEventListener("submit", async (event) => {
         ? currentWithdrawalId
           ? "withdrawal"
           : "empty"
-        : flow === "swap"
-          ? currentSwapId
-            ? "intent"
-            : "empty"
-          : currentIntentId
-            ? "intent"
-            : "empty",
+        : currentIntentId
+          ? "intent"
+          : "empty",
     );
     const message = error instanceof Error ? error.message : "Request failed";
     if (error instanceof DemoRequestError && error.status === 400) {
@@ -245,13 +211,8 @@ signedTransactionForm.addEventListener("submit", async (event) => {
     if (!response.ok)
       throw new DemoRequestError(response.status, body.error ?? "Signed transaction failed");
     rawTransaction.value = "";
-    if (flow === "swap") {
-      renderSwap(body);
-      startSwapPolling();
-    } else {
-      renderWithdrawal(body.withdrawal);
-      startWithdrawalPolling();
-    }
+    renderWithdrawal(body.withdrawal);
+    startWithdrawalPolling();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Signed transaction failed";
     if (error instanceof DemoRequestError && error.status < 500)
@@ -272,8 +233,6 @@ async function initialize() {
     config = body;
     populateNetworks();
     populateAssets();
-    populateOutputNetworks();
-    populateOutputAssets();
     updateSelection();
     network.disabled = false;
     asset.disabled = false;
@@ -293,11 +252,7 @@ function populateNetworks() {
   const previous = network.value;
   network.replaceChildren();
   const seen = new Set();
-  const options =
-    flow === "swap"
-      ? config.options.filter((option) => option.asset !== option.nativeAsset)
-      : config.options;
-  for (const option of options) {
+  for (const option of config.options) {
     if (seen.has(option.chain)) continue;
     seen.add(option.chain);
     const item = document.createElement("option");
@@ -311,9 +266,7 @@ function populateNetworks() {
 function populateAssets() {
   const previous = asset.value;
   asset.replaceChildren();
-  for (const option of config.options.filter(
-    (item) => item.chain === network.value && (flow !== "swap" || item.asset !== item.nativeAsset),
-  )) {
+  for (const option of config.options.filter((item) => item.chain === network.value)) {
     const item = document.createElement("option");
     item.value = option.asset;
     item.textContent = option.asset;
@@ -322,66 +275,19 @@ function populateAssets() {
   }
 }
 
-function populateOutputNetworks() {
-  const previous = outputNetwork.value;
-  outputNetwork.replaceChildren();
-  const seen = new Set();
-  for (const option of swapOutputOptions()) {
-    if (seen.has(option.chain)) continue;
-    seen.add(option.chain);
-    const item = document.createElement("option");
-    item.value = option.chain;
-    item.textContent = option.chainLabel;
-    item.selected = option.chain === previous;
-    outputNetwork.append(item);
-  }
-}
-
-function populateOutputAssets() {
-  const previous = outputAsset.value;
-  outputAsset.replaceChildren();
-  for (const option of swapOutputOptions().filter((item) => item.chain === outputNetwork.value)) {
-    const item = document.createElement("option");
-    item.value = option.asset;
-    item.textContent = option.asset;
-    item.selected = option.asset === previous;
-    outputAsset.append(item);
-  }
-}
-
-function swapOutputOptions() {
-  return (
-    config?.options.filter(
-      (option) => option.chain !== network.value || option.asset !== asset.value,
-    ) ?? []
-  );
-}
-
 function updateSelection() {
   const option = selectedOption();
   if (!option) return;
   amount.value = option.defaultAmount;
   amount.placeholder = option.defaultAmount;
   assetLabel.textContent = option.asset;
-  amountHelp.textContent =
-    flow === "swap"
-      ? `The fixed demo input is ${option.defaultAmount} ${option.asset}.`
-      : `${option.minimumAmount} to ${option.maximumAmount} ${option.asset}`;
-  const selectedOutput = selectedOutputOption();
-  outputAmount.value = selectedOutput?.defaultAmount ?? "";
-  outputAssetLabel.textContent = selectedOutput?.asset ?? "";
+  amountHelp.textContent = `${option.minimumAmount} to ${option.maximumAmount} ${option.asset}`;
   text("#header-context", "Live testnet demo");
 }
 
 function selectedOption() {
   return config?.options.find(
     (option) => option.chain === network.value && option.asset === asset.value,
-  );
-}
-
-function selectedOutputOption() {
-  return config?.options.find(
-    (option) => option.chain === outputNetwork.value && option.asset === outputAsset.value,
   );
 }
 
@@ -428,14 +334,10 @@ function updateCreateButton() {
   createButton.textContent = submitting
     ? flow === "withdrawal"
       ? "Creating withdrawal..."
-      : flow === "swap"
-        ? "Creating swap..."
-        : "Creating deposit..."
+      : "Creating deposit..."
     : flow === "withdrawal"
       ? "Create withdrawal"
-      : flow === "swap"
-        ? "Create swap"
-        : "Create deposit";
+      : "Create deposit";
 }
 
 function setStage(stage) {
@@ -448,75 +350,40 @@ function setStage(stage) {
 }
 
 function setFlow(next, initializing = false) {
-  if (submitting || !["deposit", "withdrawal", "swap"].includes(next)) return;
+  if (submitting || !["deposit", "withdrawal"].includes(next)) return;
   const changed = flow !== next;
   flow = next;
   pageShell.dataset.flow = flow;
   clearTimeout(pollTimer);
   for (const tab of flowTabs) tab.setAttribute("aria-selected", String(tab.dataset.flow === flow));
-  outputFields.hidden = flow !== "swap";
-  outputNetwork.disabled = !config || flow !== "swap";
-  outputAsset.disabled = !config || flow !== "swap";
   destinationField.hidden = flow === "deposit";
   destinationAddress.disabled = !config || flow === "deposit";
-  amount.disabled = !config || flow === "swap";
-  text("#network-label", flow === "swap" ? "Input network" : "Network");
-  text("#asset-title", flow === "swap" ? "Input asset" : "Asset");
-  text("#amount-title", flow === "swap" ? "Fixed input amount" : "Amount");
-  text(
-    "#form-title",
-    flow === "deposit"
-      ? "Create deposit"
-      : flow === "withdrawal"
-        ? "Create withdrawal"
-        : "Fixed testnet quote",
-  );
-  text(
-    "#lifecycle-title",
-    flow === "deposit"
-      ? "Deposit lifecycle"
-      : flow === "withdrawal"
-        ? "Withdrawal lifecycle"
-        : "Swap lifecycle",
-  );
-  text("#destination-label", flow === "swap" ? "Your wallet address" : "Destination address");
-  text(
-    "#destination-help",
-    flow === "swap"
-      ? "The demo sends the swap output or a refund to this address."
-      : "Review this recipient before you approve the withdrawal.",
-  );
-  text(
-    "#page-title",
-    flow === "deposit"
-      ? "Deposit crypto."
-      : flow === "withdrawal"
-        ? "Withdraw crypto."
-        : "Swap across chains.",
-  );
+  amount.disabled = !config;
+  text("#network-label", "Network");
+  text("#asset-title", "Asset");
+  text("#amount-title", "Amount");
+  text("#form-title", flow === "deposit" ? "Create deposit" : "Create withdrawal");
+  text("#lifecycle-title", flow === "deposit" ? "Deposit lifecycle" : "Withdrawal lifecycle");
+  text("#destination-label", "Destination address");
+  text("#destination-help", "Review this recipient before you approve the withdrawal.");
+  text("#page-title", flow === "deposit" ? "Deposit crypto." : "Withdraw crypto.");
   text(
     "#intro-copy",
     flow === "deposit"
       ? "Create an exact testnet payment and follow it to treasury collection."
-      : flow === "withdrawal"
-        ? "Create an exact proposal, approve it, and follow it to settlement."
-        : "Use a fixed testnet quote and follow the input, collection, and treasury output.",
+      : "Create an exact proposal, approve it, and follow it to settlement.",
   );
   text(
     "#empty-title",
     flow === "deposit"
       ? "Receive funds at a unique address."
-      : flow === "withdrawal"
-        ? "Review each withdrawal before approval."
-        : "Send the output or refund to one wallet.",
+      : "Review each withdrawal before approval.",
   );
   text(
     "#empty-detail",
     flow === "deposit"
       ? "Create an intent to receive a unique address, QR code, and wallet link."
-      : flow === "withdrawal"
-        ? "Create a proposal to review its exact transaction fields."
-        : "Create a fixed quote to receive the input address and exact output terms.",
+      : "Create a proposal to review its exact transaction fields.",
   );
   const depositSteps = [
     ["Create deposit", "Ready"],
@@ -532,15 +399,7 @@ function setFlow(next, initializing = false) {
     ["Confirmations", "Pending"],
     ["Complete", "Pending"],
   ];
-  const swapSteps = [
-    ["Create quote", "Ready"],
-    ["Waiting for input", "Pending"],
-    ["Treasury collection", "Pending"],
-    ["Approve output", "Pending"],
-    ["Complete", "Pending"],
-  ];
-  const steps =
-    flow === "deposit" ? depositSteps : flow === "withdrawal" ? withdrawalSteps : swapSteps;
+  const steps = flow === "deposit" ? depositSteps : withdrawalSteps;
   const stepNames = ["one", "two", "three", "four", "five"];
   for (const [index, [title, detail]] of steps.entries()) {
     text(`#empty-step-${stepNames[index]}`, title);
@@ -550,14 +409,10 @@ function setFlow(next, initializing = false) {
     "#loading-message",
     flow === "deposit"
       ? "Allocating a dedicated deposit address..."
-      : flow === "withdrawal"
-        ? "Locking the withdrawal proposal..."
-        : "Locking the input and output terms...",
+      : "Locking the withdrawal proposal...",
   );
   populateNetworks();
   populateAssets();
-  populateOutputNetworks();
-  populateOutputAssets();
   updateSelection();
   if (changed && !initializing) {
     turnstileToken = "";
@@ -566,7 +421,6 @@ function setFlow(next, initializing = false) {
   updateCreateButton();
   if (flow === "deposit" && currentIntentId) startPolling(true);
   else if (flow === "withdrawal" && currentWithdrawalId) startWithdrawalPolling(true);
-  else if (flow === "swap" && currentSwapId) startSwapPolling(true);
   else setStage("empty");
 }
 
@@ -574,8 +428,6 @@ function renderPayment(state) {
   const { intent, sweep, webhookEvent } = state;
   setStage("intent");
   globalError.hidden = true;
-  swapRouteSummary.hidden = true;
-  document.querySelector("#swap-output-activity").hidden = true;
   text("#transactions-title", "On-chain activity");
   text("#delivery-title", "Payment update");
   text("#sweep-title", "Treasury collection");
@@ -638,7 +490,7 @@ function renderPayment(state) {
     paymentQr.removeAttribute("src");
     text("#payment-closed-title", action.title);
     text("#payment-closed-detail", action.detail);
-    text("#create-another", flow === "swap" ? "Create new swap" : "Create new deposit");
+    text("#create-another", "Create new deposit");
   }
 
   const transactions = Array.isArray(intent.transactions) ? intent.transactions : [];
@@ -647,60 +499,6 @@ function renderPayment(state) {
   renderTransactions(transactions, status, intent.chain);
   renderDelivery(webhookEvent, unpaidExpired);
   renderSweep(sweep, unpaidExpired);
-}
-
-function renderSwap(state) {
-  const { swap, intent, sweep, webhookEvent, payout } = state;
-  renderPayment({ intent, sweep, webhookEvent });
-  swapRouteSummary.hidden = false;
-  document.querySelector("#swap-output-activity").hidden = false;
-  const status = String(swap.status ?? "awaiting_input");
-  const titles = {
-    awaiting_input: "Waiting for swap input",
-    input_confirming: "Swap input confirming",
-    input_confirmed: "Collecting swap input",
-    awaiting_signature: "Output signature required",
-    output_submitted: "Swap output submitted",
-    complete: "Swap complete",
-    expired: "Swap quote expired",
-    refund_required: "Swap refund required",
-    refund_awaiting_signature: "Refund signature required",
-    refund_submitted: "Swap refund submitted",
-    refunded: "Swap refunded",
-    reorged: "Swap reorged",
-  };
-  const details = {
-    awaiting_input: "Send the exact token input before the quote expires.",
-    input_confirming: "The input waits for the required network confirmations.",
-    input_confirmed: "The confirmed input moves to the treasury.",
-    awaiting_signature: "Approve the exact output proposal to continue.",
-    output_submitted: "The output transaction waits for network confirmation.",
-    complete: "The input and output reached their required confirmation depths.",
-    expired: "The quote expired without usable input.",
-    refund_required: "The app prepares a refund for the collected input.",
-    refund_awaiting_signature: "Approve the exact refund proposal to continue.",
-    refund_submitted: "The refund transaction waits for network confirmation.",
-    refunded: "The refund reached the required confirmation depth.",
-    reorged: "A linked transaction changed after swap coordination.",
-  };
-  document.querySelector(".intent-header").dataset.status = status;
-  text("#status-title", titles[status] ?? "Swap updated");
-  text("#status-detail", swap.lastError || details[status] || "Swap state updated.");
-  text(
-    "#swap-input-route",
-    `${swap.input.expectedAmount} ${swap.input.asset} on ${humanize(swap.input.chain)}`,
-  );
-  text(
-    "#swap-output-route",
-    `${swap.output.amount} ${swap.output.asset} on ${humanize(swap.output.chain)}`,
-  );
-  text("#swap-destination", swap.output.destinationAddress);
-  text("#intent-id-label", "Swap ID");
-  text("#intent-id", swap.id);
-  text("#expiry-time", formatExpiry(swap.quoteExpiresAt));
-  text("#transactions-title", "Swap input");
-  renderSwapOutput(swap, payout);
-  renderSigner(payout, `/api/swaps/${encodeURIComponent(swap.id)}/transaction`);
 }
 
 function renderWithdrawal(withdrawal) {
@@ -805,14 +603,7 @@ function renderSigner(withdrawal, path) {
   signerPanel.hidden = !currentProposal;
   signedTransactionForm.hidden = !awaitingSignature;
   copyProposal.disabled = !currentProposal;
-  text(
-    "#signer-title",
-    withdrawal.purpose === "refund"
-      ? "Approve refund"
-      : withdrawal.purpose === "swap"
-        ? "Approve swap output"
-        : "Approve withdrawal",
-  );
+  text("#signer-title", "Approve withdrawal");
   if (!currentProposal) return;
   text("#proposal-chain", currentProposal.chainId);
   text("#proposal-to", currentProposal.to);
@@ -820,40 +611,6 @@ function renderSigner(withdrawal, path) {
   text("#proposal-gas", currentProposal.maxGas);
   text("#proposal-gas-price", `${currentProposal.maxGasPriceWei} wei`);
   text("#proposal-data", currentProposal.data);
-}
-
-function renderSwapOutput(swap, payout) {
-  const refunding = String(swap.status).startsWith("refund_") || swap.status === "refunded";
-  text("#swap-output-title", refunding ? "Swap refund" : "Swap output");
-  const states = {
-    awaiting_input: ["idle", "Waiting", "The output starts after treasury collection."],
-    input_confirming: ["idle", "Waiting", "The input waits for network confirmation."],
-    input_confirmed: ["active", "Collecting", "The input moves to the treasury."],
-    awaiting_signature: ["active", "Signature", "The output proposal waits for approval."],
-    output_submitted: ["detected", "Submitted", "The output transaction is on the network."],
-    complete: ["success", "Complete", "The output reached the required confirmation depth."],
-    expired: ["idle", "Expired", "The quote expired without usable input."],
-    refund_required: ["warning", "Refund", "The app prepares the refund proposal."],
-    refund_awaiting_signature: ["active", "Signature", "The refund proposal waits for approval."],
-    refund_submitted: ["detected", "Submitted", "The refund transaction is on the network."],
-    refunded: ["success", "Refunded", "The refund reached the required confirmation depth."],
-    reorged: ["warning", "Reorg", "Manual treasury reconciliation is required."],
-  };
-  const [state, badge, detail] = states[swap.status] ?? states.awaiting_input;
-  setActivityState("#swap-output-activity", "#swap-output-badge", state, badge);
-  const container = document.querySelector("#swap-output-status");
-  container.replaceChildren(paragraph(detail, "muted"));
-  if (payout?.transaction?.hash) {
-    const reference = document.createElement(payout.transaction.explorerUrl ? "a" : "span");
-    reference.className = "transaction-hash";
-    reference.textContent = `Tx: ${payout.transaction.hash}`;
-    if (payout.transaction.explorerUrl) {
-      reference.href = payout.transaction.explorerUrl;
-      reference.target = "_blank";
-      reference.rel = "noreferrer";
-    }
-    container.append(reference);
-  }
 }
 
 async function switchWalletNetwork(provider, chainId) {
@@ -1083,50 +840,27 @@ function startWithdrawalPolling(immediate = false) {
   pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
 }
 
-function startSwapPolling(immediate = false) {
-  clearTimeout(pollTimer);
-  const poll = async () => {
-    if (flow !== "swap" || !currentSwapId) return;
-    let delay = 5_000;
-    try {
-      const response = await fetch(`/api/swaps/${encodeURIComponent(currentSwapId)}`);
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? "Swap status is unavailable");
-      if (flow !== "swap") return;
-      renderSwap(body);
-      if (["complete", "refunded", "reorged"].includes(body.swap.status)) return;
-      if (body.swap.status === "expired") delay = 30_000;
-    } catch (error) {
-      showGlobalError(error instanceof Error ? error.message : "Swap status is unavailable");
-    }
-    pollTimer = setTimeout(poll, delay);
-  };
-  pollTimer = setTimeout(poll, immediate ? 0 : 5_000);
-}
-
 function clearResources() {
   currentIntentId = "";
   currentWithdrawalId = "";
-  currentSwapId = "";
   currentProposal = undefined;
   currentProposalId = "";
   currentSignerPath = "";
 }
 
 function resourceRoute(pathname) {
-  const match = pathname.match(/^\/(deposits|withdrawals|swaps)\/([^/]+)$/);
+  const match = pathname.match(/^\/(deposits|withdrawals)\/([^/]+)$/);
   if (!match) return null;
   const definitions = {
     deposits: ["deposit", /^di_[A-Za-z0-9_-]+$/],
     withdrawals: ["withdrawal", /^wd_[A-Za-z0-9_-]+$/],
-    swaps: ["swap", /^swp_[A-Za-z0-9_-]+$/],
   };
   const [resourceFlow, idPattern] = definitions[match[1]];
   return idPattern.test(match[2]) ? { flow: resourceFlow, id: match[2] } : null;
 }
 
 function setResourcePath(resourceFlow, id) {
-  const collections = { deposit: "deposits", withdrawal: "withdrawals", swap: "swaps" };
+  const collections = { deposit: "deposits", withdrawal: "withdrawals" };
   window.history.pushState(null, "", `/${collections[resourceFlow]}/${encodeURIComponent(id)}`);
 }
 
@@ -1143,7 +877,6 @@ function restoreResource() {
   flow = resource?.flow ?? "deposit";
   if (resource?.flow === "deposit") currentIntentId = resource.id;
   if (resource?.flow === "withdrawal") currentWithdrawalId = resource.id;
-  if (resource?.flow === "swap") currentSwapId = resource.id;
   setFlow(flow, true);
 }
 

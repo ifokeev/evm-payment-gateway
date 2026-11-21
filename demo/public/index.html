@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Try testnet deposits, withdrawals, and cross-chain swaps on EVM networks."
+      content="Try testnet deposits and treasury withdrawals on EVM networks."
     />
     <title>EVM Payment Gateway - Live demo</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -52,9 +52,6 @@
             <button class="flow-tab" type="button" role="tab" data-flow="withdrawal" aria-selected="false">
               Withdraw
             </button>
-            <button class="flow-tab" type="button" role="tab" data-flow="swap" aria-selected="false">
-              Swap
-            </button>
           </div>
 
           <form id="payment-form" class="payment-form" novalidate>
@@ -73,37 +70,6 @@
                   <select id="asset" name="asset" disabled></select>
                 </div>
               </div>
-            </div>
-
-            <div id="output-fields" class="field" hidden>
-              <div class="network-fields">
-                <div class="field">
-                  <label for="output-network">Output network</label>
-                  <div class="select-control">
-                    <select id="output-network" name="outputNetwork" disabled></select>
-                  </div>
-                </div>
-
-                <div class="field">
-                  <label for="output-asset">Output asset</label>
-                  <div class="select-control">
-                    <select id="output-asset" name="outputAsset" disabled></select>
-                  </div>
-                </div>
-              </div>
-              <div class="amount-control">
-                <input
-                  id="output-amount"
-                  name="outputAmount"
-                  type="text"
-                  inputmode="decimal"
-                  autocomplete="off"
-                  aria-label="Fixed output amount"
-                  readonly
-                />
-                <span id="output-asset-label"></span>
-              </div>
-              <p class="field-help">The demo uses fixed testnet amounts. This value is not a market quote.</p>
             </div>
 
             <div id="destination-field" class="field" hidden>
@@ -200,21 +166,6 @@
               </div>
             </div>
 
-            <dl id="swap-route-summary" class="swap-route-summary" hidden>
-              <div>
-                <dt>Input</dt>
-                <dd id="swap-input-route"></dd>
-              </div>
-              <div>
-                <dt>Output</dt>
-                <dd id="swap-output-route"></dd>
-              </div>
-              <div>
-                <dt>User wallet</dt>
-                <dd><code id="swap-destination"></code></dd>
-              </div>
-            </dl>
-
             <div id="payment-content" class="payment-content">
               <div class="qr-panel">
                 <img id="payment-qr" alt="Payment QR code" width="280" height="280" />
@@ -295,20 +246,6 @@
                 </div>
                 <div id="sweep-status" class="activity-content">
                   <p class="muted">Collection starts after payment confirmation.</p>
-                </div>
-              </div>
-            </section>
-            <section id="swap-output-activity" class="activity-section" data-state="idle" hidden>
-              <span class="activity-marker" aria-hidden="true"></span>
-              <div class="activity-body">
-                <div class="activity-heading">
-                  <div class="activity-title">
-                    <h3 id="swap-output-title">Swap output</h3>
-                    <span id="swap-output-badge" class="activity-status">Waiting</span>
-                  </div>
-                </div>
-                <div id="swap-output-status" class="activity-content">
-                  <p class="muted">The output starts after treasury collection.</p>
                 </div>
               </div>
             </section>

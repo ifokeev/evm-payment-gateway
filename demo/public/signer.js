@@ -59,7 +59,7 @@ function inboxItem(item) {
     `${humanize(item.chain)} → ${shortAddress(item.destinationAddress)}`,
     "inbox-route",
   );
-  const reference = label(item.swapId ?? item.externalId ?? item.id, "inbox-reference");
+  const reference = label(item.externalId ?? item.id, "inbox-reference");
   button.append(top, amount, route, reference);
   return button;
 }
@@ -86,9 +86,7 @@ function renderProposal(withdrawal) {
   document.querySelector("#review-content").hidden = false;
   document.querySelector("#review-purpose").textContent = humanize(withdrawal.purpose);
   document.querySelector("#review-amount").textContent = `${withdrawal.amount} ${withdrawal.asset}`;
-  document.querySelector("#review-reference").textContent = withdrawal.swapId
-    ? `${withdrawal.swapId} · ${withdrawal.depositIntentId}`
-    : withdrawal.externalId;
+  document.querySelector("#review-reference").textContent = withdrawal.externalId;
   document
     .querySelector("#review-summary")
     .replaceChildren(

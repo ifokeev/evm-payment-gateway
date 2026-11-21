@@ -771,14 +771,12 @@ button:disabled {
 }
 
 .intent-header[data-status="paid"] .status-orbit,
-.intent-header[data-status="complete"] .status-orbit,
-.intent-header[data-status="refunded"] .status-orbit {
+.intent-header[data-status="complete"] .status-orbit {
   border: 2px solid var(--success);
 }
 
 .intent-header[data-status="paid"] .status-orbit::after,
-.intent-header[data-status="complete"] .status-orbit::after,
-.intent-header[data-status="refunded"] .status-orbit::after {
+.intent-header[data-status="complete"] .status-orbit::after {
   content: "";
   position: absolute;
   top: 6px;
@@ -962,16 +960,6 @@ button:disabled {
   align-items: end;
 }
 
-.swap-route-summary {
-  margin: 0 0 26px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px 24px;
-}
-
-.swap-route-summary dt,
 .route-grid dt,
 .proposal-grid dt,
 .intent-meta dt {
@@ -981,7 +969,6 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.swap-route-summary dd,
 .route-grid dd,
 .proposal-grid dd,
 .intent-meta dd {
@@ -1145,7 +1132,7 @@ button:disabled {
   margin: 0;
   padding: 22px 26px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
 }
 
@@ -1386,7 +1373,7 @@ button:disabled {
 .analytics-status-grid {
   margin-top: 22px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 22px;
 }
 
@@ -1426,21 +1413,16 @@ button:disabled {
   background: var(--accent);
 }
 
-.analytics-status [data-status="complete"] .status-dot,
-.analytics-status [data-status="refunded"] .status-dot {
+.analytics-status [data-status="complete"] .status-dot {
   background: var(--success);
 }
 
 .analytics-status [data-status="confirming"] .status-dot,
-.analytics-status [data-status="input_confirming"] .status-dot,
-.analytics-status [data-status="submitted"] .status-dot,
-.analytics-status [data-status="output_submitted"] .status-dot,
-.analytics-status [data-status="refund_submitted"] .status-dot {
+.analytics-status [data-status="submitted"] .status-dot {
   background: #d8a153;
 }
 
-.analytics-status [data-status="failed"] .status-dot,
-.analytics-status [data-status="reorged"] .status-dot {
+.analytics-status [data-status="failed"] .status-dot {
   background: var(--error);
 }
 
@@ -1907,8 +1889,7 @@ button:disabled {
   .payment-content,
   .withdrawal-summary,
   .address-actions,
-  .proposal-grid,
-  .swap-route-summary {
+  .proposal-grid {
     grid-template-columns: 1fr;
   }
 

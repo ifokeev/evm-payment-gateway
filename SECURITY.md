@@ -55,14 +55,10 @@ Configure `withdrawalSourceAddress` as a separate, limited-balance payout wallet
 for a smaller loss limit. A multisig treasury can keep the collected reserves.
 Cloudflare stores only the public addresses.
 
-For a swap, the signer must validate the input with an independent RPC provider
-or indexer. It must validate the output quote against the independent ledger.
-Cross-chain input and output transactions are not atomic. An input reorg after
-an output requires manual treasury reconciliation.
-
-Cloudflare creates refund proposals but never signs them. The signer must make
-sure that the output cannot complete before it approves a refund. The gateway
-expires an unsigned refund if a failed output becomes active again.
+Withdrawals are direct transfers from the configured source. The signer must
+compare each proposal with an independently authorized ledger entry and validate
+the destination, amount, chain, and fee before signing. Cloudflare stores only
+public addresses and never signs a treasury transaction.
 
 Use Cloudflare encrypted secrets. Keep `.api.<environment>.secrets` and
 `.sweeper.<environment>.secrets` out of version control. Never share relayer
