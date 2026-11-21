@@ -623,9 +623,10 @@ async function updatePayment(
     statements.push(
       db
         .prepare(`INSERT INTO webhook_events
-      (event_id, type, deposit_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`)
-        .bind(eventId, eventType, intent.id, body, now, now, now),
+      (event_id, type, subject_type, subject_id, deposit_intent, body, status, attempts,
+       next_attempt_at, created_at, updated_at)
+      VALUES (?, ?, 'deposit', ?, ?, ?, 'pending', 0, ?, ?, ?)`)
+        .bind(eventId, eventType, intent.id, intent.id, body, now, now, now),
     );
   }
   if (statements.length) await db.batch(statements);

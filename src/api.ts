@@ -982,11 +982,12 @@ export class SweepCoordinator extends WorkerEntrypoint<ApiEnv> {
       });
       statements.push(
         this.env.DB.prepare(`INSERT INTO webhook_events
-        (event_id, type, deposit_intent, body, status, attempts, next_attempt_at, created_at, updated_at)
-        SELECT ?, 'deposit.recovered', ?, ?, 'pending', 0, ?, ?, ? FROM sweep_jobs
+        (event_id, type, subject_type, subject_id, deposit_intent, body, status, attempts,
+         next_attempt_at, created_at, updated_at)
+        SELECT ?, 'deposit.recovered', 'deposit', deposit_intent, deposit_intent, ?, 'pending', 0,
+          ?, ?, ? FROM sweep_jobs
         WHERE id = ? AND status = 'processing' AND lock_owner = ?`).bind(
           eventId,
-          job.deposit_intent,
           body,
           now,
           now,

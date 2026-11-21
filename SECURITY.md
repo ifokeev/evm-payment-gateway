@@ -84,6 +84,8 @@ Use these operational controls:
 - Monitor relayer balance, payout wallet balance, failed collections, failed
   refunds, scanner lag, webhook retries, and unexpected factory code-hash
   failures.
+- Review every withdrawal batch item independently. Batch creation does not
+  bypass signer validation or transaction limits.
 - Validate every token address and decimals value against issuer data.
 - Treat `deposit.succeeded` as an at-least-once event.
 - Deduplicate webhook IDs and business fulfillment in your database.

@@ -494,6 +494,184 @@ describe("withdrawal API", () => {
     });
   });
 
+  it("queues terminal withdrawal webhooks once", async () => {
+    const created = await createWithdrawal(randomId("withdrawal-webhook"), {
+      externalId: "withdrawal-webhook",
+      asset: "USDC",
+      amount: "1",
+      destinationAddress: "0x8888888888888888888888888888888888888888",
+    });
+    const withdrawal = await created.json<{ id: string }>();
+    const now = unixNow();
+    try {
+      await bindings.DB.prepare(
+        "UPDATE withdrawal_intents SET status = 'complete', completed_at = ? WHERE id = ?",
+      )
+        .bind(now, withdrawal.id)
+        .run();
+      await reconcileWithdrawals(bindings);
+      await reconcileWithdrawals(bindings);
+      const succeeded = await bindings.DB.prepare(
+        `SELECT type, subject_type, subject_id, deposit_intent, body FROM webhook_events
+         WHERE subject_type = 'withdrawal' AND subject_id = ? AND type = 'withdrawal.succeeded'`,
+      )
+        .bind(withdrawal.id)
+        .first<{
+          type: string;
+          subject_type: string;
+          subject_id: string;
+          deposit_intent: string | null;
+          body: string;
+        }>();
+      expect(succeeded).toMatchObject({
+        type: "withdrawal.succeeded",
+        subject_type: "withdrawal",
+        subject_id: withdrawal.id,
+        deposit_intent: null,
+      });
+      expect(JSON.parse(succeeded!.body).data.withdrawal).toMatchObject({
+        id: withdrawal.id,
+        status: "complete",
+      });
+      expect(
+        await bindings.DB.prepare(
+          "SELECT COUNT(*) AS count FROM webhook_events WHERE subject_type = 'withdrawal' AND subject_id = ?",
+        )
+          .bind(withdrawal.id)
+          .first(),
+      ).toEqual({ count: 1 });
+
+      await bindings.DB.prepare(
+        "UPDATE withdrawal_intents SET status = 'failed', completed_at = NULL WHERE id = ?",
+      )
+        .bind(withdrawal.id)
+        .run();
+      await reconcileWithdrawals(bindings);
+      expect(
+        await bindings.DB.prepare(
+          "SELECT type FROM webhook_events WHERE subject_type = 'withdrawal' AND subject_id = ? AND type = 'withdrawal.failed'",
+        )
+          .bind(withdrawal.id)
+          .first(),
+      ).toEqual({ type: "withdrawal.failed" });
+    } finally {
+      await bindings.DB.prepare(
+        "DELETE FROM webhook_events WHERE subject_type = 'withdrawal' AND subject_id = ?",
+      )
+        .bind(withdrawal.id)
+        .run();
+      await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
+        .bind(withdrawal.id)
+        .run();
+    }
+  });
+
+  it("creates and replays a batch of withdrawal proposals", async () => {
+    const key = randomId("withdrawal-batch");
+    const request = () =>
+      api.fetch(
+        authorizedRequest("https://gateway.test/api/v1/withdrawals/batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+          body: JSON.stringify({
+            withdrawals: [
+              {
+                externalId: "batch-1",
+                chain: "test",
+                asset: "USDC",
+                amount: "1",
+                destinationAddress: "0x8888888888888888888888888888888888888888",
+              },
+              {
+                externalId: "batch-2",
+                chain: "test",
+                asset: "USDC",
+                amount: "2",
+                destinationAddress: "0x7777777777777777777777777777777777777777",
+              },
+            ],
+          }),
+        }),
+      );
+    const first = await request();
+    expect(first.status).toBe(201);
+    const body = await first.json<{
+      batchId: string;
+      summary: { created: number; replayed: number; failed: number };
+      items: Array<{ status: number; withdrawal: { id: string } }>;
+    }>();
+    expect(body.batchId).toMatch(/^batch_[0-9a-f]{32}$/);
+    expect(body.summary).toEqual({ created: 2, replayed: 0, failed: 0 });
+    expect(body.items).toHaveLength(2);
+    const ids = body.items.map((item) => item.withdrawal.id);
+    try {
+      const replay = await request();
+      expect(replay.status).toBe(200);
+      const replayed = await replay.json<{
+        summary: { created: number; replayed: number; failed: number };
+        items: Array<{ status: number; withdrawal: { id: string } }>;
+      }>();
+      expect(replayed.summary).toEqual({ created: 0, replayed: 2, failed: 0 });
+      expect(replayed.items.map((item) => item.withdrawal.id)).toEqual(ids);
+      const inbox = await api.fetch(
+        authorizedRequest("https://gateway.test/api/v1/withdrawals?status=awaiting_signature"),
+      );
+      const inboxBody = await inbox.json<{ items: Array<{ id: string }> }>();
+      expect(inboxBody.items.map((item) => item.id)).toEqual(expect.arrayContaining(ids));
+    } finally {
+      await Promise.all(
+        ids.map((id) =>
+          bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?").bind(id).run(),
+        ),
+      );
+    }
+  });
+
+  it("returns per-item failures for a withdrawal batch", async () => {
+    const key = randomId("withdrawal-batch-partial");
+    const response = await api.fetch(
+      authorizedRequest("https://gateway.test/api/v1/withdrawals/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body: JSON.stringify({
+          withdrawals: [
+            {
+              externalId: "batch-valid",
+              chain: "test",
+              asset: "USDC",
+              amount: "1",
+              destinationAddress: "0x8888888888888888888888888888888888888888",
+            },
+            {
+              externalId: "batch-invalid",
+              chain: "test",
+              asset: "USDC",
+              amount: "1",
+              destinationAddress: "0x0000000000000000000000000000000000000000",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(response.status).toBe(207);
+    const body = await response.json<{
+      summary: { created: number; replayed: number; failed: number };
+      items: Array<{ status: number; withdrawal?: { id: string }; error?: string }>;
+    }>();
+    expect(body.summary).toEqual({ created: 1, replayed: 0, failed: 1 });
+    expect(body.items[1]).toEqual({ index: 1, status: 400, error: "invalid destinationAddress" });
+    const createdId = body.items[0].withdrawal?.id;
+    try {
+      expect(createdId).toMatch(/^wd_/);
+    } finally {
+      if (createdId) {
+        await bindings.DB.prepare("DELETE FROM withdrawal_intents WHERE id = ?")
+          .bind(createdId)
+          .run();
+      }
+    }
+  });
+
   it("rejects withdrawals to its own deposit forwarders", async () => {
     const payment = await (
       await create(randomId("circular-payment"), { amount: "1", metadata: {} })
@@ -2384,9 +2562,10 @@ describe("webhook delivery", () => {
     expect(intent).not.toBeNull();
     const body = JSON.stringify({ id: eventId, type: "deposit.succeeded" });
     await bindings.DB.prepare(`INSERT INTO webhook_events
-      (event_id,type,deposit_intent,body,status,attempts,next_attempt_at,created_at,updated_at)
-      VALUES (?,'deposit.succeeded',?,?,'pending',0,?,?,?)`)
-      .bind(eventId, intent!.id, body, unixNow(), unixNow(), unixNow())
+      (event_id,type,subject_type,subject_id,deposit_intent,body,status,attempts,
+       next_attempt_at,created_at,updated_at)
+      VALUES (?,'deposit.succeeded','deposit',?,?,?,'pending',0,?,?,?)`)
+      .bind(eventId, intent!.id, intent!.id, body, unixNow(), unixNow(), unixNow())
       .run();
     const seen: Array<{
       id: string | null;
@@ -2450,9 +2629,10 @@ describe("webhook delivery", () => {
       id: string;
     }>();
     await bindings.DB.prepare(`INSERT INTO webhook_events
-      (event_id,type,deposit_intent,body,status,attempts,next_attempt_at,created_at,updated_at)
-      VALUES (?,'deposit.succeeded',?,'{}','pending',0,?,?,?)`)
-      .bind(eventId, intent!.id, unixNow(), unixNow(), unixNow())
+      (event_id,type,subject_type,subject_id,deposit_intent,body,status,attempts,
+       next_attempt_at,created_at,updated_at)
+      VALUES (?,'deposit.succeeded','deposit',?,?,'{}','pending',0,?,?,?)`)
+      .bind(eventId, intent!.id, intent!.id, unixNow(), unixNow(), unixNow())
       .run();
     let redirectMode = "";
     webhookResponder = async (request) => {

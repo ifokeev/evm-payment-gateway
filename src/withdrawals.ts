@@ -80,6 +80,8 @@ export async function routeWithdrawal(
   apiRoot: string,
 ): Promise<Response | null> {
   const collection = `${apiRoot}/withdrawals`;
+  if (request.method === "POST" && url.pathname === `${collection}/batch`)
+    return handle(() => createWithdrawalBatch(request, env));
   const match = url.pathname.match(
     new RegExp(`^${collection}/([A-Za-z0-9_-]+)(?:/(proposal|transaction))?$`),
   );
@@ -249,6 +251,67 @@ async function createWithdrawal(request: Request, env: ApiEnv): Promise<Response
     return json(await withdrawalResponse(env, winner, network, false));
   }
   return json(await withdrawalResponse(env, row, network, false), 201);
+}
+
+async function createWithdrawalBatch(request: Request, env: ApiEnv): Promise<Response> {
+  const idempotencyKey = request.headers.get("Idempotency-Key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 200) {
+    throw new WithdrawalHttpError(
+      400,
+      "Idempotency-Key is required and must be at most 200 characters",
+    );
+  }
+  const body = await readObject(request, ["withdrawals"]);
+  if (
+    !Array.isArray(body.withdrawals) ||
+    body.withdrawals.length < 1 ||
+    body.withdrawals.length > 100
+  )
+    throw new WithdrawalHttpError(400, "withdrawals must contain between 1 and 100 items");
+
+  const batchId = `batch_${(await sha256(idempotencyKey)).slice(0, 32)}`;
+  const items: Array<Record<string, unknown>> = [];
+  for (const [index, item] of body.withdrawals.entries()) {
+    if (!isObject(item)) {
+      items.push({ index, status: 400, error: "invalid withdrawal item" });
+      continue;
+    }
+    const itemRequest = new Request("https://gateway.internal/api/v1/withdrawals", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": `batch:${batchId}:${index}`,
+      },
+      body: JSON.stringify({ purpose: "withdrawal", ...item }),
+    });
+    let response: Response;
+    try {
+      response = await createWithdrawal(itemRequest, env);
+    } catch (error) {
+      if (error instanceof WithdrawalHttpError) {
+        items.push({ index, status: error.status, error: error.message });
+        continue;
+      }
+      throw error;
+    }
+    const responseBody: unknown = await response.json();
+    if (response.ok) {
+      items.push({ index, status: response.status, withdrawal: responseBody });
+    } else {
+      const error =
+        isObject(responseBody) && typeof responseBody.error === "string"
+          ? responseBody.error
+          : "withdrawal rejected";
+      items.push({ index, status: response.status, error });
+    }
+  }
+  const created = items.filter((item) => item.status === 201).length;
+  const replayed = items.filter((item) => item.status === 200).length;
+  const failed = items.length - created - replayed;
+  return json(
+    { batchId, items, summary: { created, replayed, failed } },
+    failed ? 207 : created ? 201 : 200,
+  );
 }
 
 async function getWithdrawal(id: string, env: ApiEnv, proposal: boolean): Promise<Response> {
@@ -653,6 +716,7 @@ export async function reconcileWithdrawals(env: ApiEnv): Promise<void> {
       ]);
     }
   }
+  await queueWithdrawalWebhooks(env.DB, now);
   await queueRefundWebhooks(env.DB, now);
 }
 
@@ -669,6 +733,75 @@ async function expireUnavailableWithdrawals(db: D1Database, now: number): Promis
           AND deposit_intent IN (SELECT id FROM deposit_intents WHERE status != 'paid')`)
       .bind(now),
   ]);
+}
+
+async function queueWithdrawalWebhooks(db: D1Database, now: number): Promise<void> {
+  const rows = await all<{
+    id: string;
+    external_id: string;
+    chain: string;
+    chain_id: number;
+    asset: string;
+    amount: string;
+    amount_units: string;
+    source_address: string;
+    destination_address: string;
+    status: "complete" | "failed" | "expired";
+    last_error: string;
+    completed_at: number | null;
+    tx_hash: string | null;
+  }>(
+    db,
+    `SELECT w.id, w.external_id, w.chain, w.chain_id, w.asset, w.amount, w.amount_units,
+       w.source_address, w.destination_address, w.status, w.last_error, w.completed_at,
+       (SELECT t.tx_hash FROM withdrawal_transactions t WHERE t.withdrawal = w.id
+        ORDER BY CASE t.status WHEN 'confirmed' THEN 0 ELSE 1 END, t.created_at DESC LIMIT 1) AS tx_hash
+     FROM withdrawal_intents w
+     WHERE w.purpose = 'withdrawal' AND w.status IN ('complete', 'failed', 'expired')
+       AND NOT EXISTS (SELECT 1 FROM webhook_events e
+         WHERE e.event_id = 'evt_withdrawal_' || w.id || '_' || w.status)
+     ORDER BY w.updated_at LIMIT 100`,
+  );
+  if (!rows.length) return;
+  const statements = rows.map((row) => {
+    const type =
+      row.status === "complete"
+        ? "withdrawal.succeeded"
+        : row.status === "failed"
+          ? "withdrawal.failed"
+          : "withdrawal.expired";
+    const eventId = `evt_withdrawal_${row.id}_${row.status}`;
+    const body = JSON.stringify({
+      id: eventId,
+      type,
+      createdAt: new Date(now * 1_000).toISOString(),
+      data: {
+        withdrawal: {
+          id: row.id,
+          externalId: row.external_id,
+          chain: row.chain,
+          chainId: row.chain_id,
+          asset: row.asset,
+          amount: row.amount,
+          amountUnits: row.amount_units,
+          sourceAddress: row.source_address,
+          destinationAddress: row.destination_address,
+          status: row.status,
+          transactionHash: row.tx_hash,
+          lastError: row.last_error,
+          completedAt:
+            row.completed_at === null ? null : new Date(row.completed_at * 1_000).toISOString(),
+        },
+      },
+    });
+    return db
+      .prepare(`INSERT OR IGNORE INTO webhook_events
+        (event_id,type,subject_type,subject_id,deposit_intent,body,status,attempts,
+         next_attempt_at,created_at,updated_at)
+        VALUES (?,?,'withdrawal',?,NULL,?,'pending',0,?,?,?)`)
+      .bind(eventId, type, row.id, body, now, now, now);
+  });
+  await db.batch(statements);
 }
 
 async function queueRefundWebhooks(db: D1Database, now: number): Promise<void> {
@@ -742,9 +875,10 @@ async function queueRefundWebhooks(db: D1Database, now: number): Promise<void> {
     });
     return db
       .prepare(`INSERT OR IGNORE INTO webhook_events
-        (event_id,type,deposit_intent,body,status,attempts,next_attempt_at,created_at,updated_at)
-        VALUES (?,?,?,?,'pending',0,?,?,?)`)
-      .bind(eventId, type, row.deposit_intent, body, now, now, now);
+        (event_id,type,subject_type,subject_id,deposit_intent,body,status,attempts,
+         next_attempt_at,created_at,updated_at)
+        VALUES (?,?,'refund',?,?,?,'pending',0,?,?,?)`)
+      .bind(eventId, type, row.id, row.deposit_intent, body, now, now, now);
   });
   await db.batch(statements);
 }

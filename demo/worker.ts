@@ -645,6 +645,9 @@ async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response>
       "refund.succeeded",
       "refund.failed",
       "refund.expired",
+      "withdrawal.succeeded",
+      "withdrawal.failed",
+      "withdrawal.expired",
     ].includes(String(event.type))
   ) {
     throw new DemoError(400, "unsupported webhook event");
@@ -672,6 +675,32 @@ async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response>
           status: refund.status,
           amount: refund.amount,
           asset: refund.asset,
+        },
+      }),
+      { expirationTtl: 7 * 24 * 60 * 60 },
+    );
+    return new Response(null, { status: 204 });
+  }
+  if (String(event.type).startsWith("withdrawal.")) {
+    const withdrawal = event.data.withdrawal;
+    if (
+      !isObject(withdrawal) ||
+      typeof withdrawal.id !== "string" ||
+      !/^wd_[A-Za-z0-9_-]+$/.test(withdrawal.id)
+    ) {
+      throw new DemoError(400, "invalid webhook body");
+    }
+    await env.DEMO_EVENTS.put(
+      `withdrawal:${withdrawal.id}`,
+      JSON.stringify({
+        id: eventId,
+        type: event.type,
+        createdAt: event.createdAt,
+        withdrawal: {
+          id: withdrawal.id,
+          status: withdrawal.status,
+          amount: withdrawal.amount,
+          asset: withdrawal.asset,
         },
       }),
       { expirationTtl: 7 * 24 * 60 * 60 },

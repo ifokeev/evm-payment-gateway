@@ -42,6 +42,7 @@ All API routes use the `/api/v1` prefix and require
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
+| `POST` | `/withdrawals/batch` | Create up to 100 withdrawal proposals. |
 | `POST` | `/deposits/{id}/refunds` | Create a refund proposal to the deposit's sole payer. |
 | `GET` | `/deposits/{id}/refunds` | Read refund history and refundable balance. |
 | `GET` | `/analytics/summary` | Read aggregate settlement metrics. |
@@ -329,9 +330,10 @@ truth for the option list, the winning intent, and the order ledger. The demo
 ## 3. Validate and process webhooks
 
 The gateway sends `deposit.succeeded`, `deposit.reorged`, informational
-`deposit.recovered`, and terminal `refund.succeeded`, `refund.failed`, and
-`refund.expired` events. It retries non-2xx responses with exponential backoff
-and keeps the same `Webhook-Id` and body. Each delivery includes:
+`deposit.recovered`, terminal `refund.succeeded`, `refund.failed`,
+`refund.expired`, `withdrawal.succeeded`, `withdrawal.failed`, and
+`withdrawal.expired` events. It retries non-2xx responses with exponential
+backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
 
 ```text
 Webhook-Id: evt_...
@@ -581,6 +583,55 @@ withdrawal to `submitted` and clears its completion time.
 Continue independent ledger reconciliation during this seven-day window. The
 first version supports direct transactions from an externally owned treasury
 account. It does not parse transactions that a Safe contract executes.
+
+Terminal direct withdrawals emit `withdrawal.succeeded`, `withdrawal.failed`, or
+`withdrawal.expired`. Each event includes `data.withdrawal` with the withdrawal
+ID, external ID, chain, asset, amount, status, transaction hash, and completion
+time. Use it for notifications and reconciliation.
+
+### Batch withdrawals
+
+Create up to 100 withdrawal proposals in one request:
+
+```http
+POST /api/v1/withdrawals/batch
+Idempotency-Key: payout-batch:2026-11-21:1
+Content-Type: application/json
+
+{
+  "withdrawals": [
+    {
+      "externalId": "affiliate-001",
+      "chain": "base",
+      "asset": "USDC",
+      "amount": "12.50",
+      "destinationAddress": "0x..."
+    },
+    {
+      "externalId": "affiliate-002",
+      "chain": "bnb",
+      "asset": "USDT",
+      "amount": "8.25",
+      "destinationAddress": "0x..."
+    }
+  ]
+}
+```
+
+Each item uses the same fields and destination checks as a direct withdrawal.
+The batch header derives one idempotency key per item. Retry the same batch body
+with the same header to replay successful items. Use a new header for a
+different body.
+
+The response contains `batchId`, per-item zero-based `index`, `status`,
+`withdrawal` or `error`, and `summary` counts. A fully created batch returns
+`201`, a full replay returns `200`, and a partial batch returns `207`. Fix failed
+items and retry the batch.
+Store `batchId` and the returned withdrawal IDs in your ledger.
+
+Each item creates an individual proposal in the signer inbox. The signer still
+approves each transaction separately. Batch creation does not batch on-chain
+signing or broadcast.
 
 ## Refunds
 
