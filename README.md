@@ -41,9 +41,10 @@ never enters Cloudflare.
 | Reorg recovery | Canonical block tracking reverses orphaned payments and treasury-collection accounting. Then the scanner retries. |
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
 | Withdrawal coordination | The API validates and broadcasts exact transactions that an external treasury signer approves. |
+| Deposit refunds | A paid deposit can be refunded to its sole payer through an externally signed withdrawal proposal. |
 | Signed events | HMAC-SHA256 webhooks retry with stable event IDs for idempotent application handling. |
 | Serverless deployment | Cloudflare Workers, D1, Queues, Cron Triggers, and service bindings. No VM or container is necessary. |
-| Analytics | Exact integer totals for requested, received, confirmed, collected, withdrawal fees, statuses, and webhooks. |
+| Analytics | Exact integer totals for requested, received, confirmed, collected, withdrawal and refund fees, statuses, and webhooks. |
 
 ## Supported networks
 
@@ -93,7 +94,7 @@ flowchart LR
     Factory --> Chain
     API -->|"Exact transaction proposal"| Signer
     Signer -->|"Signed raw transaction"| API
-    API -->|"Broadcast withdrawal"| Chain
+    API -->|"Broadcast withdrawal or refund"| Chain
     Chain -->|"Payout"| User
 ```
 
@@ -139,7 +140,7 @@ stateDiagram-v2
     reorged --> paid: Payment reconfirmed
 ```
 
-### Withdrawals
+### Withdrawals and refunds
 
 A withdrawal request creates an exact transaction proposal. The external
 signer approves that proposal and returns a signed raw transaction. The API
@@ -148,6 +149,11 @@ validates every field before broadcast.
 The signer inbox shows every proposal waiting for approval. The treasury signer
 stays outside Cloudflare and must compare each proposal with an independently
 authorized ledger entry.
+
+A deposit refund creates a withdrawal proposal back to the sole payer address.
+The amount is capped by the confirmed deposit balance minus active or completed
+refunds. Refunds spend from `withdrawalSourceAddress`, so that wallet needs the
+input asset and native gas before the signer submits the refund.
 
 ## Quick start
 
@@ -293,7 +299,8 @@ curl -X POST "$GATEWAY_URL/api/v1/deposits" \
 Set `purpose` to `deposit` for a normal deposit. Store the business use case in
 `externalId`, `metadata`, or your application database.
 
-Withdrawal requests use `purpose` set to `withdrawal`.
+Withdrawal requests use `purpose` set to `withdrawal`. Refunds are created by
+the deposit refund endpoint.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -306,7 +313,9 @@ Withdrawal requests use `purpose` set to `withdrawal`.
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for the external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
-| `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, and webhook metrics. |
+| `POST` | `/deposits/{id}/refunds` | Create a refund proposal to the deposit's sole payer. |
+| `GET` | `/deposits/{id}/refunds` | Read refund history and refundable balance. |
+| `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, refund, and webhook metrics. |
 | `GET` | `/health` | Read successful scan progress and stale active chains. |
 
 Successful deposits emit `deposit.succeeded`. An orphaned success emits
@@ -315,12 +324,16 @@ informational `deposit.recovered` event but never become paid. See the
 [application integration guide](INTEGRATION.md) for webhook verification,
 idempotent fulfillment, partial payments, recurring invoices, and examples.
 
+Terminal refund proposals emit `refund.succeeded`, `refund.failed`, or
+`refund.expired`.
+
 ## Demo
 
 The optional demo Worker shows testnet deposits and treasury withdrawals. The
-demo follows signed webhooks, treasury collection, and withdrawal settlement.
+demo follows signed webhooks, treasury collection, withdrawal settlement, and
+refund status.
 
-The demo has a signer inbox for withdrawals. It shows exact proposals and
+The demo has a signer inbox for withdrawals and refunds. It shows exact proposals and
 accepts signed raw transactions. The treasury signer stays outside Cloudflare.
 A private service binding keeps the API key out of browser code.
 
@@ -359,6 +372,9 @@ The gateway uses these security controls:
   for real funds.
 - The withdrawal API accepts only a transaction from the configured withdrawal source.
   It validates the chain, asset, amount, destination, fee, gas, and nonce.
+- Deposit refunds target the sole payer address and cannot exceed the confirmed
+  balance minus active or completed refunds. Deposits with multiple payers
+  require an explicitly reviewed withdrawal.
 - A withdrawal receipt reorg returns the withdrawal to `submitted` and clears
   its completion time.
 - The relayer key can spend only its own native balance. It cannot sign for a

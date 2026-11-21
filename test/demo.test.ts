@@ -81,6 +81,7 @@ const analytics = {
     },
   ],
   withdrawals: { awaiting_signature: 1, confirming: 1, complete: 1 },
+  refunds: { complete: 1 },
   collectionFeesWei: { "base-sepolia": "secret-operational-detail" },
   webhooks: [{ type: "deposit.succeeded", status: "delivered", count: 9 }],
 };
@@ -516,6 +517,46 @@ describe("public demo", () => {
     expect((await demo.fetch(stale, env)).status).toBe(401);
   });
 
+  it("accepts terminal refund webhooks", async () => {
+    const event = {
+      id: "evt_refund_demo123",
+      type: "refund.succeeded",
+      createdAt: new Date().toISOString(),
+      data: {
+        refund: {
+          id: "wd_demo123",
+          depositIntentId: intent.id,
+          status: "complete",
+          amount: "1.25",
+          asset: "USDC",
+        },
+        depositIntent: { id: intent.id, externalId: intent.externalId, status: "paid" },
+      },
+    };
+    const rawBody = JSON.stringify(event);
+    const timestamp = Math.floor(Date.now() / 1_000).toString();
+    const signature = await signWebhook(timestamp, rawBody, env.PAYMENT_WEBHOOK_SECRET);
+    const response = await demo.fetch(
+      new Request("https://demo.test/webhooks/deposit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Webhook-Id": event.id,
+          "Webhook-Timestamp": timestamp,
+          "Webhook-Signature": `v1,${signature}`,
+        },
+        body: rawBody,
+      }),
+      env,
+    );
+    expect(response.status).toBe(204);
+    expect(JSON.parse(events.get("refund:wd_demo123") ?? "null")).toMatchObject({
+      id: event.id,
+      type: "refund.succeeded",
+      refund: { id: "wd_demo123", depositIntentId: intent.id, status: "complete" },
+    });
+  });
+
   it("serves public configuration and delegates static assets", async () => {
     const config = await demo.fetch(new Request("https://demo.test/api/config"), env);
     expect(await config.json()).toEqual({
@@ -565,6 +606,7 @@ describe("public demo", () => {
         },
       ],
       withdrawals: analytics.withdrawals,
+      refunds: analytics.refunds,
       generatedAt: analytics.generatedAt,
     });
     expect(gatewayRequests.at(-1)?.headers.get("Authorization")).toBe(

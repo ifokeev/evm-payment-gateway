@@ -42,6 +42,8 @@ All API routes use the `/api/v1` prefix and require
 | `GET` | `/withdrawals/{id}` | Read the withdrawal and transaction status. |
 | `GET` | `/withdrawals/{id}/proposal` | Read the exact fields for an external signer. |
 | `POST` | `/withdrawals/{id}/transaction` | Submit an externally signed raw transaction. |
+| `POST` | `/deposits/{id}/refunds` | Create a refund proposal to the deposit's sole payer. |
+| `GET` | `/deposits/{id}/refunds` | Read refund history and refundable balance. |
 | `GET` | `/analytics/summary` | Read aggregate settlement metrics. |
 | `GET` | `/health` | Read successful scan progress and stale active chains. |
 
@@ -271,9 +273,10 @@ accidental overpayment into additional balance.
 
 ## 3. Validate and process webhooks
 
-The gateway sends `deposit.succeeded`, `deposit.reorged`, and informational
-`deposit.recovered` events. It retries non-2xx responses with exponential
-backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
+The gateway sends `deposit.succeeded`, `deposit.reorged`, informational
+`deposit.recovered`, and terminal `refund.succeeded`, `refund.failed`, and
+`refund.expired` events. It retries non-2xx responses with exponential backoff
+and keeps the same `Webhook-Id` and body. Each delivery includes:
 
 ```text
 Webhook-Id: evt_...
@@ -387,9 +390,9 @@ GET /api/v1/analytics/summary
 ```
 
 It groups requested, received, confirmed, and collected units by chain and
-asset. It also returns collection fees, withdrawal fees, withdrawal statuses,
-and webhook counts. Use your configured token decimals to convert units only at
-the display boundary.
+asset. It also returns collection fees, withdrawal fees, withdrawal and refund
+statuses, and webhook counts. Use your configured token decimals to convert
+units only at the display boundary.
 
 ### Scanner health
 
@@ -422,7 +425,7 @@ Before the first successful scan, `lastScannedBlock` and `lastScanAt` are
 `null`. If `ok` is `false`, alert the operator. Stop time-sensitive settlement
 decisions until the scanner advances again.
 
-## Treasury withdrawals
+## Treasury withdrawals and refunds
 
 The gateway does not store a treasury private key. The configured
 `withdrawalSourceAddress` is the source address for each new withdrawal. This
@@ -453,8 +456,8 @@ GET /api/v1/withdrawals?status=awaiting_signature&limit=50
 ```
 
 Each item includes `purpose`, `externalId`, the amount, the source and
-destination addresses, and `expiresAt`. Use `nextCursor` in the next request
-when it is not `null`:
+destination addresses, and `expiresAt`. Refunds also include `depositIntentId`.
+Use `nextCursor` in the next request when it is not `null`:
 
 ```http
 GET /api/v1/withdrawals?status=awaiting_signature&limit=50&cursor={nextCursor}
@@ -524,6 +527,51 @@ Continue independent ledger reconciliation during this seven-day window. The
 first version supports direct transactions from an externally owned treasury
 account. It does not parse transactions that a Safe contract executes.
 
+## Refunds
+
+Refund a paid deposit to the address that paid it:
+
+```http
+POST /api/v1/deposits/{id}/refunds
+Idempotency-Key: refund:order-001:1
+Content-Type: application/json
+
+{
+  "amount": "10.25"
+}
+```
+
+`amount` is optional. Omit it to refund the full refundable balance. The
+gateway accepts only a `paid` deposit with one canonical payer address.
+Deposits with multiple payer addresses return `409` and require a direct
+withdrawal with an explicit, independently reviewed destination.
+
+The refund is capped by the confirmed deposit balance minus active or completed
+refunds. Only one refund can be in progress for a deposit at a time. A completed
+refund frees the deposit for another partial refund until the balance is used.
+
+The gateway creates a withdrawal proposal with `purpose` set to `refund`,
+`destinationAddress` set to the payer, and `depositIntentId` set to the source
+deposit. The signer inbox includes it with the other proposals. The source is
+`withdrawalSourceAddress`, so that wallet needs the input asset and native gas
+before the signer submits the refund.
+
+Read refund history and the remaining balance with:
+
+```http
+GET /api/v1/deposits/{id}/refunds
+```
+
+The response includes `items`, `confirmedAmount`, `refundedAmount`, and
+`refundableAmount`. Refund proposals use the normal withdrawal statuses and
+transaction replacement flow.
+
+An unsigned refund expires if the deposit leaves `paid`, including a reorg.
+Terminal refunds emit `refund.succeeded`, `refund.failed`, or `refund.expired`.
+Each refund event includes `data.refund` and `data.depositIntent`.
+The signer must validate the payer address, amount, source balance, chain, and
+fee against the independent ledger before approval.
+
 ## Recurring billing
 
 For a recurring product, create a new deposit intent for each billing period.
@@ -552,4 +600,4 @@ Before production, complete these tasks:
 - Never treat `deposit.recovered` as payment success.
 - Never make fulfillment depend on asynchronous treasury collection.
 - Monitor `/health` and alert on stale active chains.
-- Reconcile withdrawal terminal states against an independent ledger.
+- Reconcile withdrawal and refund terminal states against an independent ledger.

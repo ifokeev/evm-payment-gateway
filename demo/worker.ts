@@ -443,8 +443,45 @@ async function receiveWebhook(request: Request, env: DemoEnv): Promise<Response>
   if (!isObject(event) || event.id !== eventId || !isObject(event.data)) {
     throw new DemoError(400, "invalid webhook body");
   }
-  if (event.type !== "deposit.succeeded" && event.type !== "deposit.reorged") {
+  if (
+    ![
+      "deposit.succeeded",
+      "deposit.reorged",
+      "refund.succeeded",
+      "refund.failed",
+      "refund.expired",
+    ].includes(String(event.type))
+  ) {
     throw new DemoError(400, "unsupported webhook event");
+  }
+  if (String(event.type).startsWith("refund.")) {
+    const refund = event.data.refund;
+    if (
+      !isObject(refund) ||
+      typeof refund.id !== "string" ||
+      !/^wd_[A-Za-z0-9_-]+$/.test(refund.id) ||
+      typeof refund.depositIntentId !== "string" ||
+      !/^di_[A-Za-z0-9_-]+$/.test(refund.depositIntentId)
+    ) {
+      throw new DemoError(400, "invalid webhook body");
+    }
+    await env.DEMO_EVENTS.put(
+      `refund:${refund.id}`,
+      JSON.stringify({
+        id: eventId,
+        type: event.type,
+        createdAt: event.createdAt,
+        refund: {
+          id: refund.id,
+          depositIntentId: refund.depositIntentId,
+          status: refund.status,
+          amount: refund.amount,
+          asset: refund.asset,
+        },
+      }),
+      { expirationTtl: 7 * 24 * 60 * 60 },
+    );
+    return new Response(null, { status: 204 });
   }
   const depositIntent = event.data.depositIntent;
   if (
@@ -590,6 +627,7 @@ function publicWithdrawal(value: Record<string, unknown>): Record<string, unknow
     "lastError",
     "createdAt",
     "updatedAt",
+    "depositIntentId",
   ]);
   if (isObject(value.proposal)) {
     result.proposal = publicFields(value.proposal, [
@@ -678,6 +716,7 @@ function publicAnalytics(value: Record<string, unknown>, env: DemoEnv): Record<s
       };
     }),
     withdrawals: analyticsStatuses(value.withdrawals),
+    refunds: analyticsStatuses(value.refunds),
     generatedAt:
       typeof value.generatedAt === "string" && Number.isFinite(Date.parse(value.generatedAt))
         ? value.generatedAt

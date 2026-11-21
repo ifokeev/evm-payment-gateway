@@ -603,7 +603,7 @@ function renderSigner(withdrawal, path) {
   signerPanel.hidden = !currentProposal;
   signedTransactionForm.hidden = !awaitingSignature;
   copyProposal.disabled = !currentProposal;
-  text("#signer-title", "Approve withdrawal");
+  text("#signer-title", withdrawal.purpose === "refund" ? "Approve refund" : "Approve withdrawal");
   if (!currentProposal) return;
   text("#proposal-chain", currentProposal.chainId);
   text("#proposal-to", currentProposal.to);
