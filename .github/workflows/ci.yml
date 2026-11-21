@@ -34,11 +34,33 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Check demo deployment secrets
+        id: demo-secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAYMENT_API_KEY: ${{ secrets.TESTNET_PAYMENT_API_KEY }}
+          PAYMENT_WEBHOOK_SECRET: ${{ secrets.TESTNET_PAYMENT_WEBHOOK_SECRET }}
+          TURNSTILE_SITE_KEY: ${{ secrets.TESTNET_TURNSTILE_SITE_KEY }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TESTNET_TURNSTILE_SECRET_KEY }}
+        run: |
+          missing=""
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PAYMENT_API_KEY PAYMENT_WEBHOOK_SECRET TURNSTILE_SITE_KEY TURNSTILE_SECRET_KEY; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping demo deploy; missing secrets:$missing"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Write testnet demo secrets
+        if: steps.demo-secrets.outputs.available == 'true'
         env:
           PAYMENT_API_KEY: ${{ secrets.TESTNET_PAYMENT_API_KEY }}
           PAYMENT_WEBHOOK_SECRET: ${{ secrets.TESTNET_PAYMENT_WEBHOOK_SECRET }}
-          DEMO_SESSION_SECRET: ${{ secrets.TESTNET_DEMO_SESSION_SECRET }}
           TURNSTILE_SITE_KEY: ${{ secrets.TESTNET_TURNSTILE_SITE_KEY }}
           TURNSTILE_SECRET_KEY: ${{ secrets.TESTNET_TURNSTILE_SECRET_KEY }}
         run: |
@@ -46,11 +68,11 @@ jobs:
           printf '%s\n' \
             "PAYMENT_API_KEY=$PAYMENT_API_KEY" \
             "PAYMENT_WEBHOOK_SECRET=$PAYMENT_WEBHOOK_SECRET" \
-            "DEMO_SESSION_SECRET=$DEMO_SESSION_SECRET" \
             "TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY" \
             "TURNSTILE_SECRET_KEY=$TURNSTILE_SECRET_KEY" \
             > .demo.secrets
       - run: npm run deploy:demo
+        if: steps.demo-secrets.outputs.available == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
