@@ -42,6 +42,7 @@ never enters Cloudflare.
 | Treasury collection | Immutable CREATE2 forwarders route native tokens and ERC-20 balances to one configured treasury. |
 | Withdrawal coordination | The API validates and broadcasts exact transactions that an external treasury signer approves. |
 | Deposit refunds | A paid deposit can be refunded to its sole payer through an externally signed withdrawal proposal. |
+| Multi-asset checkout | Create one deposit intent per accepted asset, fulfill the first paid intent, and refund duplicates. |
 | Signed events | HMAC-SHA256 webhooks retry with stable event IDs for idempotent application handling. |
 | Serverless deployment | Cloudflare Workers, D1, Queues, Cron Triggers, and service bindings. No VM or container is necessary. |
 | Analytics | Exact integer totals for requested, received, confirmed, collected, withdrawal and refund fees, statuses, and webhooks. |
@@ -327,20 +328,29 @@ idempotent fulfillment, partial payments, recurring invoices, and examples.
 Terminal refund proposals emit `refund.succeeded`, `refund.failed`, or
 `refund.expired`.
 
+Multi-asset checkout is an application pattern over `/deposits`. Create one
+intent per accepted chain and asset with the same `externalId`, show the priced
+options, and fulfill the first `deposit.succeeded`. The gateway does not store a
+checkout group. Use the refund endpoint for any duplicate payment.
+
 ## Demo
 
-The optional demo Worker shows testnet deposits and treasury withdrawals. The
-demo follows signed webhooks, treasury collection, withdrawal settlement, and
-refund status.
+The optional demo Worker shows testnet deposits, multi-asset checkout, and
+treasury withdrawals. The demo follows signed webhooks, treasury collection,
+withdrawal settlement, and refund status.
 
 The demo has a signer inbox for withdrawals and refunds. It shows exact proposals and
 accepts signed raw transactions. The treasury signer stays outside Cloudflare.
 A private service binding keeps the API key out of browser code.
 
+The demo `/api/checkout` route is a demo helper that creates two deposit intents
+with fixed testnet amounts. The core API remains deposit-based.
+
 Each testnet resource has a direct URL:
 
 - `/deposits/{id}`
 - `/withdrawals/{id}`
+- `/checkouts/{id}`
 
 The demo restores the resource from this URL. It does not store resource state
 in browser storage. Anyone with the URL can read the sanitized state for that

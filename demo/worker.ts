@@ -32,6 +32,13 @@ interface DemoOption {
   explorerUrl: string;
 }
 
+interface CheckoutRecord {
+  id: string;
+  externalId: string;
+  intentIds: string[];
+  createdAt: string;
+}
+
 export default {
   async fetch(request: Request, env: DemoEnv): Promise<Response> {
     try {
@@ -68,13 +75,16 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   }
   if (
     request.method === "GET" &&
-    /^\/(?:deposits\/di_|withdrawals\/wd_)[A-Za-z0-9_-]+$/.test(url.pathname)
+    /^\/(?:deposits\/di_|withdrawals\/wd_|checkouts\/chk_)[A-Za-z0-9_-]+$/.test(url.pathname)
   ) {
     url.pathname = "/index.html";
     return env.ASSETS.fetch(new Request(url.toString(), { headers: request.headers }));
   }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/deposits`) {
     return createDemoIntent(request, env);
+  }
+  if (request.method === "POST" && url.pathname === `${API_ROOT}/checkout`) {
+    return createDemoCheckout(request, env);
   }
   if (request.method === "POST" && url.pathname === `${API_ROOT}/withdrawals`) {
     return createDemoWithdrawal(request, env);
@@ -91,6 +101,10 @@ async function route(request: Request, env: DemoEnv): Promise<Response> {
   }
   if (request.method === "POST" && withdrawalMatch?.[2] === "transaction") {
     return submitDemoWithdrawal(request, env, withdrawalMatch[1]);
+  }
+  const checkoutMatch = url.pathname.match(/^\/api\/checkout\/(chk_[A-Za-z0-9_-]+)$/);
+  if (request.method === "GET" && checkoutMatch) {
+    return getDemoCheckout(request, env, checkoutMatch[1]);
   }
   const signerMatch = url.pathname.match(
     /^\/api\/signer\/withdrawals\/(wd_[A-Za-z0-9_-]+)\/(proposal|transaction)$/,
@@ -141,20 +155,37 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
   }
   await requireTurnstile(turnstileToken, ip, request, env);
 
+  const result = await requestDepositIntent(
+    env,
+    option,
+    parsed.amount,
+    `demo_${idempotencyKey}`,
+    `demo:${idempotencyKey}`,
+  );
+  return json({ intent: result.intent }, result.status);
+}
+
+async function requestDepositIntent(
+  env: DemoEnv,
+  option: DemoOption,
+  amount: string,
+  externalId: string,
+  idempotencyKey: string,
+): Promise<{ intent: Record<string, unknown>; status: number }> {
   const gateway = await env.GATEWAY.fetch(
     new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${requiredSecret(env.PAYMENT_API_KEY, "PAYMENT_API_KEY", 24)}`,
         "Content-Type": "application/json",
-        "Idempotency-Key": `demo:${idempotencyKey}`,
+        "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify({
         purpose: "deposit",
-        externalId: `demo_${idempotencyKey}`,
+        externalId,
         chain: option.chain,
         asset: option.asset,
-        amount: parsed.amount,
+        amount,
         expiresInSeconds: integerSetting(
           env.DEMO_EXPIRY_SECONDS,
           "DEMO_EXPIRY_SECONDS",
@@ -166,13 +197,177 @@ async function createDemoIntent(request: Request, env: DemoEnv): Promise<Respons
     }),
   );
   const gatewayBody = await responseObject(gateway, 2_000_000);
-  if (!gateway.ok)
+  if (!gateway.ok) {
     throw new DemoError(
       gateway.status >= 500 ? 502 : gateway.status,
       "gateway rejected the payment",
     );
-  const intent = publicIntent(gatewayBody);
-  return json({ intent }, gateway.status);
+  }
+  return { intent: publicIntent(gatewayBody), status: gateway.status };
+}
+
+async function createDemoCheckout(request: Request, env: DemoEnv): Promise<Response> {
+  enforceSameOrigin(request);
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if (!(await env.DEMO_RATE_LIMITER.limit({ key: `checkout:${ip}` })).success) {
+    throw new DemoError(429, "too many demo checkouts; try again in a minute");
+  }
+  const body = await readObject(request, 8_192);
+  rejectUnknownFields(body, ["idempotencyKey", "turnstileToken"]);
+  const idempotencyKey = demoIdempotencyKey(body);
+  const turnstileToken = stringField(body, "turnstileToken");
+  await requireTurnstile(turnstileToken, ip, request, env);
+
+  const checkoutId = `chk_${idempotencyKey.replaceAll("-", "")}`;
+  const existing = await readCheckout(env, checkoutId);
+  if (existing) return json({ checkout: await checkoutState(env, existing) });
+
+  const options = demoOptions(env).slice(0, 2);
+  if (options.length < 2) {
+    throw new DemoError(400, "checkout requires two configured demo options");
+  }
+  const externalId = `demo_checkout_${idempotencyKey}`;
+  const intents: Record<string, unknown>[] = [];
+  for (const option of options) {
+    const configured = amountConfig(option);
+    let amount: ReturnType<typeof parseAmount>;
+    try {
+      amount = parseAmount(option.defaultAmount, option.decimals);
+    } catch {
+      throw new DemoError(500, "demo checkout amount is invalid");
+    }
+    if (amount.units < configured.minimum.units || amount.units > configured.maximum.units) {
+      throw new DemoError(500, "demo checkout amount is invalid");
+    }
+    const result = await requestDepositIntent(
+      env,
+      option,
+      amount.amount,
+      externalId,
+      `demo:checkout:${idempotencyKey}:${option.chain}:${option.asset}`,
+    );
+    intents.push(result.intent);
+  }
+  const checkout: CheckoutRecord = {
+    id: checkoutId,
+    externalId,
+    intentIds: intents.map((intent) => String(intent.id)),
+    createdAt: new Date().toISOString(),
+  };
+  await env.DEMO_EVENTS.put(`checkout:${checkout.id}`, JSON.stringify(checkout), {
+    expirationTtl: 7 * 24 * 60 * 60,
+  });
+  return json({ checkout: await checkoutState(env, checkout) }, 201);
+}
+
+async function getDemoCheckout(
+  _request: Request,
+  env: DemoEnv,
+  checkoutId: string,
+): Promise<Response> {
+  const checkout = await readCheckout(env, checkoutId);
+  if (!checkout) throw new DemoError(404, "checkout not found");
+  return json({ checkout: await checkoutState(env, checkout) });
+}
+
+async function readCheckout(env: DemoEnv, checkoutId: string): Promise<CheckoutRecord | null> {
+  const value = await env.DEMO_EVENTS.get(`checkout:${checkoutId}`, "json");
+  if (
+    !isObject(value) ||
+    value.id !== checkoutId ||
+    typeof value.externalId !== "string" ||
+    typeof value.createdAt !== "string" ||
+    !Array.isArray(value.intentIds) ||
+    !value.intentIds.every(
+      (intentId) => typeof intentId === "string" && /^di_[A-Za-z0-9_-]+$/.test(intentId),
+    )
+  ) {
+    return null;
+  }
+  return {
+    id: checkoutId,
+    externalId: value.externalId,
+    intentIds: value.intentIds as string[],
+    createdAt: value.createdAt,
+  };
+}
+
+async function checkoutState(
+  env: DemoEnv,
+  checkout: CheckoutRecord,
+): Promise<Record<string, unknown>> {
+  const headers = gatewayAuthorization(env);
+  const options = await Promise.all(
+    checkout.intentIds.map(async (intentId) => {
+      const [intentResponse, sweepResponse] = await Promise.all([
+        env.GATEWAY.fetch(
+          new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${intentId}`, { headers }),
+        ),
+        env.GATEWAY.fetch(
+          new Request(`https://gateway.internal${GATEWAY_ROOT}/deposits/${intentId}/sweep`, {
+            headers,
+          }),
+        ),
+      ]);
+      const [intentBody, sweep] = await Promise.all([
+        responseObject(intentResponse, 2_000_000),
+        responseObject(sweepResponse, 1_000_000),
+      ]);
+      if (!intentResponse.ok || !sweepResponse.ok) {
+        throw new DemoError(502, "gateway checkout status is unavailable");
+      }
+      const intent = publicIntent(intentBody);
+      if (
+        intent.id !== intentId ||
+        intent.externalId !== checkout.externalId ||
+        !demoResource(intent)
+      ) {
+        throw new DemoError(502, "gateway returned an invalid checkout intent");
+      }
+      return {
+        intent,
+        sweep,
+        webhookEvent: await env.DEMO_EVENTS.get(`intent:${intentId}`, "json"),
+      };
+    }),
+  );
+  const paid = options.filter((option) => option.intent.status === "paid");
+  const confirming = options.some((option) => option.intent.status === "confirming");
+  const eventTime = (option: { webhookEvent: unknown }): number => {
+    if (!isObject(option.webhookEvent)) return Number.NaN;
+    const value = Date.parse(String(option.webhookEvent.createdAt ?? ""));
+    return Number.isFinite(value) ? value : Number.NaN;
+  };
+  const ranked = paid.slice().sort((left, right) => {
+    const leftTime = eventTime(left);
+    const rightTime = eventTime(right);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return options.indexOf(left) - options.indexOf(right);
+  });
+  const open = options.some((option) =>
+    ["pending", "underpaid", "confirming"].includes(String(option.intent.status)),
+  );
+  const status =
+    paid.length > 1
+      ? "duplicate_payment"
+      : paid.length === 1
+        ? "paid"
+        : confirming
+          ? "confirming"
+          : open
+            ? "awaiting_payment"
+            : "expired";
+  return {
+    id: checkout.id,
+    externalId: checkout.externalId,
+    status,
+    paidIntentId: ranked.length ? String(ranked[0].intent.id) : null,
+    duplicateIntentIds: ranked.slice(1).map((option) => String(option.intent.id)),
+    createdAt: checkout.createdAt,
+    options,
+  };
 }
 
 async function createDemoWithdrawal(request: Request, env: DemoEnv): Promise<Response> {

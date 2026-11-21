@@ -960,6 +960,118 @@ button:disabled {
   align-items: end;
 }
 
+.checkout-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.checkout-preview,
+.checkout-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.checkout-preview-option {
+  padding: 16px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+}
+
+.checkout-preview-option span {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.checkout-preview-option strong {
+  font-size: 20px;
+}
+
+.checkout-options {
+  margin: 24px 0;
+}
+
+.checkout-option {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.checkout-option[data-state="paid"] {
+  border-color: var(--success);
+}
+
+.checkout-option[data-state="duplicate"] {
+  border-color: var(--error);
+}
+
+.checkout-option[data-state="confirming"] {
+  border-color: #d8a153;
+}
+
+.checkout-option[data-state="closed"] {
+  opacity: 0.65;
+}
+
+.checkout-option-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.checkout-option-heading strong {
+  font-size: 24px;
+}
+
+.checkout-option-heading span,
+.checkout-option-status {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.checkout-option-amount {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.checkout-option-qr {
+  width: min(100%, 180px);
+  height: auto;
+  justify-self: center;
+  padding: 8px;
+  background: #fff;
+}
+
+.checkout-option-address {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.checkout-option .secondary-button {
+  justify-self: start;
+}
+
+.intent-header[data-status="duplicate_payment"] .status-orbit {
+  border-color: var(--error);
+}
+
+.intent-header[data-status="confirming"] .status-orbit {
+  border-color: #d8a153;
+}
+
 .route-grid dt,
 .proposal-grid dt,
 .intent-meta dt {
@@ -1134,6 +1246,10 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px;
+}
+
+.checkout-meta {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .signer-panel {
@@ -1691,22 +1807,26 @@ button:disabled {
 @media (max-width: 900px) {
   .page-shell,
   .page-shell[data-stage="intent"],
-  .page-shell[data-stage="withdrawal"] {
+  .page-shell[data-stage="withdrawal"],
+  .page-shell[data-stage="checkout"] {
     grid-template-columns: 1fr;
   }
 
   .payment-stage,
   .page-shell[data-stage="intent"] .payment-stage,
-  .page-shell[data-stage="withdrawal"] .payment-stage {
+  .page-shell[data-stage="withdrawal"] .payment-stage,
+  .page-shell[data-stage="checkout"] .payment-stage {
     grid-template-columns: 1fr;
   }
 
   #intent-state .payment-panel,
   #withdrawal-state .payment-panel,
+  #checkout-state .payment-panel,
   #intent-state .activity-list,
   #withdrawal-state .activity-list,
   #intent-state .intent-meta,
   #withdrawal-state .intent-meta,
+  #checkout-state .intent-meta,
   .signer-panel {
     grid-column: 1;
     grid-row: auto;
@@ -1714,6 +1834,11 @@ button:disabled {
 
   .activity-list {
     min-height: 0;
+  }
+
+  .checkout-preview,
+  .checkout-options {
+    grid-template-columns: 1fr;
   }
 
   .analytics-summary {
