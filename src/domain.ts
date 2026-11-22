@@ -4,6 +4,8 @@ import { PAYMENT_FORWARDER_FACTORY_RUNTIME_CODE_HASH } from "./contracts.generat
 import type { DepositStatus, NetworkConfig, TokenConfig } from "./types";
 
 const UINT256_MAX = (1n << 256n) - 1n;
+// The scanner reads at most 5,000 blocks per run, so a larger eth_getLogs range never applies.
+const DEFAULT_MAX_LOG_RANGE = 5_000;
 
 export function parseAmount(input: string, decimals: number): { amount: string; units: bigint } {
   const value = input.trim();
@@ -83,6 +85,10 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
     const explorerUrl = optionalString(item, "explorerUrl").trim().replace(/\/$/, "");
     const chainId = integerField(item, "chainId", 1, Number.MAX_SAFE_INTEGER);
     const confirmations = integerField(item, "confirmations", 1, 10_000);
+    const maxLogRange =
+      item.maxLogRange === undefined
+        ? DEFAULT_MAX_LOG_RANGE
+        : integerField(item, "maxLogRange", 1, DEFAULT_MAX_LOG_RANGE);
     const maxGasPriceWei = positiveBigIntField(item, "maxGasPriceWei");
     if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(name) || !/^[A-Z0-9]{2,20}$/.test(nativeAsset))
       throw new Error(`invalid network name or native asset: ${name}`);
@@ -181,6 +187,7 @@ export function loadNetworks(raw: string, requireRelayerKeys = false): Map<strin
       factoryCodeHash: factoryCodeHash.toLowerCase() as `0x${string}`,
       relayerAddress,
       confirmations,
+      maxLogRange,
       maxGasPriceWei,
       nativeAsset,
       explorerUrl,

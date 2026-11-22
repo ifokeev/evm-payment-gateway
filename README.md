@@ -235,6 +235,7 @@ relayer key. It never receives the payment API key or webhook secret.
   "factoryCodeHash": "0xRuntimeCodeHash",
   "relayerAddress": "0xLowBalanceRelayer",
   "confirmations": 3,
+  "maxLogRange": 5000,
   "maxGasPriceWei": "5000000000",
   "nativeAsset": "ETH",
   "explorerUrl": "https://sepolia.basescan.org",
@@ -255,6 +256,13 @@ A request that fails on an endpoint writes a `rpc endpoint failed` warning to
 the Worker log, even when the next endpoint answers. The warning names the
 host, the JSON-RPC method, and the reason. It never includes the URL path or
 the request body, because the path can hold a provider key.
+
+`maxLogRange` is optional. It sets the largest number of blocks in one
+`eth_getLogs` request and defaults to 5,000, which is also the most blocks the
+scanner reads in one run. Providers cap this range and answer a larger request
+with an error, so set it to the smallest range that any endpoint in `rpcUrls`
+accepts. The scanner then reads the same blocks in consecutive requests of at
+most that size.
 
 Keep separate lists in the testnet and mainnet Cloudflare secrets. Do not commit
 provider credentials. Copy the same list to `SWEEPER_NETWORKS_JSON`. Add
