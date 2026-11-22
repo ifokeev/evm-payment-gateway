@@ -333,7 +333,8 @@ The gateway sends `deposit.succeeded`, `deposit.reorged`, informational
 `deposit.recovered`, terminal `refund.succeeded`, `refund.failed`,
 `refund.expired`, `withdrawal.succeeded`, `withdrawal.failed`, and
 `withdrawal.expired` events. It retries non-2xx responses with exponential
-backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
+backoff and keeps the same `Webhook-Id` and body. After the retry window, 72
+hours by default, it marks the event `failed` and stops. Each delivery includes:
 
 ```text
 Webhook-Id: evt_...
