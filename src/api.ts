@@ -151,6 +151,7 @@ async function health(env: ApiEnv): Promise<Response> {
     time: new Date().toISOString(),
     activeWithdrawals: withdrawals?.count ?? 0,
     staleChains,
+    webhooks: await webhookBacklog(env.DB),
     networks: Object.fromEntries(
       [...networks.keys()].map((name) => {
         const state = scanned.get(name);
@@ -164,6 +165,31 @@ async function health(env: ApiEnv): Promise<Response> {
       }),
     ),
   });
+}
+
+// Both queries read only pending and failed rows through the (status, next_attempt_at) index, so
+// the public health check stays cheap however many delivered events the table holds.
+async function webhookBacklog(db: D1Database): Promise<{
+  pending: number;
+  failed: number;
+  oldestPendingAgeSeconds: number;
+}> {
+  const [counts, oldest] = await Promise.all([
+    all<{ status: string; count: number }>(
+      db,
+      "SELECT status, COUNT(*) AS count FROM webhook_events WHERE status IN ('pending', 'failed') GROUP BY status",
+    ),
+    db
+      .prepare("SELECT MIN(created_at) AS created_at FROM webhook_events WHERE status = 'pending'")
+      .first<{ created_at: number | null }>(),
+  ]);
+  const countOf = (status: string) => counts.find((row) => row.status === status)?.count ?? 0;
+  return {
+    pending: countOf("pending"),
+    failed: countOf("failed"),
+    oldestPendingAgeSeconds:
+      oldest?.created_at == null ? 0 : Math.max(0, unixNow() - oldest.created_at),
+  };
 }
 
 async function analyticsSummary(env: ApiEnv): Promise<Record<string, unknown>> {

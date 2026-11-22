@@ -276,11 +276,26 @@ Make sure that the private key matches `relayerAddress`.
 | `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment that qualifies for collection. |
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
 | `SWEEPER_RETRY_SECONDS` | Delay between collection attempts. |
+| `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. The default is 259200 (72 hours). |
 
 The minute scanner queues only chains with open payments or confirmed payments
 still inside the configured reorg window. Chains with older history receive a
 maintenance scan every 15 minutes. This schedule recovers late transfers and
 limits operations on idle queues.
+
+A webhook that your endpoint rejects is retried with exponential backoff, up to
+one hour apart. When the next attempt would fall outside
+`WEBHOOK_RETRY_WINDOW_SECONDS` after the event was created, the gateway marks
+the event `failed` and does not send it again. `GET /health` reports the
+`pending` and `failed` counts and the age of the oldest pending event under
+`webhooks`. To send a failed event again, run this against the D1 database:
+
+```sql
+UPDATE webhook_events SET status = 'pending', next_attempt_at = 0 WHERE event_id = 'evt_...';
+```
+
+The event gets one more attempt and is marked `failed` again if that attempt
+fails. Add `created_at = unixepoch()` to the statement to give it a full window.
 
 ## API
 
@@ -324,7 +339,7 @@ the deposit refund endpoint.
 | `POST` | `/deposits/{id}/refunds` | Create a refund proposal to the deposit's sole payer. |
 | `GET` | `/deposits/{id}/refunds` | Read refund history and refundable balance. |
 | `GET` | `/analytics/summary` | Read exact deposit, collection, withdrawal, refund, and webhook metrics. |
-| `GET` | `/health` | Read successful scan progress and stale active chains. |
+| `GET` | `/health` | Read successful scan progress, stale active chains, and the webhook backlog. |
 
 Successful deposits emit `deposit.succeeded`. An orphaned success emits
 `deposit.reorged`. Collected expired underpayments emit the
