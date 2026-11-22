@@ -1,5 +1,6 @@
 import { type Address, createPublicClient, getAddress, type Hex, parseAbiItem } from "viem";
 import { deriveStatus, eligibleForSweep, intSetting, loadNetworks } from "./domain";
+import { safeErrorText } from "./errors";
 import { rpcTransport } from "./rpc";
 import type { ApiEnv, DepositTransferRow, IntentRow, NetworkConfig, SweepMessage } from "./types";
 import { reconcileWithdrawals, rewindWithdrawals } from "./withdrawals";
@@ -732,15 +733,7 @@ export function randomId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function safeErrorText(error: unknown): string {
-  return errorText(error)
-    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
-    .replace(/0x[0-9a-f]{128,}/gi, "[redacted-hex]");
-}
+export { errorText, safeErrorText } from "./errors";
 
 function toHexString(value: ArrayBuffer): string {
   return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");

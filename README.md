@@ -251,6 +251,11 @@ Copy only the networks you enable from
 [`networks.example.json`](networks.example.json). The
 `rpcUrls` field is an ordered failover list.
 
+A request that fails on an endpoint writes a `rpc endpoint failed` warning to
+the Worker log, even when the next endpoint answers. The warning names the
+host, the JSON-RPC method, and the reason. It never includes the URL path or
+the request body, because the path can hold a provider key.
+
 Keep separate lists in the testnet and mainnet Cloudflare secrets. Do not commit
 provider credentials. Copy the same list to `SWEEPER_NETWORKS_JSON`. Add
 `relayerPrivateKey` only to that list. The API rejects that field.
