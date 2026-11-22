@@ -14,6 +14,7 @@ const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
 const MAINTENANCE_SCAN_MINUTES = 15;
+const DEFAULT_WEBHOOK_RETRY_WINDOW_SECONDS = "259200";
 
 type ObservedPayment = {
   intentId: string;
@@ -640,7 +641,7 @@ export async function deliverWebhooks(env: ApiEnv): Promise<void> {
   if (endpoint.protocol !== "https:") throw new Error("PAYMENT_WEBHOOK_URL must use HTTPS");
   const now = unixNow();
   const retryWindow = intSetting(
-    env.WEBHOOK_RETRY_WINDOW_SECONDS,
+    env.WEBHOOK_RETRY_WINDOW_SECONDS ?? DEFAULT_WEBHOOK_RETRY_WINDOW_SECONDS,
     "WEBHOOK_RETRY_WINDOW_SECONDS",
     60,
     2_592_000,

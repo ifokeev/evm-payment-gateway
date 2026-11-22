@@ -31,7 +31,7 @@ export interface ApiEnv {
   PAYMENT_GRACE_SECONDS: string;
   REORG_HISTORY_BLOCKS: string;
   SWEEPER_MIN_TOKEN_PAYMENT_BPS: string;
-  WEBHOOK_RETRY_WINDOW_SECONDS: string;
+  WEBHOOK_RETRY_WINDOW_SECONDS?: string;
 }
 
 export interface SweeperEnv {

@@ -226,7 +226,7 @@ the request body, because the path can hold a provider key.
 | `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment worth collecting. |
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
 | `SWEEPER_RETRY_SECONDS` | Delay before retrying collection. |
-| `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. The default is 259200 (72 hours). |
+| `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. Optional. The default is 259200 (72 hours) when the variable is not set. |
 
 The minute scanner queues only chains with open payments or confirmed payments
 still inside the configured reorg window. Chains with older history receive a
