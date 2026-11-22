@@ -420,7 +420,8 @@ Public GitHub CI runs the same `npm run check` on every pull request. On a push
 to `main`, the optional `deploy-testnet` job applies D1 migrations, deploys the
 API, relayer, and demo in order, then verifies the demo signer and analytics
 endpoints. It runs in the `testnet` environment and serializes deployments. It
-skips deployment with a warning when these repository secrets are absent.
+fails with a clear error when these repository secrets are absent. The `check`
+job remains independent and still reports repository health.
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
