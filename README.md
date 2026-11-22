@@ -276,7 +276,7 @@ Make sure that the private key matches `relayerAddress`.
 | `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment that qualifies for collection. |
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
 | `SWEEPER_RETRY_SECONDS` | Delay between collection attempts. |
-| `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. The default is 259200 (72 hours). |
+| `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. Optional. The default is 259200 (72 hours) when the variable is not set. |
 
 The minute scanner queues only chains with open payments or confirmed payments
 still inside the configured reorg window. Chains with older history receive a

@@ -88,6 +88,19 @@ describe("webhook retry window", () => {
       await deliverWebhooks({ ...bindings, WEBHOOK_RETRY_WINDOW_SECONDS: valid });
   });
 
+  it("uses 72 hours when the variable is not set", async () => {
+    const now = unixNow();
+    const hourlyAttemptFits = await insertEvent({ createdAt: now + 3_600 - 259_200, attempts: 11 });
+    const hourlyAttemptTooLate = await insertEvent({
+      createdAt: now + 3_600 - 259_200 - 1,
+      attempts: 11,
+    });
+    await deliverWebhooks({ ...bindings, WEBHOOK_RETRY_WINDOW_SECONDS: undefined });
+
+    expect(await eventRow(hourlyAttemptFits)).toMatchObject({ status: "pending", attempts: 12 });
+    expect(await eventRow(hourlyAttemptTooLate)).toMatchObject({ status: "failed", attempts: 12 });
+  });
+
   it("reschedules a failing event inside the window with the existing backoff", async () => {
     const now = unixNow();
     const fresh = await insertEvent();
