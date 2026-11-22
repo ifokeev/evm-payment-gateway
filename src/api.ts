@@ -45,6 +45,9 @@ import { routeWithdrawal } from "./withdrawals";
 
 const API_ROOT = "/api/v1";
 const MAX_COLLECTION_GAS = 1_000_000n;
+const RPC_CHECK_ATTEMPTS = 3;
+const RPC_CHECK_RETRY_MS = 200;
+const RPC_UNAVAILABLE = "network RPC or factory unavailable";
 
 export default {
   async fetch(request: Request, env: ApiEnv): Promise<Response> {
@@ -409,23 +412,7 @@ async function createIntent(request: Request, env: ApiEnv): Promise<Response> {
     return json(await intentResponse(env, existing, network));
   }
 
-  const client = createPublicClient({
-    transport: rpcTransport(network.rpcUrls, { timeout: 15_000 }),
-  });
-  let latest: bigint;
-  try {
-    const [chainId, block, factoryCode] = await Promise.all([
-      client.getChainId(),
-      client.getBlockNumber(),
-      client.getCode({ address: network.factoryAddress }),
-    ]);
-    if (chainId !== network.chainId) throw new Error("RPC chain ID mismatch");
-    if (!factoryCode || keccak256(factoryCode).toLowerCase() !== network.factoryCodeHash)
-      throw new Error("factory code hash mismatch");
-    latest = block;
-  } catch {
-    throw new HttpError(503, "network RPC or factory unavailable");
-  }
+  const latest = await verifiedChainHead(network);
   const intentSalt = newIntentSalt();
   const { address: depositAddress, initCodeHash } = counterfactualAddress(
     network.factoryAddress,
@@ -1168,6 +1155,42 @@ function validateLeaseInput(jobId: string, owner: string): void {
 
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+// Reads the chain head and confirms the RPC serves the configured chain and factory. A single failed read from a shared public endpoint
+// is common, so the whole endpoint list gets a few passes before the deposit is refused. A wrong chain or factory is never retried.
+async function verifiedChainHead(network: NetworkConfig): Promise<bigint> {
+  const client = createPublicClient({
+    transport: rpcTransport(network.rpcUrls, { timeout: 15_000 }),
+  });
+  let failure: unknown;
+  for (let attempt = 1; attempt <= RPC_CHECK_ATTEMPTS; attempt++) {
+    if (attempt > 1)
+      await new Promise((resolve) => setTimeout(resolve, RPC_CHECK_RETRY_MS * (attempt - 1)));
+    let reads: [number, bigint, Hex | undefined];
+    try {
+      reads = await Promise.all([
+        client.getChainId(),
+        client.getBlockNumber(),
+        client.getCode({ address: network.factoryAddress }),
+      ]);
+    } catch (error) {
+      failure = error;
+      continue;
+    }
+    const [chainId, block, factoryCode] = reads;
+    if (
+      chainId !== network.chainId ||
+      !factoryCode ||
+      keccak256(factoryCode).toLowerCase() !== network.factoryCodeHash
+    ) {
+      console.error("deposit RPC check rejected the configured chain or factory", network.name);
+      throw new HttpError(503, RPC_UNAVAILABLE);
+    }
+    return block;
+  }
+  console.error("deposit RPC check failed", network.name, safeErrorText(failure));
+  throw new HttpError(503, RPC_UNAVAILABLE);
 }
 
 class HttpError extends Error {
