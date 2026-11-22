@@ -281,15 +281,23 @@ Make sure that the private key matches `relayerAddress`.
 | `MAX_EXPIRY_SECONDS` | Maximum caller-selected lifetime. |
 | `PAYMENT_GRACE_SECONDS` | Time after expiry in which a mined transfer still qualifies. |
 | `REORG_HISTORY_BLOCKS` | Canonical block window retained for reorg recovery. |
+| `LATE_PAYMENT_WINDOW_SECONDS` | Time after an intent expires or last changes in which the scanner still looks for late transfers. Optional, from 3,600 to 31,536,000, and defaults to 2,592,000 (30 days). |
 | `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment that qualifies for collection. |
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
 | `SWEEPER_RETRY_SECONDS` | Delay between collection attempts. |
 | `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. Optional. The default is 259200 (72 hours) when the variable is not set. |
 
 The minute scanner queues only chains with open payments or confirmed payments
-still inside the configured reorg window. Chains with older history receive a
-maintenance scan every 15 minutes. This schedule recovers late transfers and
+still inside the configured reorg window. Chains that have a live intent receive
+a maintenance scan every 15 minutes. This schedule recovers late transfers and
 limits operations on idle queues.
+
+An intent is live while it is open, and for `LATE_PAYMENT_WINDOW_SECONDS` after
+it expired or last changed. A scan reads only live intents, so its cost follows
+the open payments and not every intent the gateway ever created. Nothing is
+deleted when an intent leaves the window. A transfer that arrives after the
+window is not detected. The funds stay in the deposit address, and anyone can
+still collect them through the factory with the intent salt.
 
 A webhook that your endpoint rejects is retried with exponential backoff, up to
 one hour apart. When the next attempt would fall outside

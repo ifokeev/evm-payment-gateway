@@ -32,6 +32,7 @@ export interface ApiEnv {
   MAX_EXPIRY_SECONDS: string;
   PAYMENT_GRACE_SECONDS: string;
   REORG_HISTORY_BLOCKS: string;
+  LATE_PAYMENT_WINDOW_SECONDS?: string;
   SWEEPER_MIN_TOKEN_PAYMENT_BPS: string;
   WEBHOOK_RETRY_WINDOW_SECONDS?: string;
 }
