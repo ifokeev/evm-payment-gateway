@@ -262,7 +262,8 @@ an accidental overpayment into extra balance automatically.
 
 The gateway sends `payment.succeeded`, `payment.reorged`, and informational
 `payment.recovered` events. It retries non-2xx responses with exponential
-backoff and keeps the same `Webhook-Id` and body. Each delivery includes:
+backoff and keeps the same `Webhook-Id` and body. After the retry window, 72
+hours by default, it marks the event `failed` and stops. Each delivery includes:
 
 ```text
 Webhook-Id: evt_...
