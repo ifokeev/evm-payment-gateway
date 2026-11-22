@@ -374,6 +374,59 @@ intent per accepted chain and asset with the same `externalId`, show the priced
 options, and fulfill the first `deposit.succeeded`. The gateway does not store a
 checkout group. Use the refund endpoint for any duplicate payment.
 
+## Upgrading from the intents API
+
+A deployment from the `maintenance/intents-api` line upgrades in place. The Worker,
+D1 database, Queue, and cron names, the secrets, the Worker variables, the network
+JSON, and the contracts stay the same, so deployed factories keep working. The
+optional `withdrawalSourceAddress` network field defaults to `treasuryAddress`.
+
+Record a rollback point, then deploy. `npm run deploy` applies the pending D1
+migrations first and deploys the API and relayer Workers after that.
+
+```bash
+npx wrangler d1 time-travel info evm-payment-gateway-mainnet --env mainnet --config wrangler.api.jsonc
+npx wrangler d1 export evm-payment-gateway-mainnet --remote --env mainnet --config wrangler.api.jsonc --output backup.sql
+npm run deploy -- mainnet
+```
+
+The migrations rename `payment_intents` to `deposit_intents` and
+`payment_transactions` to `deposit_transfers`, drop `kind`, add
+`treasury_address` and `purpose`, rebuild `webhook_events` with subject columns,
+and add the withdrawal tables. Existing intents keep their `pi_` ids, statuses,
+transfers, collection jobs, and webhook events. An empty `treasury_address` marks
+a deposit created before the upgrade. Its first collection stores the treasury
+from `NETWORKS_JSON` after checking that it derives the deposit address. If the
+configured treasury differs from the one used at creation, the collection fails
+with `historical deposit treasury is unknown` until `treasury_address` is
+backfilled.
+
+Clients change as follows.
+
+| Intents line | This line |
+| --- | --- |
+| `POST /api/payments/v1/intents` with `kind` | `POST /api/v1/deposits` with `purpose: "deposit"` |
+| `GET /api/payments/v1/intents/{id}` | `GET /api/v1/deposits/{id}`, which also serves old `pi_` ids |
+| `GET /api/payments/v1/health` | `GET /health` |
+| `GET /api/payments/v1/analytics/summary` | `GET /api/v1/analytics/summary` |
+| Response field `kind` | Response field `purpose` |
+| `payment.succeeded`, `payment.reorged`, `payment.recovered` | `deposit.succeeded`, `deposit.reorged`, `deposit.recovered` |
+| `data.paymentIntent` | `data.depositIntent` |
+
+New intents get `di_` ids. Replaying an `Idempotency-Key` that the intents line
+stored returns `409`, because its stored request hash covers the old body. Start
+a new attempt with a new key. Webhook events queued before the upgrade keep their
+old type and body and are delivered with the same signature scheme. Accept both
+event formats for at least the retry window, 72 hours by default.
+
+Migration `0010` drops four index names that the intents line created. They
+duplicate the indexes that `0009` creates.
+
+To roll back, restore the recorded bookmark with
+`npx wrangler d1 time-travel restore evm-payment-gateway-mainnet --bookmark <bookmark> --env mainnet --config wrangler.api.jsonc`
+and redeploy the previous commit. The restore discards every write after the
+bookmark, including intents created since the upgrade.
+
 ## Demo
 
 The optional demo Worker shows testnet deposits, multi-asset checkout, and
