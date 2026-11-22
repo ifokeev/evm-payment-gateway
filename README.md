@@ -192,6 +192,7 @@ relayer key; it never receives the payment API key or webhook secret.
   "factoryCodeHash": "0xRuntimeCodeHash",
   "relayerAddress": "0xLowBalanceRelayer",
   "confirmations": 3,
+  "maxLogRange": 5000,
   "maxGasPriceWei": "5000000000",
   "nativeAsset": "ETH",
   "explorerUrl": "https://sepolia.basescan.org",
@@ -217,21 +218,40 @@ the Worker log, even when the next endpoint answers. The warning names the
 host, the JSON-RPC method, and the reason. It never includes the URL path or
 the request body, because the path can hold a provider key.
 
+`maxLogRange` is optional. It sets the largest number of blocks in one
+`eth_getLogs` request and defaults to 5,000, which is also the most blocks the
+scanner reads in one run. Providers cap this range and answer a larger request
+with an error, so set it to the smallest range that any endpoint in `rpcUrls`
+accepts. The scanner then reads the same blocks in consecutive requests of at
+most that size.
+
 | Setting | Purpose |
 | --- | --- |
 | `DEFAULT_EXPIRY_SECONDS` | Default checkout lifetime. |
 | `MAX_EXPIRY_SECONDS` | Maximum caller-selected lifetime. |
 | `PAYMENT_GRACE_SECONDS` | Time after expiry in which a mined transfer still qualifies. |
 | `REORG_HISTORY_BLOCKS` | Canonical block window retained for reorg recovery. |
+| `LATE_PAYMENT_WINDOW_SECONDS` | Time after an intent expires or last changes in which the scanner still looks for late transfers. Optional, from 3,600 to 31,536,000, and defaults to 2,592,000 (30 days). |
 | `SWEEPER_MIN_TOKEN_PAYMENT_BPS` | Minimum expired token underpayment worth collecting. |
 | `SWEEPER_GAS_BUFFER_BPS` | Buffer applied to estimated collection gas. |
 | `SWEEPER_RETRY_SECONDS` | Delay before retrying collection. |
 | `WEBHOOK_RETRY_WINDOW_SECONDS` | Time after creation in which a failing webhook is retried. Optional. The default is 259200 (72 hours) when the variable is not set. |
 
 The minute scanner queues only chains with open payments or confirmed payments
-still inside the configured reorg window. Chains with older history receive a
+still inside the configured reorg window. Chains that have a live intent receive a
 maintenance scan every 15 minutes so late transfers remain recoverable without
 spending queue operations on idle networks.
+
+An intent is live while it is open, and for `LATE_PAYMENT_WINDOW_SECONDS` after
+it expired or last changed. A scan reads only live intents, so its cost follows
+the open payments and not every intent the gateway ever created. Nothing is
+deleted when an intent leaves the window. A transfer that arrives after the
+window is not detected. The funds stay in the deposit address, and anyone can
+still collect them through the factory with the intent salt.
+
+`GET /health` reports `active` for each network. A network is active while it
+has open payments or paid payments inside the reorg window, which are the chains
+that the minute scanner queues.
 
 A webhook that your endpoint rejects is retried with exponential backoff, up to
 one hour apart. When the next attempt would fall outside

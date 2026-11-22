@@ -21,6 +21,7 @@ import {
   stableStringify,
 } from "./domain";
 import {
+  ACTIVE_CHAINS,
   all,
   errorText,
   randomId,
@@ -118,11 +119,20 @@ async function health(env: ApiEnv): Promise<Response> {
     "SELECT chain, last_scanned FROM chain_states",
   );
   const scanned = new Map(states.map((state) => [state.chain, state.last_scanned]));
+  const activeChainRows = await all<{ chain: string }>(
+    env.DB,
+    ACTIVE_CHAINS,
+    intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000),
+  );
+  const activeChains = new Set(activeChainRows.map((row) => row.chain));
   return json({
     ok: true,
     time: new Date().toISOString(),
     networks: Object.fromEntries(
-      [...networks.keys()].map((name) => [name, { lastScannedBlock: scanned.get(name) ?? null }]),
+      [...networks.keys()].map((name) => [
+        name,
+        { lastScannedBlock: scanned.get(name) ?? null, active: activeChains.has(name) },
+      ]),
     ),
     webhooks: await webhookBacklog(env.DB),
   });

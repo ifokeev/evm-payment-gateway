@@ -15,6 +15,39 @@ const transferEvent = parseAbiItem(
 );
 const MAINTENANCE_SCAN_MINUTES = 15;
 const DEFAULT_WEBHOOK_RETRY_WINDOW_SECONDS = "259200";
+const DEFAULT_LATE_PAYMENT_WINDOW_SECONDS = "2592000";
+
+// An intent is live while a payment can still change it, and for the late payment window after it expired or last
+// changed. The scanner reads only live intents, so its cost follows open payments and not every intent ever created.
+// Binds ?1 the chain, ?2 the oldest timestamp inside the window, and ?3 the oldest block of the reorg history.
+const LIVE_INTENT_IDS = `
+  SELECT id FROM payment_intents
+   WHERE chain = ?1 AND status IN ('pending', 'underpaid', 'confirming', 'reorged')
+  UNION SELECT id FROM payment_intents WHERE chain = ?1 AND expires_at > ?2
+  UNION SELECT id FROM payment_intents WHERE chain = ?1 AND updated_at > ?2
+  UNION SELECT t.payment_intent FROM payment_transactions t JOIN payment_intents i ON i.id = t.payment_intent
+         WHERE t.chain = ?1 AND t.canonical = 1 AND t.block_number >= ?3 AND i.status = 'paid'`;
+
+// Chains the minute scanner queues: open payments, or paid payments still inside the reorg history. Binds ?1 the
+// reorg history in blocks.
+export const ACTIVE_CHAINS = `
+  SELECT chain FROM payment_intents WHERE status IN ('pending', 'underpaid', 'confirming', 'reorged')
+  UNION SELECT s.chain FROM chain_states s
+         WHERE EXISTS (SELECT 1 FROM payment_transactions t JOIN payment_intents i ON i.id = t.payment_intent
+                        WHERE t.chain = s.chain AND t.canonical = 1 AND i.status = 'paid'
+                          AND t.block_number >= s.last_scanned - ?1)`;
+
+// The chains of the maintenance scan add every configured chain that has a live intent. Binds ?2 the oldest
+// timestamp inside the window and ?3 the configured chain names as a JSON array.
+const LIVE_CHAINS = `${ACTIVE_CHAINS}
+  UNION SELECT c.value FROM json_each(?3) c
+         WHERE EXISTS (SELECT 1 FROM payment_intents WHERE chain = c.value AND expires_at > ?2)
+            OR EXISTS (SELECT 1 FROM payment_intents WHERE chain = c.value AND updated_at > ?2)`;
+
+// The live intents of one chain, fixed for a whole scan so that every query of that scan sees the same set.
+type LiveScope = { cutoff: number; reorgFloor: number };
+// A scope that covers every intent, for callers that pass their own intent list.
+const EVERY_INTENT: LiveScope = { cutoff: -1, reorgFloor: -1 };
 
 type ObservedPayment = {
   intentId: string;
@@ -57,34 +90,47 @@ async function scheduledScanChains(
 ): Promise<string[]> {
   const history = intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000);
   const maintenance = Math.floor(unixNow() / 60) % MAINTENANCE_SCAN_MINUTES === 0 ? 1 : 0;
-  const rows = await all<{ chain: string }>(
-    env.DB,
-    `SELECT DISTINCT i.chain
-       FROM payment_intents i
-       LEFT JOIN chain_states s ON s.chain = i.chain
-      WHERE ? = 1
-         OR i.status IN ('pending', 'underpaid', 'confirming', 'reorged')
-         OR (i.status = 'paid' AND EXISTS (
-              SELECT 1 FROM payment_transactions t
-               WHERE t.payment_intent = i.id AND t.canonical = 1
-                 AND (s.last_scanned IS NULL OR t.block_number >= s.last_scanned - ?)
-            ))
-      ORDER BY i.chain`,
-    maintenance,
-    history,
-  );
+  const rows = maintenance
+    ? await all<{ chain: string }>(
+        env.DB,
+        `${LIVE_CHAINS} ORDER BY chain`,
+        history,
+        unixNow() - latePaymentWindow(env),
+        JSON.stringify([...networks.keys()]),
+      )
+    : await all<{ chain: string }>(env.DB, `${ACTIVE_CHAINS} ORDER BY chain`, history);
   return rows.map((row) => row.chain).filter((chain) => networks.has(chain));
 }
 
+function latePaymentWindow(env: ApiEnv): number {
+  return intSetting(
+    env.LATE_PAYMENT_WINDOW_SECONDS ?? DEFAULT_LATE_PAYMENT_WINDOW_SECONDS,
+    "LATE_PAYMENT_WINDOW_SECONDS",
+    3_600,
+    31_536_000,
+  );
+}
+
+async function liveScope(env: ApiEnv, chain: string, now: number): Promise<LiveScope> {
+  const history = intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000);
+  const state = await env.DB.prepare("SELECT last_scanned FROM chain_states WHERE chain = ?")
+    .bind(chain)
+    .first<{ last_scanned: number }>();
+  return { cutoff: now - latePaymentWindow(env), reorgFloor: (state?.last_scanned ?? 0) - history };
+}
+
 export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<void> {
+  const now = unixNow();
+  const scope = await liveScope(env, network.name, now);
   const intents = await all<IntentRow>(
     env.DB,
-    "SELECT * FROM payment_intents WHERE chain = ? ORDER BY created_at, id",
+    `SELECT * FROM payment_intents WHERE id IN (${LIVE_INTENT_IDS}) ORDER BY created_at, id`,
     network.name,
+    scope.cutoff,
+    scope.reorgFloor,
   );
   if (!intents.length) return;
 
-  const now = unixNow();
   const owner = crypto.randomUUID();
   const earliest = Math.min(...intents.map((intent) => intent.start_block));
   const lease = await env.DB.prepare(`
@@ -144,27 +190,14 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
     // ponytail: native blocks are CPU-heavy; token logs can safely cover a much larger gap.
     const target = Math.min(latest, start + (nativeAddresses.size ? 39 : 4_999));
 
-    const tokenLogs = tokenAddresses.length
-      ? await client.getLogs({
-          address: tokenAddresses,
-          event: transferEvent,
-          args: { to: tokenDepositAddresses.slice(0, 100) },
-          fromBlock: BigInt(start),
-          toBlock: BigInt(target),
-          strict: true,
-        })
-      : [];
-    for (let offset = 100; offset < tokenDepositAddresses.length; offset += 100)
-      tokenLogs.push(
-        ...(await client.getLogs({
-          address: tokenAddresses,
-          event: transferEvent,
-          args: { to: tokenDepositAddresses.slice(offset, offset + 100) },
-          fromBlock: BigInt(start),
-          toBlock: BigInt(target),
-          strict: true,
-        })),
-      );
+    const tokenLogs = await getTokenLogs(
+      client,
+      tokenAddresses,
+      tokenDepositAddresses,
+      start,
+      target,
+      network.maxLogRange,
+    );
     const logsByBlock = new Map<number, typeof tokenLogs>();
     for (const log of tokenLogs) {
       if (log.blockNumber === null) continue;
@@ -255,7 +288,7 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       await saveBlock(env.DB, network.name, owner, block, payments);
     }
 
-    if (target >= 0) await recalculateChain(env, network, intents, target, reorged);
+    if (target >= 0) await recalculateChain(env, network, intents, target, reorged, scope);
     const history = intSetting(env.REORG_HISTORY_BLOCKS, "REORG_HISTORY_BLOCKS", 32, 100_000);
     if (target > history)
       await env.DB.prepare("DELETE FROM chain_blocks WHERE chain = ? AND block_number < ?")
@@ -268,6 +301,37 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       .bind(unixNow(), network.name, owner)
       .run();
   }
+}
+
+// Reads Transfer logs to the deposit addresses. A request carries at most 100 addresses and maxLogRange blocks,
+// and the block ranges of one address chunk are consecutive. At least one request goes out per address chunk.
+async function getTokenLogs(
+  client: ReturnType<typeof createPublicClient>,
+  tokenAddresses: Address[],
+  depositAddresses: Address[],
+  fromBlock: number,
+  toBlock: number,
+  maxLogRange: number,
+) {
+  const logs = [];
+  for (let offset = 0; offset < depositAddresses.length; offset += 100) {
+    let first = fromBlock;
+    do {
+      const last = Math.min(first + maxLogRange - 1, toBlock);
+      logs.push(
+        ...(await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          args: { to: depositAddresses.slice(offset, offset + 100) },
+          fromBlock: BigInt(first),
+          toBlock: BigInt(last),
+          strict: true,
+        })),
+      );
+      first = last + 1;
+    } while (first <= toBlock);
+  }
+  return logs;
 }
 
 async function rewindIfNeeded(
@@ -437,11 +501,15 @@ export async function recalculateChain(
   intents: IntentRow[],
   head: number,
   reorged: Set<string>,
+  scope: LiveScope = EVERY_INTENT,
 ): Promise<void> {
   const transactions = await all<PaymentTransactionRow>(
     env.DB,
-    "SELECT * FROM payment_transactions WHERE chain = ? ORDER BY block_number, event_index",
+    `SELECT * FROM payment_transactions WHERE chain = ?1 AND payment_intent IN (${LIVE_INTENT_IDS})
+      ORDER BY block_number, event_index`,
     network.name,
+    scope.cutoff,
+    scope.reorgFloor,
   );
   const byIntent = new Map<string, PaymentTransactionRow[]>();
   for (const transaction of transactions) {
@@ -456,8 +524,11 @@ export async function recalculateChain(
     status: string;
   }>(
     env.DB,
-    "SELECT id, payment_intent, observed_units, status FROM sweep_jobs WHERE chain = ?",
+    `SELECT id, payment_intent, observed_units, status FROM sweep_jobs
+      WHERE chain = ?1 AND payment_intent IN (${LIVE_INTENT_IDS})`,
     network.name,
+    scope.cutoff,
+    scope.reorgFloor,
   );
   const jobsByIntent = new Map(jobs.map((job) => [job.payment_intent, job]));
   const grace = intSetting(env.PAYMENT_GRACE_SECONDS, "PAYMENT_GRACE_SECONDS", 0, 86_400);
