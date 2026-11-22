@@ -141,27 +141,14 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
     // ponytail: native blocks are CPU-heavy; token logs can safely cover a much larger gap.
     const target = Math.min(latest, start + (nativeAddresses.size ? 39 : 4_999));
 
-    const tokenLogs = tokenAddresses.length
-      ? await client.getLogs({
-          address: tokenAddresses,
-          event: transferEvent,
-          args: { to: tokenDepositAddresses.slice(0, 100) },
-          fromBlock: BigInt(start),
-          toBlock: BigInt(target),
-          strict: true,
-        })
-      : [];
-    for (let offset = 100; offset < tokenDepositAddresses.length; offset += 100)
-      tokenLogs.push(
-        ...(await client.getLogs({
-          address: tokenAddresses,
-          event: transferEvent,
-          args: { to: tokenDepositAddresses.slice(offset, offset + 100) },
-          fromBlock: BigInt(start),
-          toBlock: BigInt(target),
-          strict: true,
-        })),
-      );
+    const tokenLogs = await getTokenLogs(
+      client,
+      tokenAddresses,
+      tokenDepositAddresses,
+      start,
+      target,
+      network.maxLogRange,
+    );
     const logsByBlock = new Map<number, typeof tokenLogs>();
     for (const log of tokenLogs) {
       if (log.blockNumber === null) continue;
@@ -265,6 +252,37 @@ export async function syncChain(env: ApiEnv, network: NetworkConfig): Promise<vo
       .bind(network.name, owner)
       .run();
   }
+}
+
+// Reads Transfer logs to the deposit addresses. A request carries at most 100 addresses and maxLogRange blocks,
+// and the block ranges of one address chunk are consecutive. At least one request goes out per address chunk.
+async function getTokenLogs(
+  client: ReturnType<typeof createPublicClient>,
+  tokenAddresses: Address[],
+  depositAddresses: Address[],
+  fromBlock: number,
+  toBlock: number,
+  maxLogRange: number,
+) {
+  const logs = [];
+  for (let offset = 0; offset < depositAddresses.length; offset += 100) {
+    let first = fromBlock;
+    do {
+      const last = Math.min(first + maxLogRange - 1, toBlock);
+      logs.push(
+        ...(await client.getLogs({
+          address: tokenAddresses,
+          event: transferEvent,
+          args: { to: depositAddresses.slice(offset, offset + 100) },
+          fromBlock: BigInt(first),
+          toBlock: BigInt(last),
+          strict: true,
+        })),
+      );
+      first = last + 1;
+    } while (first <= toBlock);
+  }
+  return logs;
 }
 
 async function rewindIfNeeded(
