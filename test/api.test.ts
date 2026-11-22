@@ -289,6 +289,42 @@ describe("deposit API", () => {
     expect(await response.json()).toEqual({ error: "network RPC or factory unavailable" });
   });
 
+  it("retries a transient RPC failure when creating a deposit", async () => {
+    let failuresLeft = 1;
+    rpcResponder = async (request) => {
+      const rpc = await request.json<{ id: number; method: string }>();
+      if (rpc.method === "eth_getCode" && failuresLeft-- > 0)
+        return new Response("rate limited", { status: 429 });
+      const result =
+        rpc.method === "eth_chainId"
+          ? "0x539"
+          : rpc.method === "eth_blockNumber"
+            ? "0x7b"
+            : rpc.method === "eth_getCode"
+              ? factoryCode
+              : null;
+      return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+    };
+    const response = await create(randomId("idem"), { amount: "1", metadata: {} });
+    expect(response.status).toBe(201);
+  });
+
+  it("logs why creating a deposit failed without exposing the RPC URL", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    rpcResponder = async () =>
+      new Response("unavailable https://rpc.test/v3/secret-key", { status: 500 });
+    try {
+      const response = await create(randomId("idem"), { amount: "1", metadata: {} });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "network RPC or factory unavailable" });
+      const output = logged.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(output).toContain("deposit RPC check failed test");
+      expect(output).not.toContain("secret-key");
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it("rejects boundary bypasses and unknown JSON fields", async () => {
     const request = authorizedRequest("https://gateway.test/api/v1/deposits", {
       method: "POST",
