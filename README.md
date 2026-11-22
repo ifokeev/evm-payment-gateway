@@ -417,8 +417,10 @@ bytecode verification, Biome, TypeScript, Worker/D1 tests, and Wrangler dry-run
 builds. The pre-commit hook runs the same contract checks plus staged linting.
 
 Public GitHub CI runs the same `npm run check` on every pull request. On a push
-to `main`, the optional `deploy-demo` job deploys only when these repository
-secrets are present. Without them it skips deployment with a warning.
+to `main`, the optional `deploy-testnet` job applies D1 migrations, deploys the
+API, relayer, and demo in order, then verifies the demo signer and analytics
+endpoints. It runs in the `testnet` environment and serializes deployments. It
+skips deployment with a warning when these repository secrets are absent.
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
