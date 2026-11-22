@@ -11,6 +11,7 @@ export type NetworkConfig = {
   factoryCodeHash: Hex;
   relayerAddress: Address;
   confirmations: number;
+  maxLogRange: number;
   maxGasPriceWei: bigint;
   nativeAsset: string;
   explorerUrl: string;
