@@ -469,7 +469,8 @@ GET /health
   "networks": {
     "base": {
       "lastScannedBlock": 34567890,
-      "lastScanAt": "2026-08-24T06:59:30.000Z"
+      "lastScanAt": "2026-08-24T06:59:30.000Z",
+      "active": true
     }
   }
 }
@@ -478,6 +479,9 @@ GET /health
 If more than 300 seconds pass without a successful scan on an active deposit
 chain, `ok` is `false`. Only a successful block scan updates `lastScanAt`.
 Lease acquisition and failed scans do not update it.
+
+A chain is `active` while it has open deposits or paid deposits that are still
+inside the reorg window. These are the chains that the minute scanner queues.
 
 Before the first successful scan, `lastScannedBlock` and `lastScanAt` are
 `null`. If `ok` is `false`, alert the operator. Stop time-sensitive settlement
