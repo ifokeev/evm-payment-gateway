@@ -36,6 +36,7 @@ const coordinator = workerExports.SweepCoordinator;
 const apiKey = "test-api-key-at-least-24-characters";
 let webhookResponder: ((request: Request) => Promise<Response>) | undefined;
 let batchRpcResponder: ((request: Request) => Promise<Response>) | undefined;
+let rpcResponder: ((request: Request) => Promise<Response>) | undefined;
 let rpcFactoryCode: `0x${string}` = factoryCode;
 const testFactory = "0x3333333333333333333333333333333333333333";
 const testTreasury = "0x2222222222222222222222222222222222222222";
@@ -50,6 +51,7 @@ beforeAll(() => {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const outgoing = input instanceof Request ? input : new Request(input, init);
       if (outgoing.url === "https://rpc.test/") {
+        if (rpcResponder) return rpcResponder(outgoing);
         const request = JSON.parse(await outgoing.text());
         const result =
           request.method === "eth_chainId"
@@ -73,6 +75,7 @@ beforeAll(() => {
 beforeEach(() => {
   rpcFactoryCode = factoryCode;
   batchRpcResponder = undefined;
+  rpcResponder = undefined;
 });
 
 describe("payment API", () => {
@@ -220,6 +223,42 @@ describe("payment API", () => {
     const response = await create(randomId("idem"), { amount: "1", metadata: {} });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "network RPC or factory unavailable" });
+  });
+
+  it("retries a transient RPC failure when creating an intent", async () => {
+    let failuresLeft = 1;
+    rpcResponder = async (request) => {
+      const rpc = await request.json<{ id: number; method: string }>();
+      if (rpc.method === "eth_getCode" && failuresLeft-- > 0)
+        return new Response("rate limited", { status: 429 });
+      const result =
+        rpc.method === "eth_chainId"
+          ? "0x539"
+          : rpc.method === "eth_blockNumber"
+            ? "0x7b"
+            : rpc.method === "eth_getCode"
+              ? factoryCode
+              : null;
+      return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+    };
+    const response = await create(randomId("idem"), { amount: "1", metadata: {} });
+    expect(response.status).toBe(201);
+  });
+
+  it("logs why creating an intent failed without exposing the RPC URL", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    rpcResponder = async () =>
+      new Response("unavailable https://rpc.test/v3/secret-key", { status: 500 });
+    try {
+      const response = await create(randomId("idem"), { amount: "1", metadata: {} });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "network RPC or factory unavailable" });
+      const output = logged.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(output).toContain("intent RPC check failed test");
+      expect(output).not.toContain("secret-key");
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("rejects boundary bypasses and unknown JSON fields", async () => {
