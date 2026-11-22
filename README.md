@@ -212,6 +212,11 @@ mainnet Cloudflare secrets; do not commit provider credentials.
 API rejects that field. All URLs must use HTTPS, all configured addresses must
 be distinct, and the private key must match `relayerAddress`.
 
+A request that fails on an endpoint writes a `rpc endpoint failed` warning to
+the Worker log, even when the next endpoint answers. The warning names the
+host, the JSON-RPC method, and the reason. It never includes the URL path or
+the request body, because the path can hold a provider key.
+
 | Setting | Purpose |
 | --- | --- |
 | `DEFAULT_EXPIRY_SECONDS` | Default checkout lifetime. |
