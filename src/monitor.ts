@@ -1,5 +1,6 @@
 import { type Address, createPublicClient, getAddress, type Hex, parseAbiItem } from "viem";
 import { deriveStatus, eligibleForSweep, intSetting, loadNetworks } from "./domain";
+import { safeErrorText } from "./errors";
 import { rpcTransport } from "./rpc";
 import type {
   ApiEnv,
@@ -13,6 +14,7 @@ const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
 const MAINTENANCE_SCAN_MINUTES = 15;
+const DEFAULT_WEBHOOK_RETRY_WINDOW_SECONDS = "259200";
 
 type ObservedPayment = {
   intentId: string;
@@ -638,9 +640,20 @@ export async function deliverWebhooks(env: ApiEnv): Promise<void> {
   const endpoint = new URL(env.PAYMENT_WEBHOOK_URL);
   if (endpoint.protocol !== "https:") throw new Error("PAYMENT_WEBHOOK_URL must use HTTPS");
   const now = unixNow();
-  const events = await all<{ event_id: string; body: string; attempts: number }>(
+  const retryWindow = intSetting(
+    env.WEBHOOK_RETRY_WINDOW_SECONDS ?? DEFAULT_WEBHOOK_RETRY_WINDOW_SECONDS,
+    "WEBHOOK_RETRY_WINDOW_SECONDS",
+    60,
+    2_592_000,
+  );
+  const events = await all<{
+    event_id: string;
+    body: string;
+    attempts: number;
+    created_at: number;
+  }>(
     env.DB,
-    "SELECT event_id, body, attempts FROM webhook_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at LIMIT 20",
+    "SELECT event_id, body, attempts, created_at FROM webhook_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at LIMIT 20",
     now,
   );
   const key = await crypto.subtle.importKey(
@@ -682,12 +695,22 @@ export async function deliverWebhooks(env: ApiEnv): Promise<void> {
         .bind(attempts, unixNow(), unixNow(), event.event_id)
         .run();
     } else {
+      const failedAt = unixNow();
       const delay = Math.min(3_600, 2 ** Math.min(attempts, 12));
-      await env.DB.prepare(
-        "UPDATE webhook_events SET attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ?",
-      )
-        .bind(attempts, error.slice(0, 1_000), unixNow() + delay, unixNow(), event.event_id)
-        .run();
+      if (failedAt + delay > event.created_at + retryWindow) {
+        // The next attempt would fall outside the retry window, so the event stops here.
+        await env.DB.prepare(
+          "UPDATE webhook_events SET status = 'failed', attempts = ?, last_error = ?, updated_at = ? WHERE event_id = ?",
+        )
+          .bind(attempts, error.slice(0, 1_000), failedAt, event.event_id)
+          .run();
+      } else {
+        await env.DB.prepare(
+          "UPDATE webhook_events SET attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE event_id = ?",
+        )
+          .bind(attempts, error.slice(0, 1_000), failedAt + delay, failedAt, event.event_id)
+          .run();
+      }
     }
   }
 }
@@ -732,15 +755,7 @@ export function randomId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function safeErrorText(error: unknown): string {
-  return errorText(error)
-    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
-    .replace(/0x[0-9a-f]{128,}/gi, "[redacted-hex]");
-}
+export { errorText, safeErrorText } from "./errors";
 
 function toHexString(value: ArrayBuffer): string {
   return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
