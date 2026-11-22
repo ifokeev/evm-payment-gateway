@@ -41,7 +41,6 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Check testnet deployment secrets
-        id: deploy-secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -57,13 +56,12 @@ jobs:
             fi
           done
           if [ -n "$missing" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Skipping testnet deploy; missing secrets:$missing"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "### Testnet deployment blocked" >> "$GITHUB_STEP_SUMMARY"
+            echo "Missing repository secrets:$missing" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Missing testnet deployment secrets:$missing"
+            exit 1
           fi
       - name: Deploy testnet backend
-        if: steps.deploy-secrets.outputs.available == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -72,7 +70,6 @@ jobs:
           npx wrangler deploy --env testnet --config wrangler.api.jsonc
           npx wrangler deploy --env testnet --config wrangler.sweeper.jsonc
       - name: Write testnet demo secrets
-        if: steps.deploy-secrets.outputs.available == 'true'
         env:
           PAYMENT_API_KEY: ${{ secrets.TESTNET_PAYMENT_API_KEY }}
           PAYMENT_WEBHOOK_SECRET: ${{ secrets.TESTNET_PAYMENT_WEBHOOK_SECRET }}
@@ -87,12 +84,10 @@ jobs:
             "TURNSTILE_SECRET_KEY=$TURNSTILE_SECRET_KEY" \
             > .demo.secrets
       - run: npm run deploy:demo
-        if: steps.deploy-secrets.outputs.available == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Verify testnet services
-        if: steps.deploy-secrets.outputs.available == 'true'
         run: |
           curl --fail-with-body --silent --show-error \
             https://evm-payment-gateway-showcase-testnet.ivan-23c.workers.dev/api/signer/withdrawals \
